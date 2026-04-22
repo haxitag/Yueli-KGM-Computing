@@ -1,0 +1,54 @@
+# 构建阶段
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# 复制依赖文件
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# 复制源代码
+COPY src ./src
+
+# 安装依赖并构建
+RUN npm ci --only=production
+RUN npm run build
+
+# 生产阶段
+FROM node:18-alpine AS production
+
+WORKDIR /app
+
+# 安装必要的系统依赖
+RUN apk add --no-cache curl tzdata
+
+# 设置时区
+ENV TZ=Asia/Shanghai
+
+# 复制构建产物
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+
+# 复制配置文件
+COPY docker-entrypoint.sh /usr/local/bin/
+COPY config/cluster-config.js ./config/
+
+# 创建数据目录
+RUN mkdir -p /app/data
+
+# 设置环境变量
+ENV NODE_ENV=production
+ENV PORT=3000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# 暴露端口
+EXPOSE ${PORT}
+EXPOSE 9464  # Prometheus metrics port
+
+# 启动脚本
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["node", "dist/index.js"]

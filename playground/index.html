@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KGM-Computing Playground</title>
+    <link rel="stylesheet" href="design-system.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="app-body">
+    <!-- 顶栏：先凭证与模型，再调度与算力，最后请求层扩展（技能→工具→输出） -->
+    <header class="top-nav" role="banner">
+        <span class="nav-brand">KGM Playground</span>
+        <nav class="nav-primary" aria-label="连接与模型">
+            <button type="button" class="nav-item" id="api-keys-btn">API Keys</button>
+            <button type="button" class="nav-item" id="model-select-btn">选择模型</button>
+            <button type="button" class="nav-item" id="model-config-btn">模型配置</button>
+            <button type="button" class="nav-item" id="auto-routing-btn">自动调度</button>
+            <a href="runtimes.html" target="_blank" rel="noopener noreferrer" class="nav-item nav-external" title="新标签页打开">推理实例</a>
+            <a href="sandbox.html" target="_blank" rel="noopener noreferrer" class="nav-item nav-external" title="新标签页打开">沙箱控制</a>
+        </nav>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <nav class="nav-extensions" aria-label="请求扩展" role="tablist">
+            <button type="button" class="nav-item nav-integration active" data-int-tab="skills" role="tab" aria-selected="true">技能</button>
+            <button type="button" class="nav-item nav-integration" data-int-tab="mcp" role="tab" aria-selected="false">MCP</button>
+            <button type="button" class="nav-item nav-integration" data-int-tab="output" role="tab" aria-selected="false">输出模版</button>
+        </nav>
+        <span class="nav-spacer" aria-hidden="true"></span>
+        <button type="button" id="info-btn" class="info-btn" title="功能介绍" aria-label="功能介绍">?</button>
+    </header>
+
+    <div class="main-layout" id="playground-main">
+        <div class="input-panel">
+            <h2 class="panel-title">输入</h2>
+            <div class="config-status-bar" id="config-status-bar">
+                <div class="status-pill">
+                    <span class="status-label">Service</span>
+                    <span class="status-value" id="status-service">provider-routed</span>
+                </div>
+                <div class="status-pill">
+                    <span class="status-label">Provider</span>
+                    <span class="status-value" id="status-provider">自动</span>
+                </div>
+                <div class="status-pill">
+                    <span class="status-label">Model</span>
+                    <span class="status-value" id="status-model">自动</span>
+                </div>
+                <div class="status-pill">
+                    <span class="status-label">Protocol</span>
+                    <span class="status-value" id="status-protocol">chat.completions</span>
+                </div>
+                <div class="status-pill">
+                    <span class="status-label">Streaming</span>
+                    <span class="status-value" id="status-stream">on</span>
+                </div>
+                <div class="status-pill status-pill-wide">
+                    <span class="status-label">Native Model Path</span>
+                    <span class="status-value" id="status-model-path">未设置</span>
+                </div>
+            </div>
+            
+            <!-- 文本输入 -->
+            <div class="input-group">
+                <label for="prompt-text">文本输入:</label>
+                <div class="prompt-input-container">
+                    <div class="input-tools">
+                        <button type="button" id="document-upload-btn" class="input-tool-btn" title="上传文件 (PDF/DOC/MD/TXT)">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                                <line x1="16" y1="13" x2="8" y2="13"></line>
+                                <line x1="16" y1="17" x2="8" y2="17"></line>
+                            </svg>
+                        </button>
+                        <button type="button" id="voice-input-btn" class="input-tool-btn" title="语音输入">
+                            🎤
+                        </button>
+                    </div>
+                    <textarea id="prompt-text" placeholder="请输入您的文本提示..."></textarea>
+                    <input type="file" id="document-upload-hidden" accept=".pdf,.doc,.docx,.md,.txt" multiple style="display: none;">
+                </div>
+                <div class="document-preview" id="document-preview"></div>
+            </div>
+
+            <!-- 多媒体输入 -->
+            <div class="input-group">
+                <label>多媒体输入:</label>
+                <div class="media-inputs">
+                    <div class="media-item">
+                        <label for="image-upload">上传图片:</label>
+                        <input type="file" id="image-upload" accept="image/*" multiple>
+                        <div class="preview-container" id="image-preview"></div>
+                    </div>
+                    
+                    <div class="media-item">
+                        <label for="audio-upload">上传音频:</label>
+                        <input type="file" id="audio-upload" accept="audio/*">
+                        <button type="button" id="record-audio">录音</button>
+                        <div class="audio-controls" id="audio-controls" style="display: none;">
+                            <button type="button" id="start-recording">开始录制</button>
+                            <button type="button" id="stop-recording">停止录制</button>
+                            <audio id="recorded-audio" controls style="display: none;"></audio>
+                        </div>
+                    </div>
+                    
+                    <div class="media-item">
+                        <label for="video-upload">上传视频:</label>
+                        <input type="file" id="video-upload" accept="video/*">
+                        <div class="preview-container" id="video-preview"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-group">
+                <label>请求模式:</label>
+                <div class="request-options">
+                    <label class="option-field">
+                        <span>协议</span>
+                        <select id="protocol-select">
+                            <option value="chat.completions">chat.completions</option>
+                            <option value="responses">responses</option>
+                        </select>
+                    </label>
+                    <label class="option-check">
+                        <input type="checkbox" id="stream-mode" checked>
+                        <span>Streaming</span>
+                    </label>
+                    <label class="option-check">
+                        <input type="checkbox" id="builtin-tools-toggle" checked>
+                        <span>内建能力</span>
+                    </label>
+                    <label class="option-check">
+                        <input type="checkbox" id="server-exec-toggle" checked>
+                        <span>服务端代执行工具</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="input-controls">
+                <button id="submit-btn">提交</button>
+                <button id="clear-btn">清空</button>
+            </div>
+        </div>
+
+        <!-- 右侧输出区域 -->
+        <div class="output-panel">
+            <h2 class="panel-title">输出</h2>
+            
+            <div id="loading" class="loading" style="display: none;">处理中...</div>
+            
+            <div id="result-container">
+                <!-- 文本输出 -->
+                <div class="output-group">
+                    <label>文本输出:</label>
+                    <div id="text-output" class="text-output"></div>
+                </div>
+
+                <div class="output-group">
+                    <label>流式事件:</label>
+                    <pre id="stream-output" class="stream-output"></pre>
+                </div>
+
+                <div class="output-group">
+                    <label>兼容桥轨迹:</label>
+                    <pre id="trace-output" class="trace-output"></pre>
+                </div>
+                
+                <!-- 图片输出 -->
+                <div class="output-group">
+                    <label>图片输出:</label>
+                    <div id="image-output" class="image-output"></div>
+                </div>
+                
+                <!-- 视频输出 -->
+                <div class="output-group">
+                    <label>视频输出:</label>
+                    <div id="video-output" class="video-output">
+                        <video id="generated-video" controls style="display: none;"></video>
+                    </div>
+                </div>
+                
+                <!-- 音频输出 -->
+                <div class="output-group">
+                    <label>音频输出:</label>
+                    <div id="audio-output" class="audio-output">
+                        <audio id="generated-audio" controls style="display: none;"></audio>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <section class="integration-section page-section" id="integration-section">
+        <div class="section-head">
+            <h2 class="section-title">扩展配置</h2>
+            <p class="section-desc">与顶部「技能 → MCP → 输出模版」对应；保存后写入服务端 <code>playground</code> 字段。</p>
+        </div>
+        <div class="integration-tab-panels">
+            <div id="int-panel-skills" class="integration-panel active" role="tabpanel">
+                <p class="integration-desc">技能定义与 <code>playground.skills</code> 同步；激活项注入系统提示，模型可通过 JSON <code>invoke_skill</code> 执行步骤。</p>
+                <div class="integration-actions">
+                    <label class="file-import-label">从 SKILL.md 导入
+                        <input type="file" id="skill-md-import" accept=".md,text/markdown" style="display:none">
+                    </label>
+                    <button type="button" id="playground-reload-btn" class="btn btn-secondary">从服务端加载</button>
+                    <button type="button" id="playground-save-btn" class="btn btn-primary">保存到服务端</button>
+                </div>
+            </div>
+            <div id="int-panel-mcp" class="integration-panel" role="tabpanel" hidden>
+                <p class="integration-desc">MCP HTTP（JSON-RPC）连接器；激活项写入系统提示，通过工具 <code>mcp_call</code> 调用（需完整端点 URL）。</p>
+            </div>
+            <div id="int-panel-output" class="integration-panel" role="tabpanel" hidden>
+                <p class="integration-desc">输出模版支持 <code>{{变量名}}</code> 插槽；常用 <code>{{content}}</code> 为模型原文。</p>
+                <label class="option-field wide">
+                    <span>单次请求额外系统提示（可选）</span>
+                    <input type="text" id="playground-extra-prompt" placeholder="仅本次对话附加到系统上下文">
+                </label>
+            </div>
+        </div>
+        <label class="integration-json-label" for="playground-config-json">配置 JSON</label>
+        <textarea id="playground-config-json" class="playground-config-json" spellcheck="false" rows="10" placeholder="加载中…"></textarea>
+    </section>
+
+    <div id="modal-overlay" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title">配置</h3>
+                <button type="button" id="close-modal" class="close-btn" aria-label="关闭">×</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <section class="model-panel page-section">
+        <div class="model-header">
+            <div>
+                <h2 class="section-title">模型与 Artifacts</h2>
+                <p>支持 Hugging Face、Ollama、GitHub、ModelScope 的 URL 下载 / pull，并将模型挂载为本地或集群 runtime。</p>
+            </div>
+            <div class="model-actions">
+                <button id="refresh-models-btn">刷新模型</button>
+            </div>
+        </div>
+        <div class="model-form-grid">
+            <label class="option-field">
+                <span>源类型</span>
+                <select id="model-source-type">
+                    <option value="huggingface">Hugging Face</option>
+                    <option value="local">Local Path</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="github">GitHub</option>
+                    <option value="modelscope">ModelScope</option>
+                    <option value="direct">Direct URL</option>
+                </select>
+            </label>
+            <label class="option-field wide">
+                <span>源 URL / 引用</span>
+                <input id="model-source-url" type="text" placeholder="例如 /absolute/path/to/model.gguf 或 https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">
+            </label>
+            <label class="option-field">
+                <span>文件路径</span>
+                <input id="model-file-path" type="text" placeholder="例如 model.gguf 或 model.safetensors">
+            </label>
+            <label class="option-field">
+                <span>Revision</span>
+                <input id="model-revision" type="text" placeholder="main / master / tag">
+            </label>
+            <label class="option-field">
+                <span>模型名</span>
+                <input id="model-name" type="text" placeholder="对外暴露的模型名">
+            </label>
+            <div class="model-actions">
+                <button id="pull-model-btn">下载 / Pull 模型</button>
+            </div>
+        </div>
+        <p class="model-runtime-moved-hint">推理实例请在顶部点击「推理实例」，于新窗口打开；该页仅展示当前运行中（<code>running</code>）的进程。</p>
+        <div class="model-lists model-lists-single">
+            <div class="model-list-block">
+                <h3>Artifacts</h3>
+                <div id="model-artifact-list" class="managed-list"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="routing-panel">
+        <div class="routing-header">
+            <div>
+                <h2>Auto Routing Control</h2>
+                <p>成本优先、效果优先和指定任务模型映射统一在这里管理，并查看最近调度审计、用量与成本概览。</p>
+            </div>
+            <div class="routing-actions">
+                <button id="refresh-routing-btn">刷新调度</button>
+                <button id="save-routing-btn">保存策略</button>
+            </div>
+        </div>
+        <div class="routing-grid">
+            <div class="routing-card">
+                <h3>服务端策略</h3>
+                <div class="routing-form-grid">
+                    <label class="option-field">
+                        <span>启用自动调度</span>
+                        <input id="routing-enabled" type="checkbox">
+                    </label>
+                    <label class="option-field">
+                        <span>默认调度模式</span>
+                        <select id="routing-profile-select">
+                            <option value="quality_first">效果优先</option>
+                            <option value="cost_first">成本优先</option>
+                            <option value="manual">手动指定</option>
+                        </select>
+                    </label>
+                    <label class="option-field">
+                        <span>允许动态选路</span>
+                        <input id="routing-dynamic" type="checkbox">
+                    </label>
+                    <label class="option-field">
+                        <span>优先可验证任务</span>
+                        <input id="routing-verifiable" type="checkbox">
+                    </label>
+                    <label class="option-field">
+                        <span>单请求成本上限</span>
+                        <input id="routing-max-cost" type="number" step="0.001" min="0">
+                    </label>
+                    <label class="option-field">
+                        <span>目标延迟(ms)</span>
+                        <input id="routing-target-latency" type="number" step="50" min="0">
+                    </label>
+                </div>
+                <div class="routing-subsection">
+                    <h4>Judge / Verifier 在线评估</h4>
+                    <div class="routing-form-grid">
+                        <label class="option-field">
+                            <span>启用在线评估</span>
+                            <input id="routing-eval-enabled" type="checkbox">
+                        </label>
+                        <label class="option-field">
+                            <span>评估失败回退启发式</span>
+                            <input id="routing-eval-fallback" type="checkbox">
+                        </label>
+                        <label class="option-field">
+                            <span>启用 Judge</span>
+                            <input id="routing-judge-enabled" type="checkbox">
+                        </label>
+                        <label class="option-field">
+                            <span>Judge Provider</span>
+                            <input id="routing-judge-provider" type="text" placeholder="留空使用默认">
+                        </label>
+                        <label class="option-field">
+                            <span>Judge 模型</span>
+                            <input id="routing-judge-model" type="text" placeholder="如 gpt-4o-mini">
+                        </label>
+                        <label class="option-field">
+                            <span>启用 Verifier</span>
+                            <input id="routing-verifier-enabled" type="checkbox">
+                        </label>
+                        <label class="option-field">
+                            <span>Verifier Provider</span>
+                            <input id="routing-verifier-provider" type="text" placeholder="留空使用默认">
+                        </label>
+                        <label class="option-field">
+                            <span>Verifier 模型</span>
+                            <input id="routing-verifier-model" type="text" placeholder="如 gpt-4o-mini">
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="routing-card">
+                <h3>请求级偏好</h3>
+                <div class="routing-form-grid">
+                    <label class="option-field">
+                        <span>本次请求模式</span>
+                        <div id="request-routing-profile" class="routing-readonly">quality_first</div>
+                    </label>
+                    <label class="option-field">
+                        <span>本次任务类型</span>
+                        <div id="request-task-type" class="routing-readonly">自动识别</div>
+                    </label>
+                    <label class="option-field">
+                        <span>目标 Provider</span>
+                        <div id="request-target-provider" class="routing-readonly">自动</div>
+                    </label>
+                    <label class="option-field">
+                        <span>目标模型</span>
+                        <div id="request-target-model" class="routing-readonly">自动</div>
+                    </label>
+                </div>
+            </div>
+        </div>
+        <div class="routing-grid">
+            <div class="routing-card">
+                <h3>任务指定模型</h3>
+                <div id="task-route-list" class="task-route-list"></div>
+                <div class="route-editor">
+                    <label class="option-field">
+                        <span>规则名</span>
+                        <input id="route-rule-name" type="text" placeholder="例如 code-high-quality">
+                    </label>
+                    <label class="option-field">
+                        <span>任务类型</span>
+                        <select id="route-rule-task-type">
+                            <option value="general">general</option>
+                            <option value="reasoning">reasoning</option>
+                            <option value="code_generation">code_generation</option>
+                            <option value="structured_output">structured_output</option>
+                            <option value="math_reasoning">math_reasoning</option>
+                            <option value="translation">translation</option>
+                        </select>
+                    </label>
+                    <label class="option-field">
+                        <span>关键词</span>
+                        <input id="route-rule-keywords" type="text" placeholder="多个关键词用逗号分隔">
+                    </label>
+                    <label class="option-field">
+                        <span>Provider</span>
+                        <input id="route-rule-provider" type="text" placeholder="如 zhipu / openai">
+                    </label>
+                    <label class="option-field">
+                        <span>模型</span>
+                        <input id="route-rule-model" type="text" placeholder="如 glm-4 / gpt-4o-mini">
+                    </label>
+                    <label class="option-field">
+                        <span>优先级</span>
+                        <input id="route-rule-priority" type="number" value="50">
+                    </label>
+                </div>
+                <div class="route-editor-actions">
+                    <button id="add-route-rule-btn">新增规则</button>
+                </div>
+            </div>
+            <div class="routing-card">
+                <h3>审计、用量与成本</h3>
+                <div id="routing-summary-cards" class="routing-summary-cards"></div>
+                <div id="routing-model-stats" class="routing-table"></div>
+                <div id="routing-recent-audit" class="routing-audit-list"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 介绍文案已移到点击i按钮后的弹窗中显示 -->
+
+    <!-- 语音转文本弹窗 -->
+    <div id="voice-modal-overlay" class="modal-overlay" style="display: none;">
+        <div class="voice-modal">
+            <div class="voice-modal-header">
+                <h3>语音转文字</h3>
+                <button id="close-voice-modal" class="close-btn">×</button>
+            </div>
+            <div class="voice-modal-body">
+                <div class="voice-status" id="voice-status">
+                    <div class="voice-wave">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <p id="voice-status-text">点击开始录音</p>
+                </div>
+                <div class="transcript-edit-area">
+                    <label for="voice-transcript-edit">转译结果:</label>
+                    <textarea id="voice-transcript-edit" placeholder="语音转文字结果将显示在这里..."></textarea>
+                </div>
+                <div class="voice-modal-controls">
+                    <button type="button" id="start-voice-recognition" class="voice-action-btn start">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <circle cx="12" cy="12" r="8"></circle>
+                        </svg>
+                        开始录音
+                    </button>
+                    <button type="button" id="stop-voice-recognition" class="voice-action-btn stop" style="display: none;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="6" width="12" height="12"></rect>
+                        </svg>
+                        停止录音
+                    </button>
+                    <button type="button" id="confirm-voice-result" class="voice-action-btn confirm">
+                        确认插入
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

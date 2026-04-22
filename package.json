@@ -1,0 +1,98 @@
+{
+  "name": "@haxitag/yuli-kgm-computing",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Yueli KGM — reasoning runtime, OpenAI-compatible gateway, and native tooling",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "kgm": "dist/cli/kgm.js"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "playground": "tsx src/server/playgroundServer.ts",
+    "dev:enhanced": "tsx src/server/enhancedStart.ts",
+    "dev": "tsx watch src/index.ts",
+    "dev:server": "tsx src/server/start.ts",
+    "kgm": "tsx src/cli/kgm.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "build:native-core": "node scripts/build_native_core.mjs",
+    "start": "node dist/server/start.js",
+    "demo:enhanced": "tsx demo/enhancedInference.ts",
+    "demo:integration": "tsx demo/integration-example.ts",
+    "demo:real-world": "tsx demo/real-world-example.ts",
+    "demo:quick-start": "tsx demo/quick-start-enhanced.ts",
+    "benchmark": "tsx tests/performance/benchmark.ts",
+    "test:enhanced": "tsx tests/integration/verify-enhanced-inference.ts",
+    "smoke:native-gguf": "tsx src/demo/native_gguf_smoke.ts",
+    "smoke:native-core": "tsx src/demo/native_core_backend_smoke.ts",
+    "smoke:native-safetensors": "tsx src/demo/native_safetensors_smoke.ts",
+    "test:jang": "tsx tests/integration/jang_detection.test.ts",
+    "test:mlx-hints": "tsx tests/integration/mlx_runtime_hints.test.ts",
+    "test:jang-layer-plan": "tsx tests/integration/jang_layer_plan.test.ts",
+    "probe:apple-silicon-mmap": "tsx scripts/apple_silicon_mmap_probe.ts",
+    "test:apple-silicon-probe": "tsx tests/integration/apple_silicon_probe.test.ts",
+    "test:canonical-conversion": "tsx tests/integration/canonical_conversion.test.ts",
+    "test:hf-public-configs": "tsx tests/integration/hf_public_configs_parse.test.ts",
+    "test:tokenizer-chat-template": "tsx tests/integration/tokenizer_chat_template_golden.test.ts",
+    "test:jinja-lite": "tsx tests/integration/jinja_lite.test.ts",
+    "test:pytorch-index-canonical": "tsx tests/integration/pytorch_index_canonical.test.ts",
+    "test:pytorch-index-validate-files": "tsx tests/integration/pytorch_index_validate_files.test.ts",
+    "test:gguf-layout-matrix": "tsx tests/integration/gguf_layout_matrix.test.ts",
+    "test:native-gguf-negative-synth": "tsx tests/integration/native_gguf_negative_synth.test.ts",
+    "test:anthropic-tool-mapping": "tsx tests/integration/anthropic_tool_mapping.test.ts",
+    "test:native-gpu-backend": "tsx tests/integration/native_gpu_backend_stub.test.ts",
+    "test:native-gpu-sim-difftest": "tsx tests/integration/native_gpu_simulated_difftest.test.ts",
+    "test:native-gpu-safetensors-layout": "tsx tests/integration/native_gpu_safetensors_layout.test.ts",
+    "test:native-gpu-qwen2-weights-layout": "tsx tests/integration/native_gpu_qwen2_weights_layout.test.ts",
+    "test:native-gpu-qwen2-tie-word-embeddings": "tsx tests/integration/native_gpu_qwen2_tie_word_embeddings.test.ts",
+    "test:native-gpu-safetensors-index-layout": "tsx tests/integration/native_gpu_safetensors_index_layout.test.ts",
+    "test:native-gpu-buffer-cast": "tsx tests/integration/native_gpu_buffer_cast.test.ts",
+    "test:native-gpu-safetensors-index-buffer-cast": "tsx tests/integration/native_gpu_safetensors_index_buffer_cast_e2e.test.ts",
+    "test:native-gpu-native-cuda-optional": "tsx tests/integration/native_gpu_native_cuda_optional.test.ts",
+    "test:native-gpu-minimal-infer-sim": "tsx tests/integration/native_gpu_minimal_infer_sim.test.ts",
+    "test:native-gpu-attention-kv-sim": "tsx tests/integration/native_gpu_attention_kv_sim.test.ts",
+    "test:native-gpu-minimal-infer-native-optional": "tsx tests/integration/native_gpu_minimal_infer_native_optional.test.ts",
+    "test:native-gpu-graph-capture-sim": "tsx tests/integration/native_gpu_graph_capture_sim.test.ts",
+    "test:native-gpu-comm-sim-collectives": "tsx tests/integration/native_gpu_comm_sim_collectives.test.ts",
+    "test:native-gpu-tp-sharding-helpers": "tsx tests/integration/native_gpu_tp_sharding_helpers.test.ts",
+    "test:managed-runtime-metrics-prom-extra": "tsx tests/integration/managed_runtime_metrics_prometheus_extra.test.ts",
+    "test:anthropic-streaming-tool-text-order": "tsx tests/integration/anthropic_streaming_tool_text_order.test.ts",
+    "test:e2e": "tsx --test tests/e2e/kgm-server.e2e.test.ts",
+    "test:e2e:core": "tsx --test tests/e2e/kgm-server.e2e.test.ts",
+    "test:e2e:playground": "tsx --test tests/e2e/playground-api.e2e.test.ts",
+    "test:e2e:proxy": "tsx --test tests/e2e/upstream-proxy.e2e.test.ts",
+    "test:e2e:cli": "tsx --test tests/e2e/kgm-cli.e2e.test.ts",
+    "test:e2e:all": "tsx --test tests/e2e/kgm-server.e2e.test.ts tests/e2e/playground-api.e2e.test.ts tests/e2e/upstream-proxy.e2e.test.ts tests/e2e/kgm-cli.e2e.test.ts",
+    "test:kgm-regression": "npm run build && npm run test:jang && npm run test:mlx-hints && npm run test:jang-layer-plan && npm run test:apple-silicon-probe && npm run test:canonical-conversion && npm run test:hf-public-configs && npm run test:tokenizer-chat-template && npm run test:jinja-lite && npm run test:pytorch-index-canonical && npm run test:pytorch-index-validate-files && npm run test:gguf-layout-matrix && npm run test:native-gguf-negative-synth && npm run test:anthropic-tool-mapping && npm run test:anthropic-streaming-tool-text-order && npm run test:native-gpu-backend && npm run test:native-gpu-sim-difftest && npm run test:native-gpu-safetensors-layout && npm run test:native-gpu-safetensors-index-layout && npm run test:native-gpu-qwen2-weights-layout && npm run test:native-gpu-qwen2-tie-word-embeddings && npm run test:native-gpu-buffer-cast && npm run test:native-gpu-safetensors-index-buffer-cast && npm run test:native-gpu-minimal-infer-sim && npm run test:native-gpu-attention-kv-sim && npm run test:native-gpu-graph-capture-sim && npm run test:native-gpu-comm-sim-collectives && npm run test:native-gpu-tp-sharding-helpers && npm run test:managed-runtime-metrics-prom-extra && npm run smoke:native-safetensors && npm run smoke:native-gguf && npm run smoke:openai-compat",
+    "smoke:openai-compat": "tsx src/demo/openai_compat_smoke.ts",
+    "validate:gguf-llama-cpp": "tsx src/demo/gguf_llama_cpp_cross_validate.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "seed": "tsx src/demo/seed.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "cors": "^2.8.5",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.12.12",
+    "tsx": "^4.7.1",
+    "typescript": "^5.5.4"
+  }
+}
