@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": false,
   "description": "Yueli KGM: OpenAI/Anthropic-compatible gateway, native engine, Playground; docs on haxitag.com",
   "type": "module",
@@ -71,6 +71,7 @@
     "test:native-gpu-tp-sharding-helpers": "tsx tests/integration/native_gpu_tp_sharding_helpers.test.ts",
     "test:managed-runtime-metrics-prom-extra": "tsx tests/integration/managed_runtime_metrics_prometheus_extra.test.ts",
     "test:anthropic-streaming-tool-text-order": "tsx tests/integration/anthropic_streaming_tool_text_order.test.ts",
+    "test:native-gpu-models": "tsx tests/native-gpu-models.test.ts",
     "test:e2e": "tsx --test tests/e2e/kgm-server.e2e.test.ts",
     "test:e2e:core": "tsx --test tests/e2e/kgm-server.e2e.test.ts",
     "test:e2e:playground": "tsx --test tests/e2e/playground-api.e2e.test.ts",

@@ -103,6 +103,32 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明
+## 版本说明 0.1.8
 
-若曾固定旧版本（如 `0.1.3`）且首页文档不满意，**请升级至本包 `@latest`**；npm 上**不能覆盖已发布**的同版本号内容，旧版可维护者侧使用 `npm deprecate` 提示迁移（见 npm 官方说明）。
+### 实现内容
+| 模型系列 | 文件 | 支持型号 | 状态 |
+|---------|------|---------|------|
+| **Qwen 3.5/3.6** | [src/native/gpu/qwen3.ts](./Yueli-KGM-Computing/src/native/gpu/qwen3.ts:0:0-0:0) | 7B/14B/32B/72B | ✅ |
+| **GLM 5.0/5.1** | [src/native/gpu/glm5.ts](./Yueli-KGM-Computing/src/native/gpu/glm5.ts:0:0-0:0) | 9B/32B | ✅ |
+| **Google Gemma 4** | [src/native/gpu/gemma4.ts](./Yueli-KGM-Computing/src/native/gpu/gemma4.ts:0:0-0:0) | 2B/4B/9B/27B | ✅ |
+| **MiniMax 2.5/2.7** | [src/native/gpu/minimax25.ts](./Yueli-KGM-Computing/src/native/gpu/minimax25.ts:0:0-0:0) | 4B/8B/32B/456B | ✅ |
+| **MiMo 2.5** | [src/native/gpu/mimo25.ts](./Yueli-KGM-Computing/src/native/gpu/mimo25.ts:0:0-0:0) | 1.5B/7B/13B/30B | ✅ |
+
+### 运行测试
+```bash
+npm run test:native-gpu-models
+```
+
+**结果**: 63 测试通过，0 失败
+
+### 主要功能
+- **权重别名映射**: 支持 Hugging Face 格式 → 本地 GPU 格式
+- **内存估算**: 支持多种量化格式 (Q4_0, Q8_0, F16 等)
+- **统一接口**: [getModelConfig()](./Yueli-KGM-Computing/src/native/gpu/index.ts:151:0-195:1), [estimateModelMemory()](./Yueli-KGM-Computing/src/native/gpu/index.ts:197:0-270:1)
+- **模型注册表**: `MODEL_REGISTRY` 包含所有支持模型
+- **特色功能**:
+  - Qwen: 滑动窗口、Yarn RoPE
+  - GLM: Prefix Attention、MQA/GQA
+  - Gemma: GeGLU、嵌入归一化
+  - MiniMax: 400K 上下文、KV 压缩
+  - MiMo: 端侧量化、推荐 batch size

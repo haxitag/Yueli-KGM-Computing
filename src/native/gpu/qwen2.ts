@@ -55,3 +55,76 @@ export function buildQwen2SafetensorsAliases(params: {
   return aliases;
 }
 
+/**
+ * Qwen 2.x 推荐配置
+ */
+export const QWEN2_RECOMMENDED_CONFIGS: Record<string, NativeModelConfig> = {
+  "qwen2-7b": {
+    architecture: "decoder-only",
+    vocabSize: 152064,
+    hiddenSize: 3584,
+    intermediateSize: 18944,
+    numLayers: 28,
+    numHeads: 28,
+    numKvHeads: 4,  // GQA
+    maxPositionEmbeddings: 131072,
+  },
+  "qwen2-14b": {
+    architecture: "decoder-only",
+    vocabSize: 152064,
+    hiddenSize: 5120,
+    intermediateSize: 13824,
+    numLayers: 40,
+    numHeads: 40,
+    numKvHeads: 5,  // GQA
+    maxPositionEmbeddings: 131072,
+  },
+};
+
+/**
+ * 获取 Qwen 2.x 模型的内存需求估算
+ */
+export function estimateQwen2Memory(params: {
+  config: NativeModelConfig;
+  quantization?: "q4_0" | "q4_1" | "q5_0" | "q5_1" | "q8_0" | "f16" | "f32";
+  batchSize?: number;
+  maxSeqLen?: number;
+}): { weights: number; kvCache: number; total: number } {
+  const cfg = params.config;
+  const quantBits = {
+    q4_0: 4, q4_1: 4.5, q5_0: 5, q5_1: 5.5, q8_0: 8, f16: 16, f32: 32,
+  }[params.quantization ?? "f16"];
+
+  // 权重内存 (MB)
+  const vocabSize = cfg.vocabSize;
+  const hidden = cfg.hiddenSize;
+  const intermediate = cfg.intermediateSize;
+  const layers = cfg.numLayers;
+  const kvHeads = cfg.numKvHeads ?? cfg.numHeads;
+  const headDim = hidden / cfg.numHeads;
+  
+  const embeddingSize = vocabSize * hidden * quantBits / 8 / 1024 / 1024;
+  const layerSize = (
+    // 两个 RMSNorm
+    2 * hidden +
+    // Q/K/V/O (hidden * hidden * 4, 但 K/V 使用 GQA)
+    2 * hidden * hidden +  // Q + O
+    2 * kvHeads * headDim * hidden +  // K + V (GQA)
+    // MLP (SwiGLU)
+    3 * hidden * intermediate
+  ) * quantBits / 8 / 1024 / 1024;
+  
+  const weightsMB = embeddingSize + layerSize * layers;
+
+  // KV Cache 内存 (MB)
+  const batchSize = params.batchSize ?? 1;
+  const maxSeqLen = params.maxSeqLen ?? cfg.maxPositionEmbeddings ?? 8192;
+  const kvCacheMB = 2 * batchSize * layers * kvHeads * maxSeqLen * headDim * 2 / 1024 / 1024;
+
+  return {
+    weights: Math.round(weightsMB),
+    kvCache: Math.round(kvCacheMB),
+    total: Math.round(weightsMB + kvCacheMB),
+  };
+}
+
