@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { DEFAULT_CONSTRAINTS, DEFAULT_TOOL_POLICY } from "../core/config.js";
 import type { ContextPack, Evidence, KgmRequest, KgmGraphTriple, Signal } from "../core/types.js";
 import type { Embedder } from "../embedding/canonical.js";
 import type { GraphStore } from "../graph/store.js";
-import type { MemoryStore } from "../memory/store.js";
+import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
+import type { MemoryStore, MemorySearchOptions } from "../memory/store.js";
 import { generateId } from "../utils/id.js";
 import type { ContextConfig } from "../core/configStore.js";
 import type { ArtifactStore } from "./artifactStore.js";
@@ -30,6 +32,7 @@ export class ContextBuilder {
   private sessionStore?: SessionStore;
   private graphStore?: GraphStore;
   private ycbClient?: YcbClient;
+  private retrievalCache = new Map<string, { expires: number; evidence: Evidence[] }>();
 
   constructor(params: {
     memoryStore: MemoryStore;
@@ -71,8 +74,14 @@ export class ContextBuilder {
     const signals = buildSignals(request.signals ?? [], graphSignal);
     const retrievalTopK = request.kgm?.retrieval?.topK ?? this.topK;
     const ycbEvidence = this.ycbClient ? await this.ycbClient.fetchEvidence(request) : [];
-    let evidence = await this.memoryStore.search(request.userId, request.input, this.embedder, retrievalTopK);
-    evidence = this.applyEvidenceBudget([...ycbEvidence, ...evidence]);
+    const memOpts = memorySearchOptionsFromKgm(request.kgm?.retrieval);
+    const memoryEvidence = await this.loadMemoryEvidence(
+      request.userId,
+      request.input,
+      retrievalTopK,
+      memOpts,
+    );
+    let evidence = this.applyEvidenceBudget([...ycbEvidence, ...memoryEvidence]);
     const toolPolicy = this.applyToolPolicy(request.toolPolicy, Boolean(request.kgm?.graph?.enabled));
     const rawSessionRef = this.sessionStore
       ? this.sessionStore.getRef(sessionId, this.contextConfig?.sessionPreviewChars ?? 240)
@@ -106,6 +115,44 @@ export class ContextBuilder {
       toolResults: [],
       kgm: request.kgm,
     };
+  }
+
+  private makeMemoryCacheKey(
+    userId: string,
+    input: string,
+    topK: number,
+    memOpts: MemorySearchOptions | undefined,
+  ): string {
+    return createHash("sha256")
+      .update(JSON.stringify({ userId, input, topK, memOpts }))
+      .digest("hex");
+  }
+
+  private async loadMemoryEvidence(
+    userId: string,
+    input: string,
+    topK: number,
+    memOpts: MemorySearchOptions | undefined,
+  ): Promise<Evidence[]> {
+    const ttl = this.contextConfig?.retrievalCacheTtlMs ?? 0;
+    if (ttl <= 0) {
+      return this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
+    }
+    const key = this.makeMemoryCacheKey(userId, input, topK, memOpts);
+    const hit = this.retrievalCache.get(key);
+    const now = Date.now();
+    if (hit && hit.expires > now) {
+      return hit.evidence;
+    }
+    const evidence = await this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
+    if (this.retrievalCache.size > 300) {
+      const first = this.retrievalCache.keys().next().value;
+      if (first) {
+        this.retrievalCache.delete(first);
+      }
+    }
+    this.retrievalCache.set(key, { expires: now + ttl, evidence });
+    return evidence;
   }
 
   private applyEvidenceBudget(evidence: Evidence[]): Evidence[] {

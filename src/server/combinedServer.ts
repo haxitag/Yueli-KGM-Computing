@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import type { ServerResponse } from 'node:http';
 import { DEFAULT_SCHEMA_IDS } from '../core/config.js';
-import type { KgmRequest } from '../core/types.js';
+import type { KgmRequest, KgmRetrievalOptions } from '../core/types.js';
 import type { ConfigStore, KgmConfigPatch } from '../core/configStore.js';
 import type { ContextBuilder } from '../context/contextBuilder.js';
 import { Scheduler } from '../scheduler/fsm.js';
@@ -16,7 +16,13 @@ import { OpenAiResponseStore } from '../openai/responseStore.js';
 import { SchemaRegistry } from '../schema/registry.js';
 import type { SkillRuntime } from '../skills/runtime.js';
 import { ToolRegistry } from '../tools/registry.js';
+import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import type { MemoryStore } from '../memory/store.js';
+import type { GraphStore, GraphRule } from "../graph/store.js";
+import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
+import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
+import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
+import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import type { Embedder } from '../embedding/canonical.js';
 import { playgroundRouter } from './playgroundApi.js';
 import { syncPlaygroundFromConfig } from '../playground/syncPlayground.js';
@@ -43,6 +49,8 @@ export function createCombinedServer(params: {
   configStore: ConfigStore;
   autoRoutingClient?: AutoRoutingLlmClient;
   skillRuntime?: SkillRuntime;
+  /** 缺省则图谱相关新路由返回 501 */
+  graphStore?: GraphStore;
 }, port: number = 3000) {
   const app = express();
   const server = http.createServer(app);
@@ -52,6 +60,7 @@ export function createCombinedServer(params: {
   // 中间件
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
+  app.use(createExpressKgmAccessMiddleware());
   app.use(express.urlencoded({ extended: true }));
 
   // 静态文件服务
@@ -70,6 +79,10 @@ export function createCombinedServer(params: {
 
       if (req.method === "GET" && url.pathname === "/health") {
         return sendJson(res, 200, { status: "ok" });
+      }
+
+      if (req.method === "GET" && (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json")) {
+        return sendJson(res, 200, getKgmOpenApiV1());
       }
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
@@ -248,16 +261,66 @@ export function createCombinedServer(params: {
       if (req.method === "POST" && url.pathname === "/v1/kgm/memory/search") {
         const payload = await readJson(req);
         if (typeof payload === "object" && payload !== null) {
-          const typedPayload = payload as {
+          const typedPayload = payload as KgmRetrievalOptions & {
             userId: string;
             query: string;
             topK?: number;
           };
           const topK = Math.max(1, Math.min(typedPayload.topK ?? 5, 50));
-          const evidence = await params.memoryStore.search(typedPayload.userId, typedPayload.query, params.embedder, topK);
+          const memOpts = memorySearchOptionsFromKgm({
+            strategy: typedPayload.strategy,
+            lexicalWeight: typedPayload.lexicalWeight,
+            overFetch: typedPayload.overFetch,
+            rerank: typedPayload.rerank,
+            rerankBlend: typedPayload.rerankBlend,
+          });
+          const evidence = await params.memoryStore.search(typedPayload.userId, typedPayload.query, params.embedder, topK, memOpts);
           return sendJson(res, 200, { evidence });
         }
         return sendJson(res, 400, { error: "invalid_payload" });
+      }
+
+      const graph = params.graphStore;
+      if (req.method === "POST" && url.pathname === "/v1/kgm/graph/communities") {
+        if (!graph?.connectedCommunities) {
+          return sendJson(
+            res,
+            501,
+            kgmErrorBody("graph_communities_unavailable", "graphStore not provided or unsupported", 501),
+          );
+        }
+        return sendJson(res, 200, await graph.connectedCommunities());
+      }
+      if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/expand") {
+        if (!graph?.reasonExpand) {
+          return sendJson(res, 501, kgmErrorBody("graph_expand_unavailable", "graphStore not provided", 501));
+        }
+        const b = (await readJson(req)) as { entity?: string; maxDepth?: number; relations?: string[] };
+        if (!b.entity?.trim()) {
+          return sendJson(res, 400, kgmErrorBody("entity_required", "entity is required", 400));
+        }
+        return sendJson(
+          res,
+          200,
+          { result: await graph.reasonExpand({ entity: b.entity.trim(), maxDepth: b.maxDepth ?? 2, relations: b.relations }) },
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/rules") {
+        if (!graph?.applyRules) {
+          return sendJson(res, 501, kgmErrorBody("graph_rules_unavailable", "graphStore not provided", 501));
+        }
+        const b = (await readJson(req)) as { rules?: GraphRule[]; maxRounds?: number; source?: string };
+        const maxR = Math.max(1, Math.min(20, b.maxRounds ?? 5));
+        const added = await graph.applyRules({ rules: b.rules ?? [], maxRounds: maxR, source: b.source });
+        return sendJson(res, 200, { added, count: added.length });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/kgm/multimodal/embed") {
+        const b = (await readJson(req)) as { imageBase64?: string; mimeType?: string; text?: string; model?: string };
+        if (!b.imageBase64) {
+          return sendJson(res, 400, kgmErrorBody("image_required", "imageBase64 is required", 400));
+        }
+        const embedding = await embedImageRemote({ request: { imageBase64: b.imageBase64, mimeType: b.mimeType, text: b.text, model: b.model } });
+        return sendJson(res, 200, { embedding, dim: embedding.length });
       }
 
       if (req.method === "POST" && url.pathname === "/v1/kgm/execute") {
@@ -275,7 +338,14 @@ export function createCombinedServer(params: {
       if (res.headersSent) {
         return;
       }
-      return sendJson(res, 500, { error: String(error) });
+      if (error instanceof KgmJsonParseError) {
+        return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
+      }
+      return sendJson(
+        res,
+        500,
+        kgmErrorBody("internal_error", error instanceof Error ? error.message : String(error), 500),
+      );
     }
   });
 
@@ -297,10 +367,14 @@ async function readJson(req: http.IncomingMessage & { body?: unknown }): Promise
     chunks.push(chunk as Buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw) {
+  if (!raw.trim()) {
     return {};
   }
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new KgmJsonParseError();
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

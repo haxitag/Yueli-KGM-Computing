@@ -48,6 +48,11 @@ export type ContextConfig = {
   maxEvidenceChars: number;
   artifactPreviewChars: number;
   sessionPreviewChars: number;
+  /**
+   * 对同一 (userId, input, topK, 混合选项) 的记忆检索结果内存缓存时间（毫秒）；0 表示关闭。
+   * 多进程/集群部署不共享该缓存。
+   */
+  retrievalCacheTtlMs: number;
   enableArtifactTool: boolean;
   enableSessionTool: boolean;
   enableToolCatalogTool: boolean;
@@ -281,6 +286,7 @@ const defaultConfig: KgmConfig = {
     maxEvidenceChars: 800,
     artifactPreviewChars: 240,
     sessionPreviewChars: 240,
+    retrievalCacheTtlMs: 0,
     enableArtifactTool: true,
     enableSessionTool: true,
     enableToolCatalogTool: true,
@@ -367,6 +373,127 @@ const defaultConfig: KgmConfig = {
         "provider:zhipu:glm-4": {
           inputPer1kTokens: 0.0005,
           outputPer1kTokens: 0.0005,
+          currency: "USD",
+        },
+        // OpenAI 新模型
+        "default:openai:gpt-5.4": {
+          inputPer1kTokens: 0.005,
+          outputPer1kTokens: 0.015,
+          currency: "USD",
+        },
+        "default:openai:gpt-5.5": {
+          inputPer1kTokens: 0.01,
+          outputPer1kTokens: 0.03,
+          currency: "USD",
+        },
+        "default:openai:gpt-oss": {
+          inputPer1kTokens: 0.002,
+          outputPer1kTokens: 0.006,
+          currency: "USD",
+        },
+        // Zhipu 新模型
+        "default:zhipu:glm-5.0": {
+          inputPer1kTokens: 0.0005,
+          outputPer1kTokens: 0.0005,
+          currency: "USD",
+        },
+        "default:zhipu:glm-5.1": {
+          inputPer1kTokens: 0.001,
+          outputPer1kTokens: 0.001,
+          currency: "USD",
+        },
+        // Xiaomi 新模型
+        "default:xiaomi:mimo-2.5": {
+          inputPer1kTokens: 0.0008,
+          outputPer1kTokens: 0.0008,
+          currency: "USD",
+        },
+        // Google Gemini 新模型
+        "default:gemini:gemini-3.0": {
+          inputPer1kTokens: 0.0001,
+          outputPer1kTokens: 0.0004,
+          currency: "USD",
+        },
+        "default:gemini:gemini-3.1": {
+          inputPer1kTokens: 0.0015,
+          outputPer1kTokens: 0.006,
+          currency: "USD",
+        },
+        // Anthropic 新模型
+        "default:anthropic:claude-sonnet-4.6": {
+          inputPer1kTokens: 0.003,
+          outputPer1kTokens: 0.015,
+          currency: "USD",
+        },
+        "default:anthropic:claude-opus-4.7": {
+          inputPer1kTokens: 0.015,
+          outputPer1kTokens: 0.075,
+          currency: "USD",
+        },
+        // 阿里云百炼新模型
+        "default:aliyun:qwen-max": {
+          inputPer1kTokens: 0.0005,
+          outputPer1kTokens: 0.001,
+          currency: "USD",
+        },
+        "default:aliyun:qwen-plus": {
+          inputPer1kTokens: 0.0003,
+          outputPer1kTokens: 0.0006,
+          currency: "USD",
+        },
+        // ModelScope 新模型
+        "default:modelscope:deepseek-r1": {
+          inputPer1kTokens: 0.0002,
+          outputPer1kTokens: 0.0008,
+          currency: "USD",
+        },
+        "default:modelscope:llama3-70b": {
+          inputPer1kTokens: 0.0004,
+          outputPer1kTokens: 0.0008,
+          currency: "USD",
+        },
+        // Moonshot / Kimi 新模型
+        "default:moonshot:kimi-2.5": {
+          inputPer1kTokens: 0.0005,
+          outputPer1kTokens: 0.0005,
+          currency: "USD",
+        },
+        "default:moonshot:kimi-2.6": {
+          inputPer1kTokens: 0.001,
+          outputPer1kTokens: 0.001,
+          currency: "USD",
+        },
+        // Minimax 新模型
+        "default:minimax:minimax-2.5": {
+          inputPer1kTokens: 0.0008,
+          outputPer1kTokens: 0.0008,
+          currency: "USD",
+        },
+        "default:minimax:minimax-2.7": {
+          inputPer1kTokens: 0.0012,
+          outputPer1kTokens: 0.0012,
+          currency: "USD",
+        },
+        // DeepSeek 新模型
+        "default:deepseek:deepseek-3.2": {
+          inputPer1kTokens: 0.00014,
+          outputPer1kTokens: 0.00028,
+          currency: "USD",
+        },
+        "default:deepseek:deepseek-v4": {
+          inputPer1kTokens: 0.0003,
+          outputPer1kTokens: 0.0006,
+          currency: "USD",
+        },
+        // Qwen 新模型
+        "default:qwen:qwen-3.5": {
+          inputPer1kTokens: 0.0003,
+          outputPer1kTokens: 0.0006,
+          currency: "USD",
+        },
+        "default:qwen:qwen-3.6": {
+          inputPer1kTokens: 0.0005,
+          outputPer1kTokens: 0.001,
           currency: "USD",
         },
         "managed:*": {

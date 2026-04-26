@@ -72,7 +72,7 @@ export class MinimaxLlmClient {
         const headers = {
             Authorization: `Bearer ${this.apiKey}`,
             "Content-Type": "application/json",
-            "MM-Device-Id": "yuli-kgm-computing",
+            "MM-Device-Id": "yueli-kgm-computing",
             "MM-User-Agent": "KGM-Computing/1.0",
             "MM-Group-ID": this.groupId,
         };

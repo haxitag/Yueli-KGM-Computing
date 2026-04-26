@@ -1,8 +1,8 @@
 {
-  "name": "@haxitag/yuli-kgm-computing",
-  "version": "0.1.0",
+  "name": "@haxitag/yueli-kgm-computing",
+  "version": "0.1.7",
   "private": false,
-  "description": "Yueli KGM — reasoning runtime, OpenAI-compatible gateway, and native tooling",
+  "description": "Yueli KGM: OpenAI/Anthropic-compatible gateway, native engine, Playground; docs on haxitag.com",
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
@@ -10,6 +10,7 @@
   },
   "files": [
     "dist",
+    "playground",
     "README.md"
   ],
   "publishConfig": {

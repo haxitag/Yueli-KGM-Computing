@@ -7,6 +7,8 @@ export type ToolRecord = {
 
 export class ToolRegistry {
   private tools = new Map<string, ToolRecord>();
+  private callTotal = 0;
+  private callByName = new Map<string, number>();
 
   register(definition: ToolDefinition, executor: ToolExecutor): void {
     this.tools.set(definition.name, { definition, executor });
@@ -29,6 +31,15 @@ export class ToolRegistry {
     if (!tool) {
       throw new Error(`tool not found: ${name}`);
     }
+    this.callTotal += 1;
+    this.callByName.set(name, (this.callByName.get(name) ?? 0) + 1);
     return tool.executor(args);
+  }
+
+  getCallStats(): { total: number; byName: Record<string, number> } {
+    return {
+      total: this.callTotal,
+      byName: Object.fromEntries(this.callByName),
+    };
   }
 }

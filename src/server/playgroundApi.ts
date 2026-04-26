@@ -348,11 +348,112 @@ const PROVIDER_ALIASES = new Set([
   'openrouter',
   'nvidia',
   'deepseek',
+  'xiaomi',
   'ollama',
   'vllm',
   'slang',
   'custom',
 ]);
+
+// 云端模型默认定价表（可覆盖）
+const DEFAULT_CLOUD_PRICING: Record<string, { inputPer1k: number; outputPer1k: number; currency: string }> = {
+  'gpt-5.4': { inputPer1k: 0.005, outputPer1k: 0.015, currency: 'USD' },
+  'gpt-5.5': { inputPer1k: 0.01, outputPer1k: 0.03, currency: 'USD' },
+  'gpt-oss': { inputPer1k: 0.002, outputPer1k: 0.006, currency: 'USD' },
+  'glm-5.0': { inputPer1k: 0.0005, outputPer1k: 0.0005, currency: 'USD' },
+  'glm-5.1': { inputPer1k: 0.001, outputPer1k: 0.001, currency: 'USD' },
+  'mimo-2.5': { inputPer1k: 0.0008, outputPer1k: 0.0008, currency: 'USD' },
+  'claude-sonnet-4.6': { inputPer1k: 0.003, outputPer1k: 0.015, currency: 'USD' },
+  'claude-opus-4.7': { inputPer1k: 0.015, outputPer1k: 0.075, currency: 'USD' },
+  'kimi-2.5': { inputPer1k: 0.0005, outputPer1k: 0.0005, currency: 'USD' },
+  'kimi-2.6': { inputPer1k: 0.001, outputPer1k: 0.001, currency: 'USD' },
+  'minimax-2.5': { inputPer1k: 0.0008, outputPer1k: 0.0008, currency: 'USD' },
+  'minimax-2.7': { inputPer1k: 0.0012, outputPer1k: 0.0012, currency: 'USD' },
+  'deepseek-3.2': { inputPer1k: 0.00014, outputPer1k: 0.00028, currency: 'USD' },
+  'deepseek-v4': { inputPer1k: 0.0003, outputPer1k: 0.0006, currency: 'USD' },
+  'qwen-3.5': { inputPer1k: 0.0003, outputPer1k: 0.0006, currency: 'USD' },
+  'qwen-3.6': { inputPer1k: 0.0005, outputPer1k: 0.001, currency: 'USD' },
+};
+
+// 内存中的定价覆盖（运行时修改）
+const pricingOverrides = new Map<string, { inputPer1k: number; outputPer1k: number; currency: string }>();
+
+/**
+ * 获取模型定价
+ * 支持每1k和每百万两种计价模式
+ */
+playgroundRouter.get('/pricing', (_req: Request, res: Response) => {
+  const mode = (_req.query.mode as string) || 'per1k'; // per1k | per1m
+  const result: Record<string, { input: number; output: number; currency: string; mode: string }> = {};
+  const multiplier = mode === 'per1m' ? 1000 : 1;
+
+  for (const [model, defaults] of Object.entries(DEFAULT_CLOUD_PRICING)) {
+    const override = pricingOverrides.get(model);
+    const effective = override ?? defaults;
+    result[model] = {
+      input: effective.inputPer1k * multiplier,
+      output: effective.outputPer1k * multiplier,
+      currency: effective.currency,
+      mode,
+    };
+  }
+
+  res.json({
+    models: result,
+    mode,
+    note: '价格为云端推理价格，本地推理不计价',
+    updatedAt: new Date().toISOString(),
+  });
+});
+
+/**
+ * 更新模型定价
+ */
+playgroundRouter.post('/pricing', (req: Request, res: Response) => {
+  const body = req.body as {
+    model: string;
+    inputPrice: number;
+    outputPrice: number;
+    currency?: string;
+    mode?: string; // per1k | per1m
+  };
+
+  if (!body.model || typeof body.inputPrice !== 'number' || typeof body.outputPrice !== 'number') {
+    res.status(400).json({ error: 'model, inputPrice, outputPrice are required' });
+    return;
+  }
+
+  const mode = body.mode || 'per1k';
+  const divisor = mode === 'per1m' ? 1000 : 1;
+
+  pricingOverrides.set(body.model, {
+    inputPer1k: body.inputPrice / divisor,
+    outputPer1k: body.outputPrice / divisor,
+    currency: body.currency || 'USD',
+  });
+
+  res.json({
+    model: body.model,
+    inputPrice: body.inputPrice,
+    outputPrice: body.outputPrice,
+    currency: body.currency || 'USD',
+    mode,
+    updatedAt: new Date().toISOString(),
+  });
+});
+
+/**
+ * 重置模型定价为默认值
+ */
+playgroundRouter.delete('/pricing/:model', (req: Request, res: Response) => {
+  const model = Array.isArray(req.params.model) ? req.params.model[0] : req.params.model;
+  const existed = pricingOverrides.delete(model);
+  res.json({
+    model,
+    reset: existed,
+    updatedAt: new Date().toISOString(),
+  });
+});
 
 // 添加CORS中间件支持
 playgroundRouter.use((req: Request, res: Response, next: NextFunction) => {

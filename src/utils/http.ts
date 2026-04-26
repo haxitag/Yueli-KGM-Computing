@@ -1,8 +1,16 @@
+import { getConnectionPool } from "./connectionPool.js";
+
 export type HttpOptions = {
   headers?: Record<string, string>;
   timeoutMs?: number;
+  /** 是否使用连接池优化 */
+  useConnectionPool?: boolean;
 };
 
+/**
+ * 优化的HTTP POST请求
+ * 支持连接池复用，减少TCP握手开销
+ */
 export async function postJson(url: string, body: unknown, options: HttpOptions = {}): Promise<unknown> {
   if (typeof fetch !== "function") {
     throw new Error("fetch is not available in this runtime");

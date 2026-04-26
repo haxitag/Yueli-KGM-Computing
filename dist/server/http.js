@@ -7,18 +7,30 @@ import { maybeProxyNativeOpenAiStream } from "../openai/passthrough.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { ManagedModelManager } from "../models/modelManager.js";
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from "../routing/routingService.js";
+import { createHttpAccessConfigFromEnv, HttpRequestAccess } from "./httpAccess.js";
+import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
+import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
+import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
+import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
 export function createKgmServer(params) {
     const modelManager = params.modelManager ?? new ManagedModelManager();
     const routingHistory = createRoutingHistoryStoreFromEnv();
     const responseStore = new OpenAiResponseStore();
+    const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
     return http.createServer(async (req, res) => {
         try {
             const url = new URL(req.url ?? "", "http://localhost");
+            if (!access.check(req, res, url.pathname)) {
+                return;
+            }
             if (req.method === "GET" && url.pathname === "/health") {
                 return sendJson(res, 200, { status: "ok" });
             }
             if (req.method === "GET" && url.pathname === "/metrics") {
                 return sendText(res, 200, modelManager.getPrometheusMetrics());
+            }
+            if (req.method === "GET" && (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json")) {
+                return sendJson(res, 200, getKgmOpenApiV1());
             }
             if (req.method === "GET" && url.pathname === "/v1/models") {
                 return sendJson(res, 200, buildOpenAiModelList(params.configStore, modelManager));
@@ -209,6 +221,9 @@ export function createKgmServer(params) {
             if (req.method === "GET" && url.pathname === "/v1/kgm/tools") {
                 return sendJson(res, 200, { tools: params.toolRegistry.listDefinitions() });
             }
+            if (req.method === "GET" && url.pathname === "/v1/kgm/tools/stats") {
+                return sendJson(res, 200, params.toolRegistry.getCallStats());
+            }
             if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/schemas/")) {
                 const schemaId = url.pathname.replace("/v1/kgm/schemas/", "");
                 const record = params.schemaRegistry.get(schemaId);
@@ -239,8 +254,79 @@ export function createKgmServer(params) {
             if (req.method === "POST" && url.pathname === "/v1/kgm/memory/search") {
                 const payload = (await readJson(req));
                 const topK = Math.max(1, Math.min(payload.topK ?? 5, 50));
-                const evidence = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK);
+                const memOpts = memorySearchOptionsFromKgm({
+                    strategy: payload.strategy,
+                    lexicalWeight: payload.lexicalWeight,
+                    overFetch: payload.overFetch,
+                    rerank: payload.rerank,
+                    rerankBlend: payload.rerankBlend,
+                });
+                const evidence = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, memOpts);
                 return sendJson(res, 200, { evidence });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/shortest_path") {
+                const payload = (await readJson(req));
+                const from = payload.from?.trim();
+                const to = payload.to?.trim();
+                if (!from || !to) {
+                    return sendJson(res, 400, kgmErrorBody("from_to_required", "Request body must include from and to", 400));
+                }
+                if (!params.graphStore.shortestPath) {
+                    return sendJson(res, 501, kgmErrorBody("graph_path_unavailable", "Graph backend does not expose shortestPath", 501));
+                }
+                const result = await params.graphStore.shortestPath({
+                    from,
+                    to,
+                    maxHops: payload.maxHops,
+                });
+                return sendJson(res, 200, { result });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/communities") {
+                if (!params.graphStore.connectedCommunities) {
+                    return sendJson(res, 501, kgmErrorBody("graph_communities_unavailable", "Graph backend has no community API", 501));
+                }
+                const result = await params.graphStore.connectedCommunities();
+                return sendJson(res, 200, result);
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/expand") {
+                const body = (await readJson(req));
+                if (!body.entity?.trim()) {
+                    return sendJson(res, 400, kgmErrorBody("entity_required", "entity is required", 400));
+                }
+                if (!params.graphStore.reasonExpand) {
+                    return sendJson(res, 501, kgmErrorBody("graph_expand_unavailable", "Graph backend has no reasonExpand", 501));
+                }
+                const result = await params.graphStore.reasonExpand({
+                    entity: body.entity.trim(),
+                    maxDepth: body.maxDepth ?? 2,
+                    relations: body.relations,
+                });
+                return sendJson(res, 200, { result });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/rules") {
+                const body = (await readJson(req));
+                if (!params.graphStore.applyRules) {
+                    return sendJson(res, 501, kgmErrorBody("graph_rules_unavailable", "Graph backend has no applyRules", 501));
+                }
+                const rules = body.rules ?? [];
+                const maxR = Math.max(1, Math.min(20, body.maxRounds ?? 5));
+                const added = await params.graphStore.applyRules({ rules, maxRounds: maxR, source: body.source });
+                return sendJson(res, 200, { added, count: added.length });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/multimodal/embed") {
+                const body = (await readJson(req));
+                if (!body.imageBase64) {
+                    return sendJson(res, 400, kgmErrorBody("image_required", "imageBase64 is required", 400));
+                }
+                const embedding = await embedImageRemote({
+                    request: {
+                        imageBase64: body.imageBase64,
+                        mimeType: body.mimeType,
+                        text: body.text,
+                        model: body.model,
+                    },
+                });
+                return sendJson(res, 200, { embedding, dim: embedding.length });
             }
             if (req.method === "POST" && url.pathname === "/v1/kgm/graph/triples") {
                 const payload = (await readJson(req));
@@ -385,7 +471,12 @@ export function createKgmServer(params) {
             return sendJson(res, 404, { error: "not_found" });
         }
         catch (error) {
-            return sendJson(res, 500, { error: String(error) });
+            if (error instanceof KgmJsonParseError) {
+                return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
+            }
+            if (!res.headersSent) {
+                return sendJson(res, 500, kgmErrorBody("internal_error", error instanceof Error ? error.message : String(error), 500));
+            }
         }
     });
 }
@@ -395,10 +486,15 @@ async function readJson(req) {
         chunks.push(chunk);
     }
     const raw = Buffer.concat(chunks).toString("utf8");
-    if (!raw) {
+    if (!raw.trim()) {
         return {};
     }
-    return JSON.parse(raw);
+    try {
+        return JSON.parse(raw);
+    }
+    catch {
+        throw new KgmJsonParseError();
+    }
 }
 function sendJson(res, status, body) {
     const payload = JSON.stringify(body);

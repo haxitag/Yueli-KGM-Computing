@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { DEFAULT_CONSTRAINTS, DEFAULT_TOOL_POLICY } from "../core/config.js";
+import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import { generateId } from "../utils/id.js";
 export class ContextBuilder {
     memoryStore;
@@ -11,6 +13,7 @@ export class ContextBuilder {
     sessionStore;
     graphStore;
     ycbClient;
+    retrievalCache = new Map();
     constructor(params) {
         this.memoryStore = params.memoryStore;
         this.embedder = params.embedder;
@@ -38,8 +41,9 @@ export class ContextBuilder {
         const signals = buildSignals(request.signals ?? [], graphSignal);
         const retrievalTopK = request.kgm?.retrieval?.topK ?? this.topK;
         const ycbEvidence = this.ycbClient ? await this.ycbClient.fetchEvidence(request) : [];
-        let evidence = await this.memoryStore.search(request.userId, request.input, this.embedder, retrievalTopK);
-        evidence = this.applyEvidenceBudget([...ycbEvidence, ...evidence]);
+        const memOpts = memorySearchOptionsFromKgm(request.kgm?.retrieval);
+        const memoryEvidence = await this.loadMemoryEvidence(request.userId, request.input, retrievalTopK, memOpts);
+        let evidence = this.applyEvidenceBudget([...ycbEvidence, ...memoryEvidence]);
         const toolPolicy = this.applyToolPolicy(request.toolPolicy, Boolean(request.kgm?.graph?.enabled));
         const rawSessionRef = this.sessionStore
             ? this.sessionStore.getRef(sessionId, this.contextConfig?.sessionPreviewChars ?? 240)
@@ -71,6 +75,32 @@ export class ContextBuilder {
             toolResults: [],
             kgm: request.kgm,
         };
+    }
+    makeMemoryCacheKey(userId, input, topK, memOpts) {
+        return createHash("sha256")
+            .update(JSON.stringify({ userId, input, topK, memOpts }))
+            .digest("hex");
+    }
+    async loadMemoryEvidence(userId, input, topK, memOpts) {
+        const ttl = this.contextConfig?.retrievalCacheTtlMs ?? 0;
+        if (ttl <= 0) {
+            return this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
+        }
+        const key = this.makeMemoryCacheKey(userId, input, topK, memOpts);
+        const hit = this.retrievalCache.get(key);
+        const now = Date.now();
+        if (hit && hit.expires > now) {
+            return hit.evidence;
+        }
+        const evidence = await this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
+        if (this.retrievalCache.size > 300) {
+            const first = this.retrievalCache.keys().next().value;
+            if (first) {
+                this.retrievalCache.delete(first);
+            }
+        }
+        this.retrievalCache.set(key, { expires: now + ttl, evidence });
+        return evidence;
     }
     applyEvidenceBudget(evidence) {
         const maxChars = this.contextConfig?.maxEvidenceChars ?? 800;

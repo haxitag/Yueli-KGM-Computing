@@ -42,6 +42,7 @@ const defaultConfig = {
         maxEvidenceChars: 800,
         artifactPreviewChars: 240,
         sessionPreviewChars: 240,
+        retrievalCacheTtlMs: 0,
         enableArtifactTool: true,
         enableSessionTool: true,
         enableToolCatalogTool: true,

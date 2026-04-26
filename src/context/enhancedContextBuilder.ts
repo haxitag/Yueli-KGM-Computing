@@ -2,6 +2,7 @@ import { DEFAULT_CONSTRAINTS, DEFAULT_TOOL_POLICY } from "../core/config.js";
 import type { ContextPack, Evidence, KgmRequest, KgmGraphTriple, Signal } from "../core/types.js";
 import type { Embedder } from "../embedding/canonical.js";
 import type { GraphStore } from "../graph/store.js";
+import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import type { MemoryStore } from "../memory/store.js";
 import { generateId } from "../utils/id.js";
 import type { ContextConfig } from "../core/configStore.js";
@@ -219,11 +220,13 @@ export class EnhancedContextBuilder {
     const startTime = Date.now();
     const retrievalTopK = request.kgm?.retrieval?.topK ?? this.topK;
     
+    const memOpts = memorySearchOptionsFromKgm(request.kgm?.retrieval);
     const evidence = await this.memoryStore.search(
       request.userId,
       request.input,
       this.embedder,
-      retrievalTopK
+      retrievalTopK,
+      memOpts,
     );
 
     const duration = Date.now() - startTime;

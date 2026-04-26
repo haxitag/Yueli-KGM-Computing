@@ -1,4 +1,4 @@
-import type { MemoryChunk, MemoryStore } from "./store.js";
+import type { MemoryChunk, MemoryStore, MemorySearchOptions } from "./store.js";
 import type { Embedder } from "../embedding/canonical.js";
 import { generateId } from "../utils/id.js";
 
@@ -214,12 +214,13 @@ export class SeparatedMemoryManager {
     userId: string,
     query: string,
     embedder: Embedder,
-    topK: number
+    topK: number,
+    options?: MemorySearchOptions,
   ): Promise<Evidence[]> {
     // 并行搜索两种存储
     const [shortTermResults, longTermResults] = await Promise.all([
-      this.shortTermStore.search(userId, query, embedder, Math.ceil(topK / 2)),
-      this.longTermStore.search(userId, query, embedder, Math.ceil(topK / 2))
+      this.shortTermStore.search(userId, query, embedder, Math.ceil(topK / 2), options),
+      this.longTermStore.search(userId, query, embedder, Math.ceil(topK / 2), options),
     ]);
 
     // 合并结果并按相关性排序

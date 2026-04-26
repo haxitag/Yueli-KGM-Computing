@@ -90,11 +90,11 @@ export class SeparatedMemoryManager {
     /**
      * 搜索记忆（在两种存储中都搜索）
      */
-    async search(userId, query, embedder, topK) {
+    async search(userId, query, embedder, topK, options) {
         // 并行搜索两种存储
         const [shortTermResults, longTermResults] = await Promise.all([
-            this.shortTermStore.search(userId, query, embedder, Math.ceil(topK / 2)),
-            this.longTermStore.search(userId, query, embedder, Math.ceil(topK / 2))
+            this.shortTermStore.search(userId, query, embedder, Math.ceil(topK / 2), options),
+            this.longTermStore.search(userId, query, embedder, Math.ceil(topK / 2), options),
         ]);
         // 合并结果并按相关性排序
         const allResults = [...shortTermResults, ...longTermResults];

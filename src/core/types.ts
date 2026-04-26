@@ -86,6 +86,16 @@ export type KgmGraphTriple = {
 export type KgmRetrievalOptions = {
   topK?: number;
   strategy?: "vector" | "hybrid";
+  /** hybrid 时与向量分混合的 BM25 权重；未设且 strategy=hybrid 时默认 0.35 */
+  lexicalWeight?: number;
+  /** 先召回条数 ≈ topK * overFetch 再重排，默认 3（hybrid）或 1 */
+  overFetch?: number;
+  /**
+   * 三阶段重排：off | embed（成对双塔近似）| http（KGM_RERANK_HTTP_URL）
+   */
+  rerank?: "off" | "embed" | "http";
+  /** embed/http 分与上阶段分线性混合；默认 0.5 */
+  rerankBlend?: number;
   namespaces?: string[];
   requireCanonicalEmbedding?: boolean;
 };

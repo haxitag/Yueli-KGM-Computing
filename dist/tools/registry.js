@@ -1,5 +1,7 @@
 export class ToolRegistry {
     tools = new Map();
+    callTotal = 0;
+    callByName = new Map();
     register(definition, executor) {
         this.tools.set(definition.name, { definition, executor });
     }
@@ -18,6 +20,14 @@ export class ToolRegistry {
         if (!tool) {
             throw new Error(`tool not found: ${name}`);
         }
+        this.callTotal += 1;
+        this.callByName.set(name, (this.callByName.get(name) ?? 0) + 1);
         return tool.executor(args);
+    }
+    getCallStats() {
+        return {
+            total: this.callTotal,
+            byName: Object.fromEntries(this.callByName),
+        };
     }
 }

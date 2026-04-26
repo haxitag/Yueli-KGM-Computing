@@ -13,6 +13,9 @@ export * from "./tools/graphTools.js";
 export * from "./tools/sandboxTools.js";
 export * from "./skills/runtime.js";
 export * from "./server/http.js";
+export * from "./openapi/kgmOpenApiV1Spec.js";
+export * from "./rerank/applyRerank.js";
+export * from "./multimodal/remoteImageEmbedder.js";
 export * from "./openai/compat.js";
 export * from "./anthropic/compat.js";
 export * from "./openai/responseStore.js";
@@ -58,3 +61,13 @@ export * from "./protocol/haxiTagAssembly.js";
 export * from "./ycb/client.js";
 export * from "./llm/completionNormalize.js";
 export * from "./llm/managedRuntimeClient.js";
+export * from "./optimization/responseCache.js";
+export * from "./utils/streamOptimizer.js";
+export * from "./utils/memoryPool.js";
+export * from "./utils/connectionPool.js";
+
+// Shimmy-inspired inference optimizations
+export * from "./inference/modelDiscovery.js";
+export * from "./inference/quantization.js";
+export * from "./inference/moeOffloading.js";
+export * from "./inference/hotSwap.js";

@@ -1,6 +1,8 @@
 import type { Evidence } from "../core/types.js";
 import type { Embedder } from "../embedding/canonical.js";
-import type { MemoryStore } from "./store.js";
+import { applyMemoryRerank } from "../rerank/applyRerank.js";
+import { blendAndNormalize, bm25Scores } from "./lexicalRerank.js";
+import type { MemoryStore, MemorySearchOptions } from "./store.js";
 import type { MetadataStore } from "./metadataStore.js";
 import type { VectorStore } from "./vectorStore.js";
 
@@ -37,11 +39,20 @@ export class HybridMemoryStore implements MemoryStore {
     });
   }
 
-  async search(userId: string, query: string, embedder: Embedder, topK: number): Promise<Evidence[]> {
+  async search(
+    userId: string,
+    query: string,
+    embedder: Embedder,
+    topK: number,
+    options?: MemorySearchOptions,
+  ): Promise<Evidence[]> {
+    const w = options?.lexicalWeight ?? 0;
+    const overFetch = Math.max(1, Math.min(8, options?.overFetch ?? (w > 0 ? 3 : 1)));
+    const fetchK = Math.max(topK, Math.min(200, Math.ceil(topK * overFetch)));
     const queryEmbedding = await embedder.embed(query);
     const result = await this.vectorStore.query({
       embedding: queryEmbedding,
-      topK,
+      topK: fetchK,
       where: { userId },
     });
 
@@ -51,15 +62,42 @@ export class HybridMemoryStore implements MemoryStore {
 
     const metadata = await this.metadataStore.getMany(result.ids);
     const metadataMap = new Map(metadata.map((record) => [record.id, record]));
-
-    return result.ids.map((id, idx) => {
+    const vecScores = result.scores;
+    const rows = result.ids.map((id, idx) => {
       const record = metadataMap.get(id);
       return {
         id,
         text: record?.text ?? "",
-        score: result.scores[idx] ?? 0,
+        score: vecScores[idx] ?? 0,
         source: record?.source ?? "unknown",
       };
     });
+    if (w <= 0) {
+      if (!options?.rerank || options.rerank === "off") {
+        return rows.slice(0, topK);
+      }
+      let out = rows;
+      const cap = Math.min(out.length, Math.max(topK, Math.min(48, topK * 3)));
+      out = out.slice(0, cap);
+      out = await applyMemoryRerank(query, out, embedder, options);
+      return out.slice(0, topK);
+    }
+    const blended = blendAndNormalize(
+      vecScores,
+      bm25Scores(
+        query,
+        rows.map((r) => r.text),
+      ),
+      w,
+    );
+    let withBlend = rows.map((r, i) => ({ ...r, score: blended[i] ?? r.score }));
+    withBlend.sort((a, b) => b.score - a.score);
+    if (!options?.rerank || options.rerank === "off") {
+      return withBlend.slice(0, topK);
+    }
+    const cap2 = Math.min(withBlend.length, Math.max(topK, Math.min(48, topK * 3)));
+    withBlend = withBlend.slice(0, cap2);
+    withBlend = await applyMemoryRerank(query, withBlend, embedder, options);
+    return withBlend.slice(0, topK);
   }
 }

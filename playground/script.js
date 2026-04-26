@@ -51,6 +51,7 @@ class KGMTrustProxyPlayground {
         this.modelSelectBtn = document.getElementById('model-select-btn');
         this.modelConfigBtn = document.getElementById('model-config-btn');
         this.autoRoutingBtn = document.getElementById('auto-routing-btn');
+        this.pricingConfigBtn = document.getElementById('pricing-config-btn');
         this.apiKeysBtn = document.getElementById('api-keys-btn');
         this.infoBtn = document.getElementById('info-btn');
         this.modalOverlay = document.getElementById('modal-overlay');
@@ -175,6 +176,7 @@ class KGMTrustProxyPlayground {
         this.modelSelectBtn.addEventListener('click', () => this.showModelSelectionModal());
         this.modelConfigBtn.addEventListener('click', () => this.showModelConfigModal());
         this.autoRoutingBtn.addEventListener('click', () => this.showAutoRoutingModal());
+        this.pricingConfigBtn.addEventListener('click', () => this.showPricingConfigModal());
         this.apiKeysBtn.addEventListener('click', () => this.showApiKeysModal());
         this.infoBtn.addEventListener('click', () => this.showInfoModal());
         this.closeModalBtn.addEventListener('click', () => this.hideModal());
@@ -356,6 +358,11 @@ class KGMTrustProxyPlayground {
                         <option value="openrouter" ${this.currentConfig.provider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
                         <option value="nvidia" ${this.currentConfig.provider === 'nvidia' ? 'selected' : ''}>NVIDIA</option>
                         <option value="deepseek" ${this.currentConfig.provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+                        <option value="xiaomi" ${this.currentConfig.provider === 'xiaomi' ? 'selected' : ''}>小米 MiMo</option>
+                        <option value="gemini" ${this.currentConfig.provider === 'gemini' ? 'selected' : ''}>Google Gemini</option>
+                        <option value="anthropic" ${this.currentConfig.provider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+                        <option value="aliyun" ${this.currentConfig.provider === 'aliyun' ? 'selected' : ''}>阿里云百炼</option>
+                        <option value="modelscope" ${this.currentConfig.provider === 'modelscope' ? 'selected' : ''}>ModelScope</option>
                         <option value="ollama" ${this.currentConfig.provider === 'ollama' ? 'selected' : ''}>Ollama</option>
                         <option value="vllm" ${this.currentConfig.provider === 'vllm' ? 'selected' : ''}>vLLM</option>
                         <option value="sglang" ${this.currentConfig.provider === 'sglang' ? 'selected' : ''}>SGLang</option>
@@ -538,6 +545,223 @@ class KGMTrustProxyPlayground {
         this.showModal();
     }
 
+    showPricingConfigModal() {
+        this.modalTitle.textContent = '云端模型价格配置';
+        if (this.modal) {
+            this.modal.classList.add('modal--wide');
+        }
+
+        // 云端模型列表（与后端 DEFAULT_CLOUD_PRICING 对齐）
+        const cloudModels = [
+            { id: 'gpt-5.4', provider: 'OpenAI', defaults: { input: 0.005, output: 0.015 } },
+            { id: 'gpt-5.5', provider: 'OpenAI', defaults: { input: 0.01, output: 0.03 } },
+            { id: 'gpt-oss', provider: 'OpenAI', defaults: { input: 0.002, output: 0.006 } },
+            { id: 'glm-5.0', provider: '智谱', defaults: { input: 0.0005, output: 0.0005 } },
+            { id: 'glm-5.1', provider: '智谱', defaults: { input: 0.001, output: 0.001 } },
+            { id: 'mimo-2.5', provider: '小米', defaults: { input: 0.0008, output: 0.0008 } },
+            // Google Gemini
+            { id: 'gemini-3.0', provider: 'Google', defaults: { input: 0.0001, output: 0.0004 } },
+            { id: 'gemini-3.1', provider: 'Google', defaults: { input: 0.0015, output: 0.006 } },
+            // Anthropic
+            { id: 'claude-sonnet-4.6', provider: 'Anthropic', defaults: { input: 0.003, output: 0.015 } },
+            { id: 'claude-opus-4.7', provider: 'Anthropic', defaults: { input: 0.015, output: 0.075 } },
+            // 阿里云
+            { id: 'qwen-max', provider: '阿里云', defaults: { input: 0.0005, output: 0.001 } },
+            { id: 'qwen-plus', provider: '阿里云', defaults: { input: 0.0003, output: 0.0006 } },
+            // ModelScope
+            { id: 'deepseek-r1', provider: 'ModelScope', defaults: { input: 0.0002, output: 0.0008 } },
+            { id: 'llama3-70b', provider: 'ModelScope', defaults: { input: 0.0004, output: 0.0008 } },
+            { id: 'claude-opus-4.7', provider: 'Anthropic', defaults: { input: 0.015, output: 0.075 } },
+            { id: 'kimi-2.5', provider: 'Moonshot', defaults: { input: 0.0005, output: 0.0005 } },
+            { id: 'kimi-2.6', provider: 'Moonshot', defaults: { input: 0.001, output: 0.001 } },
+            { id: 'minimax-2.5', provider: 'Minimax', defaults: { input: 0.0008, output: 0.0008 } },
+            { id: 'minimax-2.7', provider: 'Minimax', defaults: { input: 0.0012, output: 0.0012 } },
+            { id: 'deepseek-3.2', provider: 'DeepSeek', defaults: { input: 0.00014, output: 0.00028 } },
+            { id: 'deepseek-v4', provider: 'DeepSeek', defaults: { input: 0.0003, output: 0.0006 } },
+            { id: 'qwen-3.5', provider: 'Qwen', defaults: { input: 0.0003, output: 0.0006 } },
+            { id: 'qwen-3.6', provider: 'Qwen', defaults: { input: 0.0005, output: 0.001 } },
+        ];
+
+        // 计价模式: per1k (每1K tokens) 或 per1m (每百万 tokens)
+        const pricingMode = this.currentConfig.pricingMode || 'per1k';
+        const multiplier = pricingMode === 'per1m' ? 1000 : 1;
+        const unitLabel = pricingMode === 'per1m' ? 'USD/百万 tokens' : 'USD/1K tokens';
+
+        // 从 localStorage 读取用户自定义价格
+        const userPricing = this.currentConfig.pricingOverrides || {};
+
+        let bodyHtml = `
+            <div class="config-form pricing-config-modal">
+                <div class="form-group">
+                    <label for="pricing-mode-select">计价模式:</label>
+                    <select id="pricing-mode-select">
+                        <option value="per1k" ${pricingMode === 'per1k' ? 'selected' : ''}>每 1K tokens (USD)</option>
+                        <option value="per1m" ${pricingMode === 'per1m' ? 'selected' : ''}>每 百万 tokens (USD)</option>
+                    </select>
+                    <span class="helper-text">切换计价单位不会影响实际存储的单价，仅改变显示方式。</span>
+                </div>
+                <div class="pricing-note">
+                    <span class="pricing-note-badge">云端推理</span>
+                    <span class="pricing-note-text">以下价格为各模型官方云端推理价格。本地推理使用本地算力，不单独计价。</span>
+                </div>
+                <div class="pricing-models-table-wrapper">
+                    <table class="pricing-models-table">
+                        <thead>
+                            <tr>
+                                <th>模型</th>
+                                <th>服务商</th>
+                                <th>输入价格 (${unitLabel})</th>
+                                <th>输出价格 (${unitLabel})</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        `;
+
+        for (const m of cloudModels) {
+            const override = userPricing[m.id];
+            const inputVal = ((override ? override.input : m.defaults.input) * multiplier).toFixed(6).replace(/\.?0+$/, '');
+            const outputVal = ((override ? override.output : m.defaults.output) * multiplier).toFixed(6).replace(/\.?0+$/, '');
+            const isCustom = !!override;
+            bodyHtml += `
+                <tr data-model="${this.escapeHtml(m.id)}" class="${isCustom ? 'pricing-row-custom' : ''}">
+                    <td><code>${this.escapeHtml(m.id)}</code></td>
+                    <td>${this.escapeHtml(m.provider)}</td>
+                    <td><input type="number" step="any" class="pricing-input pricing-input-in" value="${inputVal}" data-default="${m.defaults.input * multiplier}"></td>
+                    <td><input type="number" step="any" class="pricing-input pricing-input-out" value="${outputVal}" data-default="${m.defaults.output * multiplier}"></td>
+                    <td>
+                        <button type="button" class="pricing-reset-btn secondary-config-btn" ${!isCustom ? 'disabled' : ''}>重置</button>
+                    </td>
+                </tr>
+            `;
+        }
+
+        bodyHtml += `
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pricing-note" style="margin-top:12px">
+                    <span class="pricing-note-badge" style="background:#dbeafe;color:#1e40af">本地推理</span>
+                    <span class="pricing-note-text">Yueli-KGM 本地推理、Ollama、vLLM 等本地运行时，使用本地 GPU/CPU 算力，成本为电费与硬件折旧，不计入 Token 价格。</span>
+                </div>
+                <div class="form-actions" style="margin-top:16px">
+                    <button type="button" id="pricing-save-btn" class="primary-config-btn">保存配置</button>
+                    <button type="button" id="pricing-fetch-btn" class="secondary-config-btn">从服务端刷新</button>
+                </div>
+            </div>
+        `;
+
+        this.modalBody.innerHTML = bodyHtml;
+
+        // 计价模式切换
+        document.getElementById('pricing-mode-select').addEventListener('change', (e) => {
+            this.currentConfig.pricingMode = e.target.value;
+            this.saveConfigToLocalStorage();
+            this.hideModal();
+            this.showPricingConfigModal();
+        });
+
+        // 重置按钮
+        this.modalBody.querySelectorAll('.pricing-reset-btn').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                const row = e.target.closest('tr');
+                const modelId = row.dataset.model;
+                const inputEl = row.querySelector('.pricing-input-in');
+                const outputEl = row.querySelector('.pricing-input-out');
+                inputEl.value = inputEl.dataset.default;
+                outputEl.value = outputEl.dataset.default;
+                row.classList.remove('pricing-row-custom');
+                e.target.disabled = true;
+                // 从 overrides 中移除
+                if (this.currentConfig.pricingOverrides) {
+                    delete this.currentConfig.pricingOverrides[modelId];
+                }
+            });
+        });
+
+        // 输入框变更标记自定义
+        this.modalBody.querySelectorAll('.pricing-input').forEach((input) => {
+            input.addEventListener('input', (e) => {
+                const row = e.target.closest('tr');
+                const modelId = row.dataset.model;
+                const defaultVal = parseFloat(e.target.dataset.default);
+                const currentVal = parseFloat(e.target.value);
+                const resetBtn = row.querySelector('.pricing-reset-btn');
+                if (Math.abs(currentVal - defaultVal) > 1e-9) {
+                    row.classList.add('pricing-row-custom');
+                    resetBtn.disabled = false;
+                }
+            });
+        });
+
+        // 保存
+        document.getElementById('pricing-save-btn').addEventListener('click', async () => {
+            try {
+                const mode = this.currentConfig.pricingMode || 'per1k';
+                const rows = this.modalBody.querySelectorAll('.pricing-models-table tbody tr');
+                const overrides = {};
+                const updates = [];
+
+                for (const row of rows) {
+                    const modelId = row.dataset.model;
+                    const inputVal = parseFloat(row.querySelector('.pricing-input-in').value);
+                    const outputVal = parseFloat(row.querySelector('.pricing-input-out').value);
+                    const defaultIn = parseFloat(row.querySelector('.pricing-input-in').dataset.default);
+                    const defaultOut = parseFloat(row.querySelector('.pricing-input-out').dataset.default);
+
+                    if (Math.abs(inputVal - defaultIn) > 1e-9 || Math.abs(outputVal - defaultOut) > 1e-9) {
+                        overrides[modelId] = { input: inputVal / (mode === 'per1m' ? 1000 : 1), output: outputVal / (mode === 'per1m' ? 1000 : 1) };
+                        updates.push({ model: modelId, inputPrice: inputVal, outputPrice: outputVal, mode });
+                    }
+                }
+
+                this.currentConfig.pricingOverrides = overrides;
+                this.saveConfigToLocalStorage();
+
+                // 同步到服务端
+                for (const update of updates) {
+                    try {
+                        await fetch('/playground/pricing', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(update),
+                        });
+                    } catch (err) {
+                        console.warn('同步定价到服务端失败:', err);
+                    }
+                }
+
+                this.hideModal();
+                this.showToast('价格配置已保存');
+            } catch (error) {
+                this.showError(error.message);
+            }
+        });
+
+        // 从服务端刷新
+        document.getElementById('pricing-fetch-btn').addEventListener('click', async () => {
+            try {
+                const mode = this.currentConfig.pricingMode || 'per1k';
+                const resp = await fetch(`/playground/pricing?mode=${mode}`);
+                const data = await resp.json();
+                if (data.models) {
+                    for (const [modelId, info] of Object.entries(data.models)) {
+                        const row = this.modalBody.querySelector(`tr[data-model="${CSS.escape(modelId)}"]`);
+                        if (row) {
+                            row.querySelector('.pricing-input-in').value = (info.input || 0).toString();
+                            row.querySelector('.pricing-input-out').value = (info.output || 0).toString();
+                        }
+                    }
+                }
+                this.showToast('已刷新服务端定价');
+            } catch (err) {
+                this.showToast('刷新失败: ' + (err.message || err), 'error');
+            }
+        });
+
+        this.showModal();
+    }
+
     showApiKeysModal() {
         this.modalTitle.textContent = 'API Keys 与凭证';
         if (this.modal) {
@@ -552,12 +776,17 @@ class KGMTrustProxyPlayground {
                 title: '云端 API 服务商',
                 desc: '对接 OpenAI 兼容商业 API 时使用。保存于本机浏览器 localStorage。',
                 fields: [
-                    { key: 'openai', label: 'OpenAI', placeholder: 'sk-...', hint: 'platform.openai.com' },
-                    { key: 'zhipu', label: '智谱 AI', placeholder: 'API Key', hint: 'open.bigmodel.cn' },
-                    { key: 'minimax', label: 'Minimax', placeholder: 'API Key', hint: 'api.minimax' },
-                    { key: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-...', hint: 'openrouter.ai' },
-                    { key: 'nvidia', label: 'NVIDIA NIM / Integrate', placeholder: 'nvapi-...', hint: 'integrate.api.nvidia.com' },
-                    { key: 'deepseek', label: 'DeepSeek', placeholder: 'API Key', hint: 'api.deepseek.com' },
+                    { key: 'openai', label: 'OpenAI', placeholder: 'sk-...', hint: 'platform.openai.com', multiKey: true },
+                    { key: 'zhipu', label: '智谱 AI', placeholder: 'API Key', hint: 'open.bigmodel.cn', multiKey: true },
+                    { key: 'minimax', label: 'Minimax', placeholder: 'API Key', hint: 'api.minimax', multiKey: true },
+                    { key: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-...', hint: 'openrouter.ai', multiKey: true },
+                    { key: 'nvidia', label: 'NVIDIA NIM / Integrate', placeholder: 'nvapi-...', hint: 'integrate.api.nvidia.com', multiKey: true },
+                    { key: 'deepseek', label: 'DeepSeek', placeholder: 'API Key', hint: 'api.deepseek.com', multiKey: true },
+                    { key: 'xiaomi', label: '小米 MiMo', placeholder: 'API Key', hint: 'api.xiaomi.ai', multiKey: true },
+                    { key: 'gemini', label: 'Google Gemini', placeholder: 'API Key', hint: 'ai.google.dev', multiKey: true },
+                    { key: 'anthropic', label: 'Anthropic Claude', placeholder: 'sk-ant-...', hint: 'console.anthropic.com', multiKey: true },
+                    { key: 'aliyun', label: '阿里云百炼', placeholder: 'Bearer Token', hint: 'bailian.console.aliyun.com', multiKey: true },
+                    { key: 'modelscope', label: 'ModelScope', placeholder: 'Token', hint: 'modelscope.cn', multiKey: true },
                 ],
             },
             {
@@ -602,20 +831,34 @@ class KGMTrustProxyPlayground {
             `;
             for (const f of sec.fields) {
                 const inputType = f.inputType || 'password';
-                bodyHtml += `
-                    <div class="api-keys-field">
-                        <label for="api-key-${f.key}">${this.escapeHtml(f.label)}</label>
-                        <input
-                            type="${inputType}"
-                            id="api-key-${f.key}"
-                            name="api-key-${f.key}"
-                            autocomplete="${inputType === 'password' ? 'new-password' : 'off'}"
-                            placeholder="${this.escapeHtml(f.placeholder || '')}"
-                            value="${val(f.key)}"
-                        >
-                        ${f.hint ? `<span class="field-hint">${this.escapeHtml(f.hint)}</span>` : ''}
-                    </div>
-                `;
+                const multiKey = f.multiKey || false;
+                const maxKeys = multiKey ? 3 : 1;
+
+                // 多密钥支持：显示主 Key + 最多2个备用 Key
+                for (let i = 0; i < maxKeys; i++) {
+                    const keyId = i === 0 ? f.key : `${f.key}_${i + 1}`;
+                    const label = i === 0 ? f.label : `${f.label} (备用${i})`;
+                    const placeholder = i === 0 ? f.placeholder : `${f.placeholder} (可选)`;
+                    const value = val(keyId);
+
+                    // 非多密钥模式或第一个密钥，或已有值的备用密钥才显示
+                    if (i === 0 || value || multiKey) {
+                        bodyHtml += `
+                            <div class="api-keys-field${i > 0 ? ' api-key-backup' : ''}">
+                                <label for="api-key-${keyId}">${this.escapeHtml(label)}</label>
+                                <input
+                                    type="${inputType}"
+                                    id="api-key-${keyId}"
+                                    name="api-key-${keyId}"
+                                    autocomplete="${inputType === 'password' ? 'new-password' : 'off'}"
+                                    placeholder="${this.escapeHtml(placeholder || '')}"
+                                    value="${value}"
+                                >
+                                ${i === 0 && f.hint ? `<span class="field-hint">${this.escapeHtml(f.hint)}</span>` : ''}
+                            </div>
+                        `;
+                    }
+                }
             }
             bodyHtml += `
                     </div>
@@ -633,20 +876,38 @@ class KGMTrustProxyPlayground {
         this.modalBody.innerHTML = bodyHtml;
 
         const saveBtn = document.getElementById('save-api-keys');
+        // 支持多密钥：主 key + 备用 key_2 + 备用 key_3
         const keyIds = [
-            'openai', 'zhipu', 'minimax', 'openrouter', 'nvidia', 'deepseek',
-            'ollama', 'vllm', 'slang', 'custom', 'minimaxGroupId',
+            'openai', 'openai_2', 'openai_3',
+            'zhipu', 'zhipu_2', 'zhipu_3',
+            'minimax', 'minimax_2', 'minimax_3',
+            'openrouter', 'openrouter_2', 'openrouter_3',
+            'nvidia', 'nvidia_2', 'nvidia_3',
+            'deepseek', 'deepseek_2', 'deepseek_3',
+            'xiaomi', 'xiaomi_2', 'xiaomi_3',
+            'gemini', 'gemini_2', 'gemini_3',
+            'anthropic', 'anthropic_2', 'anthropic_3',
+            'aliyun', 'aliyun_2', 'aliyun_3',
+            'modelscope', 'modelscope_2', 'modelscope_3',
+            'ollama', 'vllm', 'slang', 'custom',
+            'minimaxGroupId',
         ];
         saveBtn.addEventListener('click', () => {
             this.currentConfig.apiKeys = this.currentConfig.apiKeys || {};
             for (const id of keyIds) {
                 const el = document.getElementById(`api-key-${id}`);
                 if (el) {
-                    this.currentConfig.apiKeys[id] = el.value;
+                    const value = el.value.trim();
+                    if (value) {
+                        this.currentConfig.apiKeys[id] = value;
+                    } else {
+                        delete this.currentConfig.apiKeys[id];
+                    }
                 }
             }
             this.saveConfigToLocalStorage();
             this.hideModal();
+            this.showToast('API Keys 已保存', 'success');
         });
 
         this.showModal();
@@ -1103,6 +1364,29 @@ class KGMTrustProxyPlayground {
     showError(message) {
         this.textOutput.textContent = `错误: ${message}`;
         this.textOutput.style.color = '#e53e3e';
+    }
+
+    showToast(message, type = 'info') {
+        const toast = document.createElement('div');
+        toast.style.cssText = `
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            z-index: 9999;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            animation: slideIn 0.2s ease;
+            ${type === 'error' ? 'background:#fef2f2;color:#991b1b;border:1px solid #fecaca;' : 'background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;'}
+        `;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => {
+            toast.style.animation = 'slideOut 0.2s ease';
+            setTimeout(() => toast.remove(), 200);
+        }, 2500);
     }
 
     setLoadingState(loading) {

@@ -141,7 +141,7 @@ export interface TelemetrySystemConfig {
  */
 export const DEFAULT_TELEMETRY_CONFIG: TelemetrySystemConfig = {
   enabled: true,
-  serviceName: 'yuli-kgm-computing',
+  serviceName: 'yueli-kgm-computing',
   serviceVersion: process.env.npm_package_version || '1.0.0',
   environment: process.env.NODE_ENV || 'development',
   samplingRate: 0.1,
@@ -151,7 +151,7 @@ export const DEFAULT_TELEMETRY_CONFIG: TelemetrySystemConfig = {
     autoInstrumentation: true,
     exporter: 'console',
     exporterConfig: {
-      serviceName: 'yuli-kgm-computing',
+      serviceName: 'yueli-kgm-computing',
     },
     captureRequestBody: false,
     captureResponseBody: false,
