@@ -1434,3 +1434,176 @@ input[type="checkbox"] {
 .api-key-backup input::placeholder {
     color: #94a3b8;
 }
+
+/* ========== KCE 任务管理样式 ========== */
+.task-controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    padding: 15px;
+    background: #f5f7ff;
+    border-radius: 8px;
+}
+
+.task-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 20px;
+}
+
+.task-item {
+    padding: 12px 15px;
+    margin-bottom: 8px;
+    background: #fff;
+    border: 1px solid #dde2f0;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.task-item:hover {
+    border-color: #011eff;
+    background: #eef1ff;
+}
+
+.task-item.active {
+    border-color: #011eff;
+    background: #eef1ff;
+    box-shadow: 0 2px 4px rgba(1, 30, 255, 0.1);
+}
+
+.task-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.task-item-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: #010b2e;
+}
+
+.task-item-status {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.task-status-pending {
+    background: #fff3e0;
+    color: #f57c00;
+}
+
+.task-status-running {
+    background: #e3f2fd;
+    color: #2196f3;
+}
+
+.task-status-completed {
+    background: #e8f5e9;
+    color: #4caf50;
+}
+
+.task-status-error {
+    background: #ffebee;
+    color: #f44336;
+}
+
+.task-item-query {
+    font-size: 12px;
+    color: #666;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.task-detail {
+    padding: 20px;
+    background: #fff;
+    border: 1px solid #dde2f0;
+    border-radius: 8px;
+    margin-top: 20px;
+}
+
+.task-info {
+    margin-bottom: 20px;
+}
+
+.info-row {
+    display: flex;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.info-label {
+    font-weight: 600;
+    color: #010b2e;
+    min-width: 100px;
+}
+
+.info-value {
+    color: #333;
+    flex: 1;
+}
+
+.task-diagrams {
+    margin-top: 20px;
+}
+
+.diagram-container {
+    background: #f8f9ff;
+    border: 1px solid #dde2f0;
+    border-radius: 6px;
+    padding: 20px;
+    min-height: 200px;
+    overflow-x: auto;
+}
+
+.diagram-container svg {
+    max-width: 100%;
+    height: auto;
+}
+
+.task-trace {
+    margin-top: 20px;
+}
+
+.trace-output {
+    background: #010b2e;
+    color: #09d2e6;
+    padding: 15px;
+    border-radius: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    max-height: 400px;
+    overflow-y: auto;
+    line-height: 1.6;
+}
+
+/* Mermaid 图表样式 */
+.mermaid {
+    background: #fff;
+    padding: 20px;
+}
+
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node ellipse,
+.mermaid .node polygon {
+    fill: #e3f2fd !important;
+    stroke: #2196f3 !important;
+    stroke-width: 2px !important;
+}
+
+.mermaid .edgePath path {
+    stroke: #666 !important;
+    stroke-width: 2px !important;
+}
+
+.mermaid .cluster rect {
+    fill: #f5f7ff !important;
+    stroke: #dde2f0 !important;
+}

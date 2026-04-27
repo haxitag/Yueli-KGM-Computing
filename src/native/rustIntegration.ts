@@ -261,7 +261,7 @@ export class RustCoreManager extends EventEmitter {
         if (msg.error) {
           handler.reject(new Error(msg.error as string));
         } else {
-          handler.resolve(msg as InferenceResponse);
+          handler.resolve(msg as unknown as InferenceResponse);
         }
         this.requestQueue.delete(requestId);
       }

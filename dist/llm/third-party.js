@@ -351,3 +351,330 @@ export class SlangLlmClient {
         return "/completions";
     }
 }
+/**
+ * 小米(Xiaomi) MiMo模型客户端
+ * OpenAI兼容API格式
+ */
+export class XiaomiLlmClient {
+    baseUrl;
+    model;
+    apiKey;
+    timeoutMs;
+    constructor(params) {
+        this.baseUrl = params.baseUrl ?? "https://api.xiaomi.ai/v1";
+        this.model = params.model;
+        this.apiKey = params.apiKey;
+        this.timeoutMs = params.timeoutMs;
+    }
+    async complete(prompt, options) {
+        const payload = {
+            model: options?.model ?? this.model,
+            messages: [
+                { role: "user", content: prompt }
+            ],
+            max_tokens: options?.maxTokens ?? 1024,
+            temperature: options?.temperature ?? 0.7,
+            top_p: options?.topP,
+            stop: options?.stop,
+            stream: false,
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, "/chat/completions"), payload, { headers, timeoutMs: this.timeoutMs }));
+        if (data.error) {
+            throw new Error(`Xiaomi API error: ${data.error.message}`);
+        }
+        const content = data.choices?.[0]?.message?.content ?? "";
+        return {
+            text: content,
+            raw: data,
+        };
+    }
+}
+/**
+ * Google Gemini API 客户端
+ * 支持原生 Generative Language API 和 OpenAI 兼容格式
+ */
+export class GeminiLlmClient {
+    baseUrl;
+    model;
+    apiKey;
+    timeoutMs;
+    useOpenAIFormat;
+    constructor(params) {
+        this.baseUrl = params.baseUrl ?? "https://generativelanguage.googleapis.com";
+        this.model = params.model;
+        this.apiKey = params.apiKey;
+        this.timeoutMs = params.timeoutMs;
+        this.useOpenAIFormat = params.useOpenAIFormat ?? false;
+    }
+    async complete(prompt, options) {
+        if (this.useOpenAIFormat) {
+            return this.completeWithOpenAIFormat(prompt, options);
+        }
+        return this.completeWithNativeFormat(prompt, options);
+    }
+    /**
+     * 使用 OpenAI 兼容格式调用 Gemini API
+     * 端点: /v1beta/openai/chat/completions
+     */
+    async completeWithOpenAIFormat(prompt, options) {
+        const payload = {
+            model: options?.model ?? this.model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: options?.maxTokens ?? 1024,
+            temperature: options?.temperature ?? 0.7,
+            top_p: options?.topP,
+            stop: options?.stop,
+            stream: false,
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, "/v1beta/openai/chat/completions"), payload, { headers, timeoutMs: this.timeoutMs }));
+        if (data.error) {
+            throw new Error(`Gemini API error: ${data.error.message}`);
+        }
+        const content = data.choices?.[0]?.message?.content ?? "";
+        return {
+            text: content,
+            raw: data,
+        };
+    }
+    /**
+     * 使用 Google 原生 Generative Language API 格式
+     * 端点: /v1beta/models/{model}:generateContent
+     */
+    async completeWithNativeFormat(prompt, options) {
+        const modelName = options?.model ?? this.model;
+        // 确保模型名称前缀正确
+        const fullModelName = modelName.startsWith("models/") ? modelName : `models/${modelName}`;
+        const payload = {
+            contents: [
+                {
+                    role: "user",
+                    parts: [{ text: prompt }],
+                },
+            ],
+            generationConfig: {
+                temperature: options?.temperature ?? 0.7,
+                maxOutputTokens: options?.maxTokens ?? 1024,
+                topP: options?.topP,
+                stopSequences: options?.stop,
+            },
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": this.apiKey,
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, `/v1beta/${fullModelName}:generateContent`), payload, { headers, timeoutMs: this.timeoutMs }));
+        // 检查安全拦截
+        if (data.promptFeedback?.blockReason) {
+            throw new Error(`Gemini content blocked: ${data.promptFeedback.blockReason}`);
+        }
+        if (data.error) {
+            throw new Error(`Gemini API error: ${data.error.message}`);
+        }
+        // 提取文本内容
+        const candidate = data.candidates?.[0];
+        const parts = candidate?.content?.parts ?? [];
+        const content = parts.map((p) => p.text ?? "").join("");
+        return {
+            text: content,
+            raw: data,
+        };
+    }
+}
+/**
+ * Anthropic Claude API 客户端
+ */
+export class AnthropicLlmClient {
+    baseUrl;
+    model;
+    apiKey;
+    timeoutMs;
+    constructor(params) {
+        this.baseUrl = params.baseUrl ?? "https://api.anthropic.com";
+        this.model = params.model;
+        this.apiKey = params.apiKey;
+        this.timeoutMs = params.timeoutMs;
+    }
+    async complete(prompt, options) {
+        const payload = {
+            model: options?.model ?? this.model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: options?.maxTokens ?? 1024,
+            temperature: options?.temperature ?? 0.7,
+            top_p: options?.topP,
+            stop_sequences: options?.stop,
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            "x-api-key": this.apiKey,
+            "anthropic-version": "2023-06-01",
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, "/v1/messages"), payload, { headers, timeoutMs: this.timeoutMs }));
+        if (data.error) {
+            throw new Error(`Anthropic API error: ${data.error.message}`);
+        }
+        // 提取文本内容
+        const content = data.content?.find((c) => c.type === "text")?.text ?? "";
+        return {
+            text: content,
+            raw: data,
+        };
+    }
+}
+/**
+ * 阿里云百炼 API 客户端
+ */
+export class AliyunLlmClient {
+    baseUrl;
+    model;
+    apiKey;
+    timeoutMs;
+    constructor(params) {
+        this.baseUrl = params.baseUrl ?? "https://dashscope.aliyuncs.com";
+        this.model = params.model;
+        this.apiKey = params.apiKey;
+        this.timeoutMs = params.timeoutMs;
+    }
+    async complete(prompt, options) {
+        const payload = {
+            model: options?.model ?? this.model,
+            input: {
+                messages: [{ role: "user", content: prompt }],
+            },
+            parameters: {
+                max_tokens: options?.maxTokens ?? 1024,
+                temperature: options?.temperature ?? 0.7,
+                top_p: options?.topP,
+                stop: options?.stop,
+            },
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, "/api/v1/services/aigc/text-generation/generation"), payload, { headers, timeoutMs: this.timeoutMs }));
+        if (data.error) {
+            throw new Error(`Aliyun API error: ${data.error.message}`);
+        }
+        return {
+            text: data.output?.text ?? "",
+            raw: data,
+        };
+    }
+}
+/**
+ * ModelScope API 客户端
+ */
+export class ModelScopeLlmClient {
+    baseUrl;
+    model;
+    apiKey;
+    timeoutMs;
+    constructor(params) {
+        this.baseUrl = params.baseUrl ?? "https://api-inference.modelscope.cn";
+        this.model = params.model;
+        this.apiKey = params.apiKey;
+        this.timeoutMs = params.timeoutMs;
+    }
+    async complete(prompt, options) {
+        const payload = {
+            model: options?.model ?? this.model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: options?.maxTokens ?? 1024,
+            temperature: options?.temperature ?? 0.7,
+            top_p: options?.topP,
+            stop: options?.stop,
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, "/v1/chat/completions"), payload, { headers, timeoutMs: this.timeoutMs }));
+        if (data.error) {
+            throw new Error(`ModelScope API error: ${data.error.message}`);
+        }
+        const content = data.choices?.[0]?.message?.content ?? "";
+        return {
+            text: content,
+            raw: data,
+        };
+    }
+}
+/**
+ * Moonshot AI (Kimi) LLM Client
+ * 支持 Kimi 2.6 等模型，超长上下文 (2M tokens)
+ */
+export class MoonshotLlmClient {
+    baseUrl;
+    model;
+    apiKey;
+    timeoutMs;
+    constructor(params) {
+        this.baseUrl = params.baseUrl ?? "https://api.moonshot.cn";
+        this.model = params.model;
+        this.apiKey = params.apiKey;
+        this.timeoutMs = params.timeoutMs;
+    }
+    async complete(prompt, options) {
+        const payload = {
+            model: options?.model ?? this.model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: options?.maxTokens ?? 1024,
+            temperature: options?.temperature ?? 0.7,
+            top_p: options?.topP,
+            stop: options?.stop,
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, "/v1/chat/completions"), payload, { headers, timeoutMs: this.timeoutMs }));
+        if (data.error) {
+            throw new Error(`Moonshot API error: ${data.error.message}`);
+        }
+        const content = data.choices?.[0]?.message?.content ?? "";
+        return {
+            text: content,
+            raw: data,
+        };
+    }
+    /**
+     * Kimi 2.6 特有功能：超长上下文处理
+     * 支持高达 2M tokens 的上下文窗口
+     */
+    async longContextComplete(messages, options) {
+        const contextWindow = options?.contextWindow ?? 2000000; // 默认 2M
+        const payload = {
+            model: options?.model ?? this.model,
+            messages,
+            max_tokens: options?.maxTokens ?? 1024,
+            temperature: options?.temperature ?? 0.7,
+            top_p: options?.topP,
+            stop: options?.stop,
+            // Kimi 2.6 特有参数
+            context_window: contextWindow,
+        };
+        const headers = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+            "X-Context-Window": contextWindow.toString(),
+        };
+        const data = (await postJson(joinUrl(this.baseUrl, "/v1/chat/completions"), payload, { headers, timeoutMs: this.timeoutMs ?? 120000 } // 超长上下文需要更长的超时
+        ));
+        if (data.error) {
+            throw new Error(`Moonshot API error: ${data.error.message}`);
+        }
+        const content = data.choices?.[0]?.message?.content ?? "";
+        return {
+            text: content,
+            raw: data,
+        };
+    }
+}

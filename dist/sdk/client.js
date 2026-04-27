@@ -7,6 +7,9 @@ export class KgmSdk {
     async execute(request) {
         return (await postJson(`${this.baseUrl}/v1/kgm/execute`, request));
     }
+    async computeKce(request) {
+        return (await postJson(`${this.baseUrl}/v1/kgm/kce/compute`, request));
+    }
     async health() {
         return (await getJson(`${this.baseUrl}/health`));
     }

@@ -65,6 +65,7 @@ export * from "./optimization/responseCache.js";
 export * from "./utils/streamOptimizer.js";
 export * from "./utils/memoryPool.js";
 export * from "./utils/connectionPool.js";
+export * from "./kce/engine.js";
 
 // Shimmy-inspired inference optimizations
 export * from "./inference/modelDiscovery.js";

@@ -131,6 +131,127 @@ const defaultConfig = {
                     outputPer1kTokens: 0.0005,
                     currency: "USD",
                 },
+                // OpenAI 新模型
+                "default:openai:gpt-5.4": {
+                    inputPer1kTokens: 0.005,
+                    outputPer1kTokens: 0.015,
+                    currency: "USD",
+                },
+                "default:openai:gpt-5.5": {
+                    inputPer1kTokens: 0.01,
+                    outputPer1kTokens: 0.03,
+                    currency: "USD",
+                },
+                "default:openai:gpt-oss": {
+                    inputPer1kTokens: 0.002,
+                    outputPer1kTokens: 0.006,
+                    currency: "USD",
+                },
+                // Zhipu 新模型
+                "default:zhipu:glm-5.0": {
+                    inputPer1kTokens: 0.0005,
+                    outputPer1kTokens: 0.0005,
+                    currency: "USD",
+                },
+                "default:zhipu:glm-5.1": {
+                    inputPer1kTokens: 0.001,
+                    outputPer1kTokens: 0.001,
+                    currency: "USD",
+                },
+                // Xiaomi 新模型
+                "default:xiaomi:mimo-2.5": {
+                    inputPer1kTokens: 0.0008,
+                    outputPer1kTokens: 0.0008,
+                    currency: "USD",
+                },
+                // Google Gemini 新模型
+                "default:gemini:gemini-3.0": {
+                    inputPer1kTokens: 0.0001,
+                    outputPer1kTokens: 0.0004,
+                    currency: "USD",
+                },
+                "default:gemini:gemini-3.1": {
+                    inputPer1kTokens: 0.0015,
+                    outputPer1kTokens: 0.006,
+                    currency: "USD",
+                },
+                // Anthropic 新模型
+                "default:anthropic:claude-sonnet-4.6": {
+                    inputPer1kTokens: 0.003,
+                    outputPer1kTokens: 0.015,
+                    currency: "USD",
+                },
+                "default:anthropic:claude-opus-4.7": {
+                    inputPer1kTokens: 0.015,
+                    outputPer1kTokens: 0.075,
+                    currency: "USD",
+                },
+                // 阿里云百炼新模型
+                "default:aliyun:qwen-max": {
+                    inputPer1kTokens: 0.0005,
+                    outputPer1kTokens: 0.001,
+                    currency: "USD",
+                },
+                "default:aliyun:qwen-plus": {
+                    inputPer1kTokens: 0.0003,
+                    outputPer1kTokens: 0.0006,
+                    currency: "USD",
+                },
+                // ModelScope 新模型
+                "default:modelscope:deepseek-r1": {
+                    inputPer1kTokens: 0.0002,
+                    outputPer1kTokens: 0.0008,
+                    currency: "USD",
+                },
+                "default:modelscope:llama3-70b": {
+                    inputPer1kTokens: 0.0004,
+                    outputPer1kTokens: 0.0008,
+                    currency: "USD",
+                },
+                // Moonshot / Kimi 新模型
+                "default:moonshot:kimi-2.5": {
+                    inputPer1kTokens: 0.0005,
+                    outputPer1kTokens: 0.0005,
+                    currency: "USD",
+                },
+                "default:moonshot:kimi-2.6": {
+                    inputPer1kTokens: 0.001,
+                    outputPer1kTokens: 0.001,
+                    currency: "USD",
+                },
+                // Minimax 新模型
+                "default:minimax:minimax-2.5": {
+                    inputPer1kTokens: 0.0008,
+                    outputPer1kTokens: 0.0008,
+                    currency: "USD",
+                },
+                "default:minimax:minimax-2.7": {
+                    inputPer1kTokens: 0.0012,
+                    outputPer1kTokens: 0.0012,
+                    currency: "USD",
+                },
+                // DeepSeek 新模型
+                "default:deepseek:deepseek-3.2": {
+                    inputPer1kTokens: 0.00014,
+                    outputPer1kTokens: 0.00028,
+                    currency: "USD",
+                },
+                "default:deepseek:deepseek-v4": {
+                    inputPer1kTokens: 0.0003,
+                    outputPer1kTokens: 0.0006,
+                    currency: "USD",
+                },
+                // Qwen 新模型
+                "default:qwen:qwen-3.5": {
+                    inputPer1kTokens: 0.0003,
+                    outputPer1kTokens: 0.0006,
+                    currency: "USD",
+                },
+                "default:qwen:qwen-3.6": {
+                    inputPer1kTokens: 0.0005,
+                    outputPer1kTokens: 0.001,
+                    currency: "USD",
+                },
                 "managed:*": {
                     inputPer1kTokens: 0,
                     outputPer1kTokens: 0,

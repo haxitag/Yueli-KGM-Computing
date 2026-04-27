@@ -2,6 +2,7 @@ import type { KgmRequest, KgmResponse } from "../core/types.js";
 import type { AutoRoutingConfig, KgmConfig, KgmConfigPatch } from "../core/configStore.js";
 import type { BusinessRoutingConfig } from "../routing/businessRouting.js";
 import type { RoutingHistoryEntry } from "../routing/routingHistoryStore.js";
+import type { KceComputeRequest, KceComputeResponse } from "../kce/engine.js";
 import { getJson, postJson } from "../utils/http.js";
 
 export class KgmSdk {
@@ -13,6 +14,10 @@ export class KgmSdk {
 
   async execute(request: KgmRequest): Promise<KgmResponse> {
     return (await postJson(`${this.baseUrl}/v1/kgm/execute`, request)) as KgmResponse;
+  }
+
+  async computeKce(request: KceComputeRequest): Promise<KceComputeResponse> {
+    return (await postJson(`${this.baseUrl}/v1/kgm/kce/compute`, request)) as KceComputeResponse;
   }
 
   async health(): Promise<{ status: string }> {

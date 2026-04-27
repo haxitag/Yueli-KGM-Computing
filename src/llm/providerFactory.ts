@@ -48,6 +48,24 @@ export type ProviderConfig = {
 };
 
 export class LlmProviderFactory {
+  /**
+   * 选择 API Key（支持多 Key 路由）
+   */
+  private static selectApiKey(
+    config: ProviderConfig,
+    provider: string
+  ): string | null {
+    if (config.apiKeys && config.apiKeys.length > 0) {
+      globalApiKeyRouter.registerProvider(
+        provider,
+        config.apiKeys,
+        config.keyStrategy || 'round-robin'
+      );
+      return globalApiKeyRouter.getNextKey(provider);
+    }
+    return config.apiKey || null;
+  }
+
   static createClient(config: ProviderConfig): LlmClient {
     // 默认URL配置
     const defaultUrls = {
@@ -69,6 +87,9 @@ export class LlmProviderFactory {
           throw new Error('Zhipu API key is required');
         }
         const zhipuApiKey = this.selectApiKey(config, 'zhipu');
+        if (!zhipuApiKey) {
+          throw new Error('Zhipu API key is required');
+        }
         return new ZhipuLlmClient({
           baseUrl: config.baseUrl || defaultUrls.zhipu,
           model: config.model,
@@ -88,38 +109,41 @@ export class LlmProviderFactory {
         });
       }
 
-      case 'openrouter':
-        if (!config.apiKey && !config.apiKeys) {
+      case 'openrouter': {
+        const openRouterApiKey = this.selectApiKey(config, 'openrouter');
+        if (!openRouterApiKey) {
           throw new Error('OpenRouter API key is required');
         }
-        const openRouterApiKey = this.selectApiKey(config, 'openrouter');
         return new OpenRouterLlmClient({
           baseUrl: config.baseUrl || defaultUrls.openrouter,
           model: config.model,
           apiKey: openRouterApiKey,
         });
+      }
 
-      case 'nvidia':
-        if (!config.apiKey && !config.apiKeys) {
+      case 'nvidia': {
+        const nvidiaApiKey = this.selectApiKey(config, 'nvidia');
+        if (!nvidiaApiKey) {
           throw new Error('NVIDIA API key is required');
         }
-        const nvidiaApiKey = this.selectApiKey(config, 'nvidia');
         return new NvidiaLlmClient({
           baseUrl: config.baseUrl || defaultUrls.nvidia,
           model: config.model,
           apiKey: nvidiaApiKey,
         });
+      }
 
-      case 'deepseek':
-        if (!config.apiKey && !config.apiKeys) {
+      case 'deepseek': {
+        const deepSeekApiKey = this.selectApiKey(config, 'deepseek');
+        if (!deepSeekApiKey) {
           throw new Error('DeepSeek API key is required');
         }
-        const deepSeekApiKey = this.selectApiKey(config, 'deepseek');
         return new DeepSeekLlmClient({
           baseUrl: config.baseUrl || defaultUrls.deepseek,
           model: config.model,
           apiKey: deepSeekApiKey,
         });
+      }
 
       case 'xiaomi':
         if (!config.apiKey) {
@@ -360,7 +384,7 @@ export class LlmProviderFactory {
           apiKey: process.env.VLLM_API_KEY,
         };
 
-      case 'slang':
+      case 'slang': {
         const slangBaseUrl = process.env.SLANG_BASE_URL;
         if (!slangBaseUrl) return null;
         return {
@@ -368,25 +392,10 @@ export class LlmProviderFactory {
           baseUrl: slangBaseUrl,
           model: process.env.SLANG_DEFAULT_MODEL || 'default',
         };
+      }
 
-      case 'modelscope':
-        const modelscopeApiKey = process.env.MODELSCOPE_API_KEY;
-        if (!modelscopeApiKey) return null;
-        return {
-          type: 'modelscope',
-          baseUrl: process.env.MODELSCOPE_BASE_URL,
-          model: process.env.MODELSCOPE_DEFAULT_MODEL || 'deepseek-r1',
-          apiKey: modelscopeApiKey,
-        };
-
-      case 'ollama':
-        const ollamaBaseUrl = process.env.OLLAMA_BASE_URL;
-        if (!ollamaBaseUrl) return null;
-        return {
-          type: 'ollama',
-          baseUrl: ollamaBaseUrl,
-          model: process.env.OLLAMA_DEFAULT_MODEL || 'llama3',
-        };
+      default:
+        return null;
     }
   }
 

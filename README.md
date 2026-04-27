@@ -103,7 +103,7 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明 0.1.8
+## 版本说明 0.1.9
 
 ### 实现内容
 | 模型系列 | 文件 | 支持型号 | 状态 |
@@ -113,6 +113,7 @@ npm run dev:enhanced
 | **Google Gemma 4** | [src/native/gpu/gemma4.ts](./Yueli-KGM-Computing/src/native/gpu/gemma4.ts:0:0-0:0) | 2B/4B/9B/27B | ✅ |
 | **MiniMax 2.5/2.7** | [src/native/gpu/minimax25.ts](./Yueli-KGM-Computing/src/native/gpu/minimax25.ts:0:0-0:0) | 4B/8B/32B/456B | ✅ |
 | **MiMo 2.5** | [src/native/gpu/mimo25.ts](./Yueli-KGM-Computing/src/native/gpu/mimo25.ts:0:0-0:0) | 1.5B/7B/13B/30B | ✅ |
+| **vMLX (Apple Silicon)** | [src/native/gpu/vmlxAdapter.ts](./Yueli-KGM-Computing/src/native/gpu/vmlxAdapter.ts:0:0-0:0) | M1/M2/M3/M4 | ✅ |
 
 ### 运行测试
 ```bash
@@ -132,3 +133,4 @@ npm run test:native-gpu-models
   - Gemma: GeGLU、嵌入归一化
   - MiniMax: 400K 上下文、KV 压缩
   - MiMo: 端侧量化、推荐 batch size
+  - vMLX (Apple MLX): 统一内存、Metal 加速、前缀缓存、连续批处理

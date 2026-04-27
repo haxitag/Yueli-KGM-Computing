@@ -75,8 +75,8 @@ export function buildGemma4SafetensorsAliases(params: {
       
       // Q/K/V 投影 - 无 bias
       { target: `layers.${index}.attention.wq.weight`, source: `model.layers.${index}.self_attn.q_proj.weight`, shape: [hidden, hidden] },
-      { target: `layers.${index}.attention.wk.weight`, source: `model.layers.${index}.self_attn.k_proj.weight`, shape: [cfg.numKvHeads * (hidden / cfg.numHeads), hidden] },
-      { target: `layers.${index}.attention.wv.weight`, source: `model.layers.${index}.self_attn.v_proj.weight`, shape: [cfg.numKvHeads * (hidden / cfg.numHeads), hidden] },
+      { target: `layers.${index}.attention.wk.weight`, source: `model.layers.${index}.self_attn.k_proj.weight`, shape: [(cfg.numKvHeads ?? cfg.numHeads) * (hidden / cfg.numHeads), hidden] },
+      { target: `layers.${index}.attention.wv.weight`, source: `model.layers.${index}.self_attn.v_proj.weight`, shape: [(cfg.numKvHeads ?? cfg.numHeads) * (hidden / cfg.numHeads), hidden] },
       { target: `layers.${index}.attention.wo.weight`, source: `model.layers.${index}.self_attn.o_proj.weight`, shape: [hidden, hidden] },
       
       // MLP - GeGLU (Gated GeLU): gate_up_proj 包含 gate 和 up

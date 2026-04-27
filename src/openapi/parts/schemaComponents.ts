@@ -280,6 +280,66 @@ export const openApiSchemaComponents: Record<string, unknown> = {
     },
   },
   KgmExecuteResult: { type: "object", description: "调度输出，与 Schema 与工具链相关", additionalProperties: true },
+  KceComputeRequest: {
+    type: "object",
+    description: "KCE 服务端计算请求；以 KgmRequest 为基础，额外支持 kce.mode / llm / graphLimit / memoryTopK / maxParallel。",
+    properties: {
+      userId: { type: "string" },
+      input: { type: "string" },
+      requestId: { type: "string" },
+      sessionId: { type: "string" },
+      constraints: { type: "object" },
+      kgm: { type: "object" },
+      kce: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["fast", "balanced", "quality"] },
+          llm: {
+            type: "object",
+            properties: {
+              enabled: { type: "boolean" },
+            },
+          },
+          graphLimit: { type: "integer", minimum: 1, maximum: 32 },
+          memoryTopK: { type: "integer", minimum: 0, maximum: 16 },
+          maxParallel: { type: "integer", minimum: 1, maximum: 8 },
+        },
+      },
+    },
+  },
+  KceComputeResult: {
+    type: "object",
+    required: ["answer", "evidence", "reasoning_trace", "execution_plan", "validation", "metrics"],
+    properties: {
+      answer: { type: "string" },
+      logical_form: { type: "object" },
+      evidence: {
+        type: "object",
+        properties: {
+          nodes: { type: "array" },
+          edges: { type: "array" },
+          subgraph_id: { type: "string" },
+          memory: { type: "array", items: { $ref: "#/components/schemas/Evidence" } },
+        },
+      },
+      reasoning_trace: { type: "array" },
+      execution_plan: { type: "object" },
+      validation: { type: "object" },
+      confidence: { type: "number" },
+      metrics: {
+        type: "object",
+        properties: {
+          total_latency_ms: { type: "number" },
+          steps_executed: { type: "integer" },
+          execution_batches: { type: "integer" },
+          llm_calls: { type: "integer" },
+          graph_triples: { type: "integer" },
+          memory_evidence: { type: "integer" },
+          validation_passed: { type: "boolean" },
+        },
+      },
+    },
+  },
   RoutingRollback: {
     type: "object",
     properties: { version: { type: "string" }, note: { type: "string" } },

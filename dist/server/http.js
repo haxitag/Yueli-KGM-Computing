@@ -9,14 +9,23 @@ import { ManagedModelManager } from "../models/modelManager.js";
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from "../routing/routingService.js";
 import { createHttpAccessConfigFromEnv, HttpRequestAccess } from "./httpAccess.js";
 import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
+import { getOptimizer } from "../optimization/optimizer.js";
 import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
 import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
+import { KceEngine } from "../kce/engine.js";
 export function createKgmServer(params) {
     const modelManager = params.modelManager ?? new ManagedModelManager();
     const routingHistory = createRoutingHistoryStoreFromEnv();
     const responseStore = new OpenAiResponseStore();
     const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
+    const kceEngine = new KceEngine({
+        contextBuilder: params.contextBuilder,
+        graphStore: params.graphStore,
+        memoryStore: params.memoryStore,
+        embedder: params.embedder,
+        llmClient: params.llmClient,
+    });
     return http.createServer(async (req, res) => {
         try {
             const url = new URL(req.url ?? "", "http://localhost");
@@ -28,6 +37,18 @@ export function createKgmServer(params) {
             }
             if (req.method === "GET" && url.pathname === "/metrics") {
                 return sendText(res, 200, modelManager.getPrometheusMetrics());
+            }
+            if (req.method === "GET" && url.pathname === "/v1/kgm/optimize/stats") {
+                const optimizer = getOptimizer();
+                return sendJson(res, 200, {
+                    optimizer: optimizer.getStats(),
+                    timestamp: new Date().toISOString(),
+                });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/optimize/clear-cache") {
+                const optimizer = getOptimizer();
+                optimizer.clearCache();
+                return sendJson(res, 200, { cleared: true, timestamp: new Date().toISOString() });
             }
             if (req.method === "GET" && (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json")) {
                 return sendJson(res, 200, getKgmOpenApiV1());
@@ -466,6 +487,11 @@ export function createKgmServer(params) {
             if (req.method === "POST" && url.pathname === "/v1/kgm/execute") {
                 const payload = (await readJson(req));
                 const response = await params.scheduler.run(payload);
+                return sendJson(res, 200, response);
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/kce/compute") {
+                const payload = (await readJson(req));
+                const response = await kceEngine.compute(payload);
                 return sendJson(res, 200, response);
             }
             return sendJson(res, 404, { error: "not_found" });

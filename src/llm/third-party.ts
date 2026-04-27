@@ -1012,7 +1012,6 @@ export class MoonshotLlmClient implements LlmClient {
     return {
       text: content,
       raw: data,
-      usage: data.usage,
     };
   }
 }

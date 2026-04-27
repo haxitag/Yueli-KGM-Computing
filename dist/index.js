@@ -61,3 +61,13 @@ export * from "./protocol/haxiTagAssembly.js";
 export * from "./ycb/client.js";
 export * from "./llm/completionNormalize.js";
 export * from "./llm/managedRuntimeClient.js";
+export * from "./optimization/responseCache.js";
+export * from "./utils/streamOptimizer.js";
+export * from "./utils/memoryPool.js";
+export * from "./utils/connectionPool.js";
+export * from "./kce/engine.js";
+// Shimmy-inspired inference optimizations
+export * from "./inference/modelDiscovery.js";
+export * from "./inference/quantization.js";
+export * from "./inference/moeOffloading.js";
+export * from "./inference/hotSwap.js";

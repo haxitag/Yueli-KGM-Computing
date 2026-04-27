@@ -49,6 +49,7 @@ import type { KgmRetrievalOptions } from "../core/types.js";
 import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
 import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
 import type { GraphRule } from "../graph/store.js";
+import { KceEngine, type KceComputeRequest } from "../kce/engine.js";
 
 export function createKgmServer(params: {
   scheduler: Scheduler;
@@ -71,6 +72,13 @@ export function createKgmServer(params: {
   const routingHistory = createRoutingHistoryStoreFromEnv();
   const responseStore = new OpenAiResponseStore();
   const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
+  const kceEngine = new KceEngine({
+    contextBuilder: params.contextBuilder,
+    graphStore: params.graphStore,
+    memoryStore: params.memoryStore,
+    embedder: params.embedder,
+    llmClient: params.llmClient,
+  });
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "", "http://localhost");
@@ -655,6 +663,12 @@ export function createKgmServer(params: {
       if (req.method === "POST" && url.pathname === "/v1/kgm/execute") {
         const payload = (await readJson(req)) as KgmRequest;
         const response = await params.scheduler.run(payload);
+        return sendJson(res, 200, response);
+      }
+
+      if (req.method === "POST" && url.pathname === "/v1/kgm/kce/compute") {
+        const payload = (await readJson(req)) as KceComputeRequest;
+        const response = await kceEngine.compute(payload);
         return sendJson(res, 200, response);
       }
 

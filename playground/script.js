@@ -34,7 +34,8 @@ class KGMTrustProxyPlayground {
             taskType: '',
             targetProvider: '',
             targetModel: '',
-            maxCostPerRequest: ''
+            maxCostPerRequest: '',
+            exchangeRate: 6.82, // 默认汇率: 1 USD = 6.82 CNY
         };
         this.loadConfigFromLocalStorage();
         this.renderStatusBar();
@@ -42,6 +43,13 @@ class KGMTrustProxyPlayground {
         this.loadAutoRoutingOverview();
         this.playgroundConfig = null;
         this.loadPlaygroundFromServer();
+        
+        // 初始化 KCE 任务管理器
+        this.taskManager = new KCETaskManager(this);
+        
+        // 默认显示任务标签页（最常用功能）
+        this.switchIntegrationTab('tasks');
+        
         window.setInterval(() => this.loadManagedModels(), 20000);
         window.setInterval(() => this.loadAutoRoutingOverview(), 25000);
     }
@@ -162,6 +170,7 @@ class KGMTrustProxyPlayground {
         this.integrationPanels = {
             skills: document.getElementById('int-panel-skills'),
             mcp: document.getElementById('int-panel-mcp'),
+            tasks: document.getElementById('int-panel-tasks'),
             output: document.getElementById('int-panel-output'),
         };
         this.playgroundConfigJson = document.getElementById('playground-config-json');
@@ -183,6 +192,33 @@ class KGMTrustProxyPlayground {
         this.modalOverlay.addEventListener('click', (e) => {
             if (e.target === this.modalOverlay) {
                 this.hideModal();
+            }
+        });
+        
+        // 键盘快捷键支持
+        document.addEventListener('keydown', (e) => {
+            // Ctrl/Cmd + Enter 提交
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                if (this.submitBtn && !this.submitBtn.disabled) {
+                    this.submitBtn.click();
+                }
+            }
+            // Ctrl/Cmd + K 清空输入
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+                if (this.clearBtn) {
+                    this.clearBtn.click();
+                }
+            }
+            // Ctrl/Cmd + 1-4 切换扩展标签页
+            if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '4') {
+                e.preventDefault();
+                const tabs = ['tasks', 'skills', 'mcp', 'output'];
+                const index = parseInt(e.key) - 1;
+                if (tabs[index]) {
+                    this.switchIntegrationTab(tabs[index]);
+                }
             }
         });
 
@@ -388,6 +424,46 @@ class KGMTrustProxyPlayground {
                         <button type="button" class="secondary-config-btn" id="use-default-native-model-path">使用 KGM_MODEL_PATH 默认值</button>
                     </div>
                     <span class="helper-text">支持文件或目录路径。当前本地 loader 支持 <code>.kgm.json</code>、<code>.gguf</code>、<code>.safetensors</code>、<code>.onnx</code>、Transformers/Hugging Face 模型目录、PyTorch <code>.bin/.pt/.pth</code>、TensorFlow <code>SavedModel/.h5/.ckpt</code>。也支持直接填写 Ollama store 根目录；这种情况下“模型名 / Runtime 名称”必须填写实际 Ollama 模型引用，例如 <code>qwen3.5:latest</code>。</span>
+                    
+                    <!-- vMLX (Apple MLX) 配置 -->
+                    <div class="vmlx-config-section" style="margin-top: 16px; padding: 12px; background: #f5f5f5; border-radius: 8px;">
+                        <label style="font-weight: 600; color: #333;">🍎 Apple Silicon (MLX) 优化配置</label>
+                        <div class="helper-text" style="margin-bottom: 8px;">针对 Mac M1/M2/M3/M4 系列芯片的 MLX 推理优化</div>
+                        
+                        <div class="form-row" style="display: flex; gap: 12px; margin-top: 8px;">
+                            <label class="option-field" style="flex: 1;">
+                                <span>量化格式</span>
+                                <select id="modal-mlx-quantization">
+                                    <option value="f16" selected>FP16 (推荐)</option>
+                                    <option value="bf16">BF16 (M2+ 推荐)</option>
+                                    <option value="q8_0">Q8_0 (8-bit)</option>
+                                    <option value="q4_0">Q4_0 (4-bit 最小)</option>
+                                    <option value="q4_1">Q4_1 (4-bit 高精度)</option>
+                                    <option value="f32">FP32 (全精度)</option>
+                                </select>
+                            </label>
+                            <label class="option-field" style="flex: 1;">
+                                <span>最大序列长度</span>
+                                <input type="number" id="modal-mlx-max-seq-len" value="4096" min="512" max="131072" step="512">
+                            </label>
+                        </div>
+                        
+                        <div class="form-row" style="display: flex; gap: 12px; margin-top: 8px;">
+                            <label class="option-field checkbox-field" style="flex: 1;">
+                                <input type="checkbox" id="modal-mlx-prefix-cache" checked>
+                                <span>启用前缀缓存</span>
+                            </label>
+                            <label class="option-field checkbox-field" style="flex: 1;">
+                                <input type="checkbox" id="modal-mlx-kv-quant">
+                                <span>KV缓存量化</span>
+                            </label>
+                        </div>
+                        
+                        <div class="mlx-model-hints" id="modal-mlx-model-hints" style="margin-top: 8px; font-size: 12px; color: #666;">
+                            💡 推荐从 <a href="https://huggingface.co/mlx-community" target="_blank">mlx-community</a> 下载预量化模型
+                        </div>
+                    </div>
+                    
                     <div class="path-browser" id="native-model-browser" style="display:none;"></div>
                 </div>
                 <button class="save-config-btn" id="save-model-config">保存配置</button>
@@ -466,12 +542,27 @@ class KGMTrustProxyPlayground {
                 if (selectedService === 'yueli-native') {
                     this.currentConfig.provider = 'yueli-native';
                     this.currentConfig.nativeModelPath = nativePathInput.value.trim();
+                    
+                    // 保存 vMLX 配置
+                    const mlxQuantization = document.getElementById('modal-mlx-quantization')?.value || 'f16';
+                    const mlxMaxSeqLen = parseInt(document.getElementById('modal-mlx-max-seq-len')?.value || '4096', 10);
+                    const mlxPrefixCache = document.getElementById('modal-mlx-prefix-cache')?.checked ?? true;
+                    const mlxKvQuant = document.getElementById('modal-mlx-kv-quant')?.checked ?? false;
+                    
+                    this.currentConfig.mlxConfig = {
+                        quantization: mlxQuantization,
+                        maxSeqLen: mlxMaxSeqLen,
+                        enablePrefixCache: mlxPrefixCache,
+                        enableKvCacheQuant: mlxKvQuant,
+                    };
+                    
                     if (this.isLikelyOllamaStorePath(this.currentConfig.nativeModelPath) && !requestedModelName) {
                         throw new Error('使用 Ollama store 根目录时，请在“模型名 / Runtime 名称”里填写实际 Ollama 模型引用，例如 qwen3.5:latest');
                     }
                     const applied = await this.ensureNativeRuntimeConfigured({
                         modelPath: this.currentConfig.nativeModelPath,
                         modelName: requestedModelName,
+                        mlxConfig: this.currentConfig.mlxConfig,
                     });
                     this.currentConfig.modelName = applied.modelName;
                     this.currentConfig.nativeRuntimeId = applied.runtimeId;
@@ -524,12 +615,34 @@ class KGMTrustProxyPlayground {
                     <input type="text" id="modal-target-model" placeholder="留空表示自动" value="${this.escapeHtml(this.currentConfig.targetModel || '')}">
                 </div>
                 <div class="form-group">
-                    <label for="modal-max-cost-routing">成本上限(USD):</label>
-                    <input type="number" id="modal-max-cost-routing" min="0" step="0.001" value="${this.escapeHtml(this.currentConfig.maxCostPerRequest || '')}">
+                    <label for="modal-max-cost-routing">成本上限 (USD/CNY):</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <div style="flex: 1;">
+                            <input type="number" id="modal-max-cost-routing" min="0" step="0.00000001" value="${this.escapeHtml(this.currentConfig.maxCostPerRequest || '')}" placeholder="USD">
+                            <small style="color: #2563eb;">USD</small>
+                        </div>
+                        <span style="color: #666;">≈</span>
+                        <div style="flex: 1;">
+                            <input type="text" id="modal-max-cost-routing-cny" readonly style="background: #f5f5f5; color: #dc2626;" 
+                                value="${this.currentConfig.maxCostPerRequest ? (parseFloat(this.currentConfig.maxCostPerRequest) * (this.currentConfig.exchangeRate || 6.82)).toFixed(8) : ''}">
+                            <small style="color: #dc2626;">CNY</small>
+                        </div>
+                    </div>
+                    <span class="helper-text">汇率: 1 USD = ${this.currentConfig.exchangeRate || 6.82} CNY</span>
                 </div>
                 <button class="save-config-btn" id="save-auto-routing-preference">保存偏好</button>
             </div>
         `;
+
+        // USD 输入实时计算 CNY
+        const usdInput = document.getElementById('modal-max-cost-routing');
+        const cnyInput = document.getElementById('modal-max-cost-routing-cny');
+        const rate = this.currentConfig.exchangeRate || 6.82;
+        
+        usdInput.addEventListener('input', (e) => {
+            const usdVal = parseFloat(e.target.value) || 0;
+            cnyInput.value = (usdVal * rate).toFixed(8);
+        });
 
         document.getElementById('save-auto-routing-preference').addEventListener('click', () => {
             this.currentConfig.routingProfile = document.getElementById('modal-routing-profile').value;
@@ -556,26 +669,62 @@ class KGMTrustProxyPlayground {
             { id: 'gpt-5.4', provider: 'OpenAI', defaults: { input: 0.005, output: 0.015 } },
             { id: 'gpt-5.5', provider: 'OpenAI', defaults: { input: 0.01, output: 0.03 } },
             { id: 'gpt-oss', provider: 'OpenAI', defaults: { input: 0.002, output: 0.006 } },
+            // GLM 系列
+            { id: 'glm-4-9b', provider: '智谱', defaults: { input: 0.0003, output: 0.0003 } },
+            { id: 'glm-4-32b', provider: '智谱', defaults: { input: 0.0005, output: 0.0005 } },
             { id: 'glm-5.0', provider: '智谱', defaults: { input: 0.0005, output: 0.0005 } },
             { id: 'glm-5.1', provider: '智谱', defaults: { input: 0.001, output: 0.001 } },
+            // GLM-4V (多模态)
+            { id: 'glm-4v-9b', provider: '智谱', defaults: { input: 0.0005, output: 0.0005 } },
+            // MiMo 系列 (小米)
+            { id: 'mimo-2.5-1.5b', provider: '小米', defaults: { input: 0.0002, output: 0.0002 } },
+            { id: 'mimo-2.5-7b', provider: '小米', defaults: { input: 0.0005, output: 0.0005 } },
+            { id: 'mimo-2.5-13b', provider: '小米', defaults: { input: 0.0007, output: 0.0007 } },
+            { id: 'mimo-2.5-30b', provider: '小米', defaults: { input: 0.001, output: 0.001 } },
             { id: 'mimo-2.5', provider: '小米', defaults: { input: 0.0008, output: 0.0008 } },
+            // Google Gemini
+            // Google Gemma 4 (本地/云端)
+            { id: 'gemma-4-2b-it', provider: 'Google', defaults: { input: 0.00005, output: 0.0001 } },
+            { id: 'gemma-4-4b', provider: 'Google', defaults: { input: 0.00008, output: 0.00016 } },
+            { id: 'gemma-4-9b', provider: 'Google', defaults: { input: 0.00015, output: 0.0003 } },
+            { id: 'gemma-4-27b', provider: 'Google', defaults: { input: 0.0004, output: 0.0008 } },
             // Google Gemini
             { id: 'gemini-3.0', provider: 'Google', defaults: { input: 0.0001, output: 0.0004 } },
             { id: 'gemini-3.1', provider: 'Google', defaults: { input: 0.0015, output: 0.006 } },
+            // Google Gemma 3
+            { id: 'gemma-3-1b-it', provider: 'Google', defaults: { input: 0.00003, output: 0.00006 } },
+            { id: 'gemma-3-4b-it', provider: 'Google', defaults: { input: 0.0001, output: 0.0002 } },
             // Anthropic
             { id: 'claude-sonnet-4.6', provider: 'Anthropic', defaults: { input: 0.003, output: 0.015 } },
             { id: 'claude-opus-4.7', provider: 'Anthropic', defaults: { input: 0.015, output: 0.075 } },
-            // 阿里云
+            // 阿里云 Qwen 系列
             { id: 'qwen-max', provider: '阿里云', defaults: { input: 0.0005, output: 0.001 } },
             { id: 'qwen-plus', provider: '阿里云', defaults: { input: 0.0003, output: 0.0006 } },
+            { id: 'qwen-turbo', provider: '阿里云', defaults: { input: 0.0001, output: 0.0002 } },
+            // Qwen 本地模型
+            { id: 'qwen2-7b', provider: '本地', defaults: { input: 0, output: 0 } },
+            { id: 'qwen2-14b', provider: '本地', defaults: { input: 0, output: 0 } },
+            { id: 'qwen3.5-7b', provider: '本地', defaults: { input: 0, output: 0 } },
+            { id: 'qwen3.5-14b', provider: '本地', defaults: { input: 0, output: 0 } },
+            { id: 'qwen3.5-32b', provider: '本地', defaults: { input: 0, output: 0 } },
+            { id: 'qwen3.6-72b', provider: '本地', defaults: { input: 0, output: 0 } },
             // ModelScope
+            // ModelScope 模型
             { id: 'deepseek-r1', provider: 'ModelScope', defaults: { input: 0.0002, output: 0.0008 } },
             { id: 'llama3-70b', provider: 'ModelScope', defaults: { input: 0.0004, output: 0.0008 } },
+            { id: 'qwen3-8b', provider: 'ModelScope', defaults: { input: 0.0001, output: 0.0002 } },
             { id: 'claude-opus-4.7', provider: 'Anthropic', defaults: { input: 0.015, output: 0.075 } },
             { id: 'kimi-2.5', provider: 'Moonshot', defaults: { input: 0.0005, output: 0.0005 } },
             { id: 'kimi-2.6', provider: 'Moonshot', defaults: { input: 0.001, output: 0.001 } },
+            // MiniMax 系列
+            { id: 'minimax-text-01-4b', provider: 'Minimax', defaults: { input: 0.0003, output: 0.0003 } },
+            { id: 'minimax-text-01-8b', provider: 'Minimax', defaults: { input: 0.0005, output: 0.0005 } },
+            { id: 'minimax-text-01-32b', provider: 'Minimax', defaults: { input: 0.0008, output: 0.0008 } },
+            { id: 'minimax-text-01-456b', provider: 'Minimax', defaults: { input: 0.001, output: 0.001 } },
             { id: 'minimax-2.5', provider: 'Minimax', defaults: { input: 0.0008, output: 0.0008 } },
             { id: 'minimax-2.7', provider: 'Minimax', defaults: { input: 0.0012, output: 0.0012 } },
+            // MiniMax Voice
+            { id: 'minimax-voice-01', provider: 'Minimax', defaults: { input: 0.001, output: 0.002 } },
             { id: 'deepseek-3.2', provider: 'DeepSeek', defaults: { input: 0.00014, output: 0.00028 } },
             { id: 'deepseek-v4', provider: 'DeepSeek', defaults: { input: 0.0003, output: 0.0006 } },
             { id: 'qwen-3.5', provider: 'Qwen', defaults: { input: 0.0003, output: 0.0006 } },
@@ -585,20 +734,30 @@ class KGMTrustProxyPlayground {
         // 计价模式: per1k (每1K tokens) 或 per1m (每百万 tokens)
         const pricingMode = this.currentConfig.pricingMode || 'per1k';
         const multiplier = pricingMode === 'per1m' ? 1000 : 1;
-        const unitLabel = pricingMode === 'per1m' ? 'USD/百万 tokens' : 'USD/1K tokens';
+        const unitLabelUsd = pricingMode === 'per1m' ? 'USD/百万 tokens' : 'USD/1K tokens';
+        const unitLabelCny = pricingMode === 'per1m' ? 'CNY/百万 tokens' : 'CNY/1K tokens';
+        
+        // 汇率设置
+        const exchangeRate = this.currentConfig.exchangeRate || 6.82;
 
         // 从 localStorage 读取用户自定义价格
         const userPricing = this.currentConfig.pricingOverrides || {};
 
         let bodyHtml = `
             <div class="config-form pricing-config-modal">
-                <div class="form-group">
-                    <label for="pricing-mode-select">计价模式:</label>
-                    <select id="pricing-mode-select">
-                        <option value="per1k" ${pricingMode === 'per1k' ? 'selected' : ''}>每 1K tokens (USD)</option>
-                        <option value="per1m" ${pricingMode === 'per1m' ? 'selected' : ''}>每 百万 tokens (USD)</option>
-                    </select>
-                    <span class="helper-text">切换计价单位不会影响实际存储的单价，仅改变显示方式。</span>
+                <div class="form-row" style="display: flex; gap: 12px;">
+                    <div class="form-group" style="flex: 1;">
+                        <label for="pricing-mode-select">计价模式:</label>
+                        <select id="pricing-mode-select">
+                            <option value="per1k" ${pricingMode === 'per1k' ? 'selected' : ''}>每 1K tokens</option>
+                            <option value="per1m" ${pricingMode === 'per1m' ? 'selected' : ''}>每 百万 tokens</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex: 1;">
+                        <label for="exchange-rate-input">汇率 (1 USD = ? CNY):</label>
+                        <input type="number" id="exchange-rate-input" value="${exchangeRate}" min="0.01" step="0.01" placeholder="6.82">
+                        <span class="helper-text">默认 1 USD = 6.82 CNY</span>
+                    </div>
                 </div>
                 <div class="pricing-note">
                     <span class="pricing-note-badge">云端推理</span>
@@ -610,8 +769,8 @@ class KGMTrustProxyPlayground {
                             <tr>
                                 <th>模型</th>
                                 <th>服务商</th>
-                                <th>输入价格 (${unitLabel})</th>
-                                <th>输出价格 (${unitLabel})</th>
+                                <th>输入价格<br><small style="color:#666;font-weight:normal;">${unitLabelUsd} / ${unitLabelCny}</small></th>
+                                <th>输出价格<br><small style="color:#666;font-weight:normal;">${unitLabelUsd} / ${unitLabelCny}</small></th>
                                 <th>操作</th>
                             </tr>
                         </thead>
@@ -620,15 +779,31 @@ class KGMTrustProxyPlayground {
 
         for (const m of cloudModels) {
             const override = userPricing[m.id];
-            const inputVal = ((override ? override.input : m.defaults.input) * multiplier).toFixed(6).replace(/\.?0+$/, '');
-            const outputVal = ((override ? override.output : m.defaults.output) * multiplier).toFixed(6).replace(/\.?0+$/, '');
+            const inputVal = ((override ? override.input : m.defaults.input) * multiplier);
+            const outputVal = ((override ? override.output : m.defaults.output) * multiplier);
+            const inputValCny = (inputVal * exchangeRate).toFixed(8);
+            const outputValCny = (outputVal * exchangeRate).toFixed(8);
+            const inputValStr = inputVal.toFixed(8).replace(/\.?0+$/, '');
+            const outputValStr = outputVal.toFixed(8).replace(/\.?0+$/, '');
             const isCustom = !!override;
             bodyHtml += `
                 <tr data-model="${this.escapeHtml(m.id)}" class="${isCustom ? 'pricing-row-custom' : ''}">
                     <td><code>${this.escapeHtml(m.id)}</code></td>
                     <td>${this.escapeHtml(m.provider)}</td>
-                    <td><input type="number" step="any" class="pricing-input pricing-input-in" value="${inputVal}" data-default="${m.defaults.input * multiplier}"></td>
-                    <td><input type="number" step="any" class="pricing-input pricing-input-out" value="${outputVal}" data-default="${m.defaults.output * multiplier}"></td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <span style="color: #2563eb; font-weight: 500; min-width: 60px;">$${inputValStr}</span>
+                            <span style="color: #dc2626; font-size: 12px;">¥${inputValCny}</span>
+                        </div>
+                        <input type="number" step="any" class="pricing-input pricing-input-in" value="${inputValStr}" data-default="${m.defaults.input * multiplier}" style="margin-top: 4px;">
+                    </td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <span style="color: #2563eb; font-weight: 500; min-width: 60px;">$${outputValStr}</span>
+                            <span style="color: #dc2626; font-size: 12px;">¥${outputValCny}</span>
+                        </div>
+                        <input type="number" step="any" class="pricing-input pricing-input-out" value="${outputValStr}" data-default="${m.defaults.output * multiplier}" style="margin-top: 4px;">
+                    </td>
                     <td>
                         <button type="button" class="pricing-reset-btn secondary-config-btn" ${!isCustom ? 'disabled' : ''}>重置</button>
                     </td>
@@ -656,6 +831,15 @@ class KGMTrustProxyPlayground {
         // 计价模式切换
         document.getElementById('pricing-mode-select').addEventListener('change', (e) => {
             this.currentConfig.pricingMode = e.target.value;
+            this.saveConfigToLocalStorage();
+            this.hideModal();
+            this.showPricingConfigModal();
+        });
+
+        // 汇率变更
+        const exchangeRateInput = document.getElementById('exchange-rate-input');
+        exchangeRateInput.addEventListener('change', (e) => {
+            this.currentConfig.exchangeRate = parseFloat(e.target.value) || 6.82;
             this.saveConfigToLocalStorage();
             this.hideModal();
             this.showPricingConfigModal();
@@ -716,6 +900,8 @@ class KGMTrustProxyPlayground {
                 }
 
                 this.currentConfig.pricingOverrides = overrides;
+                // 保存汇率设置
+                this.currentConfig.exchangeRate = parseFloat(document.getElementById('exchange-rate-input').value) || 6.82;
                 this.saveConfigToLocalStorage();
 
                 // 同步到服务端
@@ -1969,15 +2155,15 @@ class KGMTrustProxyPlayground {
             </div>
             <div class="routing-summary-card">
                 <span>生成成本</span>
-                <strong>$${(summary.totals?.actualCost ?? 0).toFixed(4)}</strong>
+                <strong>$${(summary.totals?.actualCost ?? 0).toFixed(8)}</strong>
             </div>
             <div class="routing-summary-card">
                 <span>评估成本</span>
-                <strong>$${(summary.totals?.evaluationCost ?? 0).toFixed(4)}</strong>
+                <strong>$${(summary.totals?.evaluationCost ?? 0).toFixed(8)}</strong>
             </div>
             <div class="routing-summary-card">
                 <span>总成本</span>
-                <strong>$${(summary.totals?.totalCost ?? 0).toFixed(4)}</strong>
+                <strong>$${(summary.totals?.totalCost ?? 0).toFixed(8)}</strong>
             </div>
             <div class="routing-summary-card">
                 <span>总 Tokens</span>
@@ -1997,7 +2183,7 @@ class KGMTrustProxyPlayground {
                         <span>${this.escapeHtml(item.source || 'default')}</span>
                     </div>
                     <span>requests: ${item.requestCount} · success: ${this.formatPercent(item.successRate)}</span>
-                    <span>latency: ${Math.round(item.avgLatencyMs || 0)} ms · gen cost: $${(item.avgCost || 0).toFixed(4)} · eval cost: $${(item.avgEvaluationCost || 0).toFixed(4)}</span>
+                    <span>latency: ${Math.round(item.avgLatencyMs || 0)} ms · gen cost: $${(item.avgCost || 0).toFixed(8)} · eval cost: $${(item.avgEvaluationCost || 0).toFixed(8)}</span>
                     <span>quality: ${this.formatPercent(item.avgQuality || 0)} · confidence: ${this.formatPercent(item.avgConfidence || 0)} · judge: ${this.formatPercent(item.avgJudgeScore || 0)}</span>
                     <span>judge run: ${this.formatPercent(item.judgeRunRate || 0)} · verifier run: ${this.formatPercent(item.verifierRunRate || 0)} · verifier pass: ${this.formatPercent(item.verificationPassRate || 0)}</span>
                 </div>
@@ -2013,7 +2199,7 @@ class KGMTrustProxyPlayground {
                         <span>${this.escapeHtml(item.profile)}</span>
                     </div>
                     <span>${this.escapeHtml(item.selected?.label || item.selected?.model || 'unknown')}</span>
-                    <span>success: ${item.success ? 'yes' : 'no'} · latency: ${Math.round(item.latencyMs || 0)} ms · gen: $${(item.actualCost || 0).toFixed(4)} · eval: $${(item.evaluationCost || 0).toFixed(4)} · total: $${(item.totalCost || 0).toFixed(4)}</span>
+                    <span>success: ${item.success ? 'yes' : 'no'} · latency: ${Math.round(item.latencyMs || 0)} ms · gen: $${(item.actualCost || 0).toFixed(8)} · eval: $${(item.evaluationCost || 0).toFixed(8)} · total: $${(item.totalCost || 0).toFixed(8)}</span>
                     <span>quality: ${this.formatPercent(item.qualityScore || 0)} · confidence: ${this.formatPercent(item.confidence || 0)} · source: ${this.escapeHtml(item.evaluation?.qualitySource || 'heuristic')}</span>
                     <span>judge: ${this.formatPercent(item.evaluation?.judge?.score || 0)} · verifier: ${item.evaluation?.verifier?.attempted ? (item.evaluation?.verifier?.passed ? 'pass' : 'fail') : 'n/a'} · eval tokens: ${item.evaluationTotalTokens || 0}</span>
                     <span>${this.escapeHtml(item.inputPreview || '')}</span>

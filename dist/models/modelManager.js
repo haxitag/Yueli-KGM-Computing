@@ -219,6 +219,56 @@ export class ManagedModelManager {
                 owned_by: defaultOwner,
             });
         }
+        // 云端推理服务商支持的模型列表
+        const cloudModels = [
+            // OpenAI
+            { id: "gpt-5.4", owned_by: "openai" },
+            { id: "gpt-5.5", owned_by: "openai" },
+            { id: "gpt-oss", owned_by: "openai" },
+            // Zhipu
+            { id: "glm-5.0", owned_by: "zhipu" },
+            { id: "glm-5.1", owned_by: "zhipu" },
+            // Xiaomi
+            { id: "mimo-2.5", owned_by: "xiaomi" },
+            // Google Gemini
+            { id: "gemini-3.0", owned_by: "google" },
+            { id: "gemini-3.1", owned_by: "google" },
+            // Anthropic
+            { id: "claude-sonnet-4.6", owned_by: "anthropic" },
+            { id: "claude-opus-4.7", owned_by: "anthropic" },
+            // Moonshot / Kimi
+            { id: "kimi-2.5", owned_by: "moonshot" },
+            { id: "kimi-2.6", owned_by: "moonshot" },
+            // Minimax
+            { id: "minimax-2.5", owned_by: "minimax" },
+            { id: "minimax-2.7", owned_by: "minimax" },
+            // DeepSeek
+            { id: "deepseek-3.2", owned_by: "deepseek" },
+            { id: "deepseek-v4", owned_by: "deepseek" },
+            // Qwen / Aliyun
+            { id: "qwen-3.5", owned_by: "qwen" },
+            { id: "qwen-3.6", owned_by: "qwen" },
+            { id: "qwen-max", owned_by: "aliyun" },
+            { id: "qwen-plus", owned_by: "aliyun" },
+            // ModelScope
+            { id: "deepseek-r1", owned_by: "modelscope" },
+            { id: "llama3-70b", owned_by: "modelscope" },
+        ];
+        for (const cloudModel of cloudModels) {
+            if (!seen.has(cloudModel.id)) {
+                seen.add(cloudModel.id);
+                models.push({
+                    id: cloudModel.id,
+                    object: "model",
+                    created,
+                    owned_by: cloudModel.owned_by,
+                    kgm: {
+                        cloud: true,
+                        provider: cloudModel.owned_by,
+                    },
+                });
+            }
+        }
         for (const runtime of this.state.runtimes) {
             if (runtime.status !== "running" || seen.has(runtime.modelName)) {
                 continue;

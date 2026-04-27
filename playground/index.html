@@ -6,28 +6,70 @@
     <title>KGM-Computing Playground</title>
     <link rel="stylesheet" href="design-system.css">
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="enhanced-styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        // 初始化 Mermaid
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            },
+            sequence: {
+                useMaxWidth: true,
+                diagramMarginX: 50,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 150,
+                height: 65,
+                boxMargin: 10
+            }
+        });
+    </script>
 </head>
 <body class="app-body">
-    <!-- 顶栏：先凭证与模型，再调度与算力，最后请求层扩展（技能→工具→输出） -->
+    <!-- 顶栏：按功能域分组，清晰的信息架构 -->
     <header class="top-nav" role="banner">
         <span class="nav-brand">KGM Playground</span>
-        <nav class="nav-primary" aria-label="连接与模型">
-            <button type="button" class="nav-item" id="api-keys-btn">API Keys</button>
-            <button type="button" class="nav-item" id="model-select-btn">选择模型</button>
-            <button type="button" class="nav-item" id="model-config-btn">模型配置</button>
-            <button type="button" class="nav-item" id="auto-routing-btn">自动调度</button>
-            <button type="button" class="nav-item" id="pricing-config-btn">价格配置</button>
-            <a href="runtimes.html" target="_blank" rel="noopener noreferrer" class="nav-item nav-external" title="新标签页打开">推理实例</a>
-            <a href="sandbox.html" target="_blank" rel="noopener noreferrer" class="nav-item nav-external" title="新标签页打开">沙箱控制</a>
+        
+        <!-- 核心配置区 -->
+        <nav class="nav-primary" aria-label="核心配置">
+            <button type="button" class="nav-item" id="api-keys-btn" title="API密钥管理">Keys</button>
+            <button type="button" class="nav-item" id="model-select-btn" title="选择模型">模型</button>
+            <button type="button" class="nav-item" id="model-config-btn" title="模型参数配置">配置</button>
         </nav>
+        
         <span class="nav-divider" aria-hidden="true"></span>
-        <nav class="nav-extensions" aria-label="请求扩展" role="tablist">
-            <button type="button" class="nav-item nav-integration active" data-int-tab="skills" role="tab" aria-selected="true">技能</button>
-            <button type="button" class="nav-item nav-integration" data-int-tab="mcp" role="tab" aria-selected="false">MCP</button>
-            <button type="button" class="nav-item nav-integration" data-int-tab="output" role="tab" aria-selected="false">输出模版</button>
+        
+        <!-- 智能调度区 -->
+        <nav class="nav-secondary" aria-label="智能调度">
+            <button type="button" class="nav-item" id="auto-routing-btn" title="自动路由调度">路由</button>
+            <button type="button" class="nav-item" id="pricing-config-btn" title="成本与价格配置">价格</button>
         </nav>
+        
+        <span class="nav-divider" aria-hidden="true"></span>
+        
+        <!-- 运行时管理区 -->
+        <nav class="nav-tertiary" aria-label="运行时管理">
+            <a href="runtimes.html" target="_blank" rel="noopener noreferrer" class="nav-item nav-external" title="推理实例管理">实例</a>
+            <a href="sandbox.html" target="_blank" rel="noopener noreferrer" class="nav-item nav-external" title="沙箱环境">沙箱</a>
+        </nav>
+        
         <span class="nav-spacer" aria-hidden="true"></span>
-        <button type="button" id="info-btn" class="info-btn" title="功能介绍" aria-label="功能介绍">?</button>
+        
+        <!-- 扩展功能标签页 -->
+        <nav class="nav-extensions" aria-label="扩展功能" role="tablist">
+            <button type="button" class="nav-item nav-integration active" data-int-tab="tasks" role="tab" aria-selected="true" title="KCE任务管理">任务</button>
+            <button type="button" class="nav-item nav-integration" data-int-tab="skills" role="tab" aria-selected="false" title="技能管理">技能</button>
+            <button type="button" class="nav-item nav-integration" data-int-tab="mcp" role="tab" aria-selected="false" title="MCP工具">MCP</button>
+            <button type="button" class="nav-item nav-integration" data-int-tab="output" role="tab" aria-selected="false" title="输出模板">输出</button>
+        </nav>
+        
+        <button type="button" id="info-btn" class="info-btn" title="帮助与功能介绍" aria-label="帮助">?</button>
     </header>
 
     <div class="main-layout" id="playground-main">
@@ -209,6 +251,47 @@
             </div>
             <div id="int-panel-mcp" class="integration-panel" role="tabpanel" hidden>
                 <p class="integration-desc">MCP HTTP（JSON-RPC）连接器；激活项写入系统提示，通过工具 <code>mcp_call</code> 调用（需完整端点 URL）。</p>
+            </div>
+            <div id="int-panel-tasks" class="integration-panel" role="tabpanel" hidden>
+                <div class="section-head">
+                    <h2 class="section-title">KCE 任务管理</h2>
+                    <p class="section-desc">创建、执行和可视化知识计算任务，查看时序图和执行轨迹。</p>
+                </div>
+                <div class="task-controls">
+                    <button type="button" id="new-task-btn" class="btn btn-primary">+ 新建任务</button>
+                    <button type="button" id="run-task-btn" class="btn btn-secondary" disabled>▶ 执行任务</button>
+                    <button type="button" id="clear-tasks-btn" class="btn btn-secondary">清空</button>
+                </div>
+                <div id="task-list" class="task-list">
+                    <!-- 任务列表将动态生成 -->
+                </div>
+                <div id="task-detail" class="task-detail" hidden>
+                    <h3>任务详情</h3>
+                    <div class="task-info">
+                        <div class="info-row">
+                            <span class="info-label">查询:</span>
+                            <span id="task-query" class="info-value"></span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">状态:</span>
+                            <span id="task-status" class="info-value"></span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">执行时间:</span>
+                            <span id="task-duration" class="info-value"></span>
+                        </div>
+                    </div>
+                    <div class="task-diagrams">
+                        <h4>时序图</h4>
+                        <div id="sequence-diagram" class="diagram-container"></div>
+                        <h4 style="margin-top: 20px;">执行计划 DAG</h4>
+                        <div id="dag-diagram" class="diagram-container"></div>
+                    </div>
+                    <div class="task-trace">
+                        <h4>执行轨迹</h4>
+                        <pre id="task-trace-output" class="trace-output"></pre>
+                    </div>
+                </div>
             </div>
             <div id="int-panel-output" class="integration-panel" role="tabpanel" hidden>
                 <p class="integration-desc">输出模版支持 <code>{{变量名}}</code> 插槽；常用 <code>{{content}}</code> 为模型原文。</p>
@@ -482,6 +565,8 @@
         </div>
     </div>
 
+    <script src="../src/kce/kce-engine.js"></script>
+    <script src="kce-task-manager.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

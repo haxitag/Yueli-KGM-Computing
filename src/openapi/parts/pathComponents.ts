@@ -291,5 +291,14 @@ export function buildOpenApiPathsV1(): Record<string, unknown> {
         responses: { "200": j200("KgmExecuteResult"), ...postWithBody() },
       },
     },
+    "/v1/kgm/kce/compute": {
+      post: {
+        summary: "KCE 端到端知识计算",
+        requestBody: {
+          content: { "application/json": { schema: { $ref: "#/components/schemas/KceComputeRequest" } } },
+        },
+        responses: { "200": j200("KceComputeResult"), ...postWithBody() },
+      },
+    },
   };
 }

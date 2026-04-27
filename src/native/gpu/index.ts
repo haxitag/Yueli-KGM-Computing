@@ -68,10 +68,28 @@ import {
 } from "./qwen2.js";
 export { buildQwen2SafetensorsAliases, QWEN2_RECOMMENDED_CONFIGS, estimateQwen2Memory, type Qwen2SafetensorsAlias };
 
+// vMLX (Apple MLX) 适配器 - 专为 Apple Silicon 优化
+export {
+  detectAppleSiliconDevice,
+  estimateMlxMemory,
+  getRecommendedMlxQuantization,
+  buildMlxLoadConfig,
+  generateVmlxCommand,
+  isMlxSupported,
+  getMlxVersion,
+  MLX_SUPPORTED_MODELS,
+  DEFAULT_VMLX_SERVER_CONFIG,
+  type MlxQuantizationFormat,
+  type MlxInferenceConfig,
+  type MlxMemoryEstimate,
+  type AppleSiliconDevice,
+  type VmlxServerConfig,
+} from "./vmlxAdapter.js";
+
 // 模型类型枚举
-export type SupportedModelFamily = 
+export type SupportedModelFamily =
   | "qwen"
-  | "glm" 
+  | "glm"
   | "gemma"
   | "minimax"
   | "mimo";
@@ -157,41 +175,56 @@ export function getModelConfig(modelName: string): {
   config: unknown;
   size: string;
 } | null {
-  for (const [familyKey, familyData] of Object.entries(MODEL_REGISTRY)) {
-    if (modelName in familyData.models) {
-      const modelData = familyData.models[modelName as keyof typeof familyData.models];
-      if (modelData) {
-        let config;
-        switch (modelData.config) {
-          case "qwen2":
-            config = QWEN2_RECOMMENDED_CONFIGS[modelName];
-            break;
-          case "qwen3":
-            config = QWEN3_RECOMMENDED_CONFIGS[modelName];
-            break;
-          case "glm5":
-            config = GLM5_RECOMMENDED_CONFIGS[modelName];
-            break;
-          case "gemma4":
-            config = GEMMA4_RECOMMENDED_CONFIGS[modelName];
-            break;
-          case "minimax25":
-            config = MINIMAX25_RECOMMENDED_CONFIGS[modelName];
-            break;
-          case "mimo25":
-            config = MIMO25_RECOMMENDED_CONFIGS[modelName];
-            break;
-          default:
-            return null;
-        }
-        return {
-          family: familyData.family,
-          config,
-          size: modelData.size,
-        };
-      }
+  // Qwen 系列
+  if (modelName in MODEL_REGISTRY.qwen.models) {
+    const qwenModels = MODEL_REGISTRY.qwen.models as Record<string, { config: string; size: string }>;
+    const modelData = qwenModels[modelName];
+    if (!modelData) return null;
+    let config;
+    switch (modelData.config) {
+      case "qwen2": config = QWEN2_RECOMMENDED_CONFIGS[modelName as keyof typeof QWEN2_RECOMMENDED_CONFIGS]; break;
+      case "qwen3": config = QWEN3_RECOMMENDED_CONFIGS[modelName as keyof typeof QWEN3_RECOMMENDED_CONFIGS]; break;
+      default: return null;
     }
+    return { family: "qwen", config, size: modelData.size };
   }
+  
+  // GLM 系列
+  if (modelName in MODEL_REGISTRY.glm.models) {
+    const glmModels = MODEL_REGISTRY.glm.models as Record<string, { config: string; size: string }>;
+    const modelData = glmModels[modelName];
+    if (!modelData) return null;
+    const config = GLM5_RECOMMENDED_CONFIGS[modelName as keyof typeof GLM5_RECOMMENDED_CONFIGS];
+    return { family: "glm", config, size: modelData.size };
+  }
+  
+  // Gemma 系列
+  if (modelName in MODEL_REGISTRY.gemma.models) {
+    const gemmaModels = MODEL_REGISTRY.gemma.models as Record<string, { config: string; size: string }>;
+    const modelData = gemmaModels[modelName];
+    if (!modelData) return null;
+    const config = GEMMA4_RECOMMENDED_CONFIGS[modelName as keyof typeof GEMMA4_RECOMMENDED_CONFIGS];
+    return { family: "gemma", config, size: modelData.size };
+  }
+  
+  // MiniMax 系列
+  if (modelName in MODEL_REGISTRY.minimax.models) {
+    const minimaxModels = MODEL_REGISTRY.minimax.models as Record<string, { config: string; size: string }>;
+    const modelData = minimaxModels[modelName];
+    if (!modelData) return null;
+    const config = MINIMAX25_RECOMMENDED_CONFIGS[modelName as keyof typeof MINIMAX25_RECOMMENDED_CONFIGS];
+    return { family: "minimax", config, size: modelData.size };
+  }
+  
+  // MiMo 系列
+  if (modelName in MODEL_REGISTRY.mimo.models) {
+    const mimoModels = MODEL_REGISTRY.mimo.models as Record<string, { config: string; size: string }>;
+    const modelData = mimoModels[modelName];
+    if (!modelData) return null;
+    const config = MIMO25_RECOMMENDED_CONFIGS[modelName as keyof typeof MIMO25_RECOMMENDED_CONFIGS];
+    return { family: "mimo", config, size: modelData.size };
+  }
+  
   return null;
 }
 
@@ -209,62 +242,66 @@ export function estimateModelMemory(
   const modelInfo = getModelConfig(modelName);
   if (!modelInfo || !modelInfo.config) return null;
 
-  const config = modelInfo.config as NativeModelConfig & { 
-    qwen3Config?: unknown;
-    glm5Config?: unknown;
-    gemma4Config?: unknown;
-    minimax25Config?: unknown;
-    mimo25Config?: unknown;
-  };
+  const baseConfig = modelInfo.config as NativeModelConfig;
 
   switch (modelInfo.family) {
-    case "qwen":
-      if ("qwen3Config" in config) {
+    case "qwen": {
+      const qwenConfig = modelInfo.config as NativeModelConfig & { qwen3Config?: unknown };
+      if (qwenConfig.qwen3Config) {
         return estimateQwen3Memory({
-          config,
+          config: baseConfig,
           quantization: params.quantization,
           batchSize: params.batchSize,
           maxSeqLen: params.maxSeqLen,
         });
       }
       return estimateQwen2Memory({
-        config,
+        config: baseConfig,
         quantization: params.quantization,
         batchSize: params.batchSize,
         maxSeqLen: params.maxSeqLen,
       });
-    case "glm":
+    }
+    case "glm": {
+      const glmConfig = modelInfo.config as NativeModelConfig & { glm5Config?: unknown };
       return estimateGlm5Memory({
-        config,
-        glm5Config: config.glm5Config,
+        config: baseConfig,
+        glm5Config: glmConfig.glm5Config as import("./glm5.js").Glm5Config | undefined,
         quantization: params.quantization,
         batchSize: params.batchSize,
         maxSeqLen: params.maxSeqLen,
       });
-    case "gemma":
+    }
+    case "gemma": {
+      const gemmaConfig = modelInfo.config as NativeModelConfig & { gemma4Config?: unknown };
       return estimateGemma4Memory({
-        config,
-        gemma4Config: config.gemma4Config,
+        config: baseConfig,
+        gemma4Config: gemmaConfig.gemma4Config as import("./gemma4.js").Gemma4Config | undefined,
         quantization: params.quantization,
         batchSize: params.batchSize,
         maxSeqLen: params.maxSeqLen,
       });
-    case "minimax":
+    }
+    case "minimax": {
+      const minimaxConfig = modelInfo.config as NativeModelConfig & { minimax25Config?: unknown };
       return estimateMinimax25Memory({
-        config,
-        minimax25Config: config.minimax25Config,
+        config: baseConfig,
+        minimax25Config: minimaxConfig.minimax25Config as import("./minimax25.js").Minimax25Config | undefined,
         quantization: params.quantization,
         batchSize: params.batchSize,
         maxSeqLen: params.maxSeqLen,
       });
-    case "mimo":
+    }
+    case "mimo": {
+      const mimoConfig = modelInfo.config as NativeModelConfig & { mimo25Config?: unknown };
       return estimateMimo25Memory({
-        config,
-        mimo25Config: config.mimo25Config,
+        config: baseConfig,
+        mimo25Config: mimoConfig.mimo25Config as import("./mimo25.js").Mimo25Config | undefined,
         quantization: params.quantization,
         batchSize: params.batchSize,
         maxSeqLen: params.maxSeqLen,
       });
+    }
     default:
       return null;
   }
