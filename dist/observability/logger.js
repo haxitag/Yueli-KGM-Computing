@@ -1,0 +1,78 @@
+import pino from 'pino';
+const sensitiveKeys = [
+    'password',
+    'passwd',
+    'secret',
+    'token',
+    'apikey',
+    'api_key',
+    'authorization',
+    'bearer',
+    'credential',
+    'credit',
+    'ssn',
+    'social_security',
+];
+function redactSensitiveData(obj) {
+    if (obj === null || obj === undefined) {
+        return obj;
+    }
+    if (typeof obj === 'string') {
+        return obj;
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(redactSensitiveData);
+    }
+    if (typeof obj === 'object') {
+        const result = {};
+        for (const [key, value] of Object.entries(obj)) {
+            const lowerKey = key.toLowerCase();
+            if (sensitiveKeys.some(sk => lowerKey.includes(sk))) {
+                result[key] = '[REDACTED]';
+            }
+            else {
+                result[key] = redactSensitiveData(value);
+            }
+        }
+        return result;
+    }
+    return obj;
+}
+export function createLogger(options) {
+    const level = options?.level || process.env.LOG_LEVEL || 'info';
+    const serviceName = options?.serviceName || 'yueli-kgm-computing';
+    const environment = options?.environment || process.env.NODE_ENV || 'development';
+    return pino({
+        level,
+        name: serviceName,
+        formatters: {
+            level: (label) => ({ level: label }),
+        },
+        serializers: {
+            err: pino.stdSerializers.err,
+            req: pino.stdSerializers.req,
+            res: pino.stdSerializers.res,
+            error: pino.stdSerializers.err,
+        },
+        redact: {
+            paths: sensitiveKeys.map(k => `*.${k}`),
+            remove: true,
+        },
+        timestamp: pino.stdTimeFunctions.isoTime,
+        base: {
+            pid: process.pid,
+            hostname: process.env.HOSTNAME || 'unknown',
+            environment,
+        },
+        mixin: () => ({
+            service: serviceName,
+        }),
+    });
+}
+export const logger = createLogger();
+export function withLoggerContext(context) {
+    return {
+        ...context,
+        logger: logger.child(redactSensitiveData(context)),
+    };
+}

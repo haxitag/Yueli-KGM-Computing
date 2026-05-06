@@ -309,6 +309,39 @@ export class OpenAILlmClient implements LlmClient {
   }
 }
 
+export class MockLlmClient implements LlmClient {
+  async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
+    const toolMatch = prompt.match(/search_web|web_search|market.*trend|查找|搜索/);
+    if (toolMatch) {
+      return {
+        text: JSON.stringify({
+          type: "call",
+          target: "search_web",
+          arguments: { query: prompt },
+        }),
+        raw: {},
+      };
+    }
+    return {
+      text: `Mock response for: ${prompt.slice(0, 50)}${prompt.length > 50 ? "..." : ""}`,
+      raw: {},
+    };
+  }
+
+  async* streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
+    yield { type: "started", model: options?.model ?? "mock-model" };
+    const response = await this.complete(prompt, options);
+    for (let i = 0; i < response.text.length; i += 10) {
+      yield {
+        type: "token",
+        text: response.text.slice(i, Math.min(i + 10, response.text.length)),
+        index: i,
+      };
+    }
+    yield { type: "finished", result: response };
+  }
+}
+
 function buildAuthHeaders(apiKey?: string): Record<string, string> {
   if (!apiKey) {
     return {};
