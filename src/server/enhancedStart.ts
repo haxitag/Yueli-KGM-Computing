@@ -358,7 +358,13 @@ async function main(): Promise<void> {
       }
 
       if (req.method === "POST" && url.pathname === "/v1/kgm/graph/shortest_path") {
-        const payload = (await readJson(req)) as { from?: string; to?: string; maxHops?: number };
+        const payload = (await readJson(req)) as {
+          from?: string;
+          to?: string;
+          maxHops?: number;
+          userId?: string;
+          namespace?: string;
+        };
         const from = payload.from?.trim();
         const to = payload.to?.trim();
         if (!from || !to) {
@@ -367,7 +373,11 @@ async function main(): Promise<void> {
         if (!runtime.graphStore.shortestPath) {
           return sendJson(res, 501, kgmErrorBody("graph_path_unavailable", "shortestPath not available", 501));
         }
-        const result = await runtime.graphStore.shortestPath({ from, to, maxHops: payload.maxHops });
+        const namespace = readGraphNamespace(payload);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
+        }
+        const result = await runtime.graphStore.shortestPath({ from, to, maxHops: payload.maxHops, namespace });
         return sendJson(res, 200, { result });
       }
 
@@ -375,20 +385,36 @@ async function main(): Promise<void> {
         if (!runtime.graphStore.connectedCommunities) {
           return sendJson(res, 501, kgmErrorBody("graph_communities_unavailable", "no API", 501));
         }
-        return sendJson(res, 200, await runtime.graphStore.connectedCommunities());
+        const payload = (await readJson(req)) as { userId?: string; namespace?: string };
+        const namespace = readGraphNamespace(payload);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
+        }
+        return sendJson(res, 200, await runtime.graphStore.connectedCommunities({ namespace }));
       }
       if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/expand") {
         if (!runtime.graphStore.reasonExpand) {
           return sendJson(res, 501, kgmErrorBody("graph_expand_unavailable", "no API", 501));
         }
-        const b = (await readJson(req)) as { entity?: string; maxDepth?: number; relations?: string[] };
+        const b = (await readJson(req)) as {
+          entity?: string;
+          maxDepth?: number;
+          relations?: string[];
+          userId?: string;
+          namespace?: string;
+        };
         if (!b.entity?.trim()) {
           return sendJson(res, 400, kgmErrorBody("entity_required", "entity required", 400));
+        }
+        const namespace = readGraphNamespace(b);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
         }
         const result = await runtime.graphStore.reasonExpand({
           entity: b.entity.trim(),
           maxDepth: b.maxDepth ?? 2,
           relations: b.relations,
+          namespace,
         });
         return sendJson(res, 200, { result });
       }
@@ -396,9 +422,24 @@ async function main(): Promise<void> {
         if (!runtime.graphStore.applyRules) {
           return sendJson(res, 501, kgmErrorBody("graph_rules_unavailable", "no API", 501));
         }
-        const b = (await readJson(req)) as { rules?: GraphRule[]; maxRounds?: number; source?: string };
+        const b = (await readJson(req)) as {
+          rules?: GraphRule[];
+          maxRounds?: number;
+          source?: string;
+          userId?: string;
+          namespace?: string;
+        };
         const maxR = Math.max(1, Math.min(20, b.maxRounds ?? 5));
-        const added = await runtime.graphStore.applyRules({ rules: b.rules ?? [], maxRounds: maxR, source: b.source });
+        const namespace = readGraphNamespace(b);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
+        }
+        const added = await runtime.graphStore.applyRules({
+          rules: b.rules ?? [],
+          maxRounds: maxR,
+          source: b.source,
+          namespace,
+        });
         return sendJson(res, 200, { added, count: added.length });
       }
       if (req.method === "POST" && url.pathname === "/v1/kgm/multimodal/embed") {
@@ -416,10 +457,17 @@ async function main(): Promise<void> {
         const payload = (await readJson(req)) as {
           triples?: Array<{ subject: string; predicate: string; object: string; weight?: number }>;
           source?: string;
+          userId?: string;
+          namespace?: string;
         };
+        const namespace = readGraphNamespace(payload);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
+        }
         const stored = await runtime.graphStore.addTriples({
           triples: payload.triples ?? [],
           source: payload.source ?? "api",
+          namespace,
         });
         return sendJson(res, 200, { status: "ok", count: stored.length, triples: stored });
       }
@@ -693,6 +741,18 @@ function parseQueryNumber(value: string | null): number | undefined {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
+function readGraphNamespace(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const payload = value as Record<string, unknown>;
+  return typeof payload.namespace === "string" && payload.namespace.trim()
+      ? payload.namespace.trim()
+      : typeof payload.userId === "string" && payload.userId.trim()
+        ? payload.userId.trim()
+        : undefined;
+}
+
 function loadConfigFromEnv(): KgmConfigPatch {
   const embedding = pickDefined({
     baseUrl: process.env.KGM_EMBEDDING_BASE_URL,
@@ -717,9 +777,18 @@ function loadConfigFromEnv(): KgmConfigPatch {
   });
 
   const database = pickDefined({
-    provider: process.env.KGM_DB_PROVIDER as "sqlite" | undefined,
+    provider: process.env.KGM_DB_PROVIDER as "sqlite" | "postgresql" | undefined,
     filePath: process.env.KGM_DB_PATH,
     journalMode: process.env.KGM_DB_JOURNAL as "WAL" | "DELETE" | undefined,
+    host: process.env.KGM_DB_HOST,
+    port: process.env.KGM_DB_PORT ? parseInt(process.env.KGM_DB_PORT) : undefined,
+    database: process.env.KGM_DB_NAME,
+    username: process.env.KGM_DB_USER,
+    password: process.env.KGM_DB_PASSWORD,
+    ssl: process.env.KGM_DB_SSL === 'true',
+    maxConnections: process.env.KGM_DB_MAX_CONNECTIONS ? parseInt(process.env.KGM_DB_MAX_CONNECTIONS) : undefined,
+    idleTimeout: process.env.KGM_DB_IDLE_TIMEOUT ? parseInt(process.env.KGM_DB_IDLE_TIMEOUT) : undefined,
+    connectionTimeout: process.env.KGM_DB_CONNECTION_TIMEOUT ? parseInt(process.env.KGM_DB_CONNECTION_TIMEOUT) : undefined,
   });
 
   const vector = pickDefined({

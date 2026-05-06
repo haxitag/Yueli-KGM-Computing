@@ -27,9 +27,20 @@ export type LlmConfig = {
 };
 
 export type DatabaseConfig = {
-  provider: "sqlite";
-  filePath: string;
+  provider: "sqlite" | "postgresql";
+  // SQLite 配置
+  filePath?: string;
   journalMode?: "WAL" | "DELETE";
+  // PostgreSQL 配置
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  password?: string;
+  ssl?: boolean;
+  maxConnections?: number;
+  idleTimeout?: number;
+  connectionTimeout?: number;
 };
 
 export type VectorConfig = {

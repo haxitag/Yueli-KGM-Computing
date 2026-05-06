@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 
 import type { SandboxInstance, SandboxKind, SandboxPreview } from "../core/types.js";
 
@@ -205,17 +206,66 @@ class CommandSandboxAdapter implements SandboxAdapter {
     if (endpoint) {
       return {
         detail: `${this.label} attached via ${endpoint}`,
+        ...this.getSystemMetrics(),
       };
     }
     const pid = this.processes.get(instance.id);
     const embedded = this.usingEmbeddedAdapter();
-    return {
+    const result: Partial<SandboxPreview> = {
       detail: pid
         ? `${this.label} process pid=${pid}`
         : embedded
           ? `${this.label} configured via bundled adapter`
           : `${this.label} configured`,
     };
+    if (pid) {
+      Object.assign(result, this.getProcessMetrics(pid));
+    } else {
+      Object.assign(result, this.getSystemMetrics());
+    }
+    return result;
+  }
+
+  private getSystemMetrics(): Partial<Pick<SandboxPreview, "cpuPercent" | "memoryMb">> {
+    const cpus = os.cpus();
+    const totalCpuTime = cpus.reduce((acc, cpu) => acc + cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle, 0);
+    const idleTime = cpus.reduce((acc, cpu) => acc + cpu.times.idle, 0);
+    const cpuPercent = Math.round(((totalCpuTime - idleTime) / totalCpuTime) * 100);
+    
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const usedMemoryMb = Math.round((totalMemory - freeMemory) / (1024 * 1024));
+    
+    return { cpuPercent, memoryMb: usedMemoryMb };
+  }
+
+  private getProcessMetrics(pid: number): Partial<Pick<SandboxPreview, "cpuPercent" | "memoryMb">> {
+    try {
+      if (process.platform === "linux") {
+        const stat = execSync(`cat /proc/${pid}/stat`).toString();
+        const parts = stat.split(" ");
+        const utime = parseInt(parts[13], 10);
+        const stime = parseInt(parts[14], 10);
+        const cutime = parseInt(parts[15], 10);
+        const cstime = parseInt(parts[16], 10);
+        const totalTime = utime + stime + cutime + cstime;
+        
+        const uptime = parseFloat(execSync("cat /proc/uptime").toString().split(" ")[0]);
+        const hz = 100;
+        const cpuPercent = Math.round((totalTime / hz / uptime) * 100);
+        
+        const status = execSync(`cat /proc/${pid}/status`).toString();
+        const vmsizeMatch = status.match(/VmSize:\s*(\d+)/);
+        const memoryMb = vmsizeMatch ? Math.round(parseInt(vmsizeMatch[1], 10) / 1024) : undefined;
+        
+        return { cpuPercent, memoryMb };
+      } else if (process.platform === "darwin" || process.platform === "win32") {
+        return this.getSystemMetrics();
+      }
+    } catch {
+      // Ignore errors when process info is unavailable
+    }
+    return {};
   }
 
   private resolveCommand(commandType: "start" | "stop" | "status"): string | undefined {

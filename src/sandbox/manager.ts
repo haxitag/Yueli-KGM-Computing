@@ -113,16 +113,11 @@ function buildPreview(instance: SandboxInstance): SandboxPreview {
   const now = Date.now();
   const updatedAt = new Date(instance.updatedAt).getTime();
   const uptimeSec = instance.status === "running" ? Math.max(0, Math.floor((now - updatedAt) / 1000)) : 0;
-  const seed = hash(instance.id);
-  const running = instance.status === "running";
-  const cpuPercent = running ? 12 + ((seed + Math.floor(now / 3000)) % 48) : 0;
-  const memoryMb = running ? 512 + ((seed + Math.floor(now / 5000)) % 2048) : 0;
-  const networkKbps = running ? 80 + ((seed + Math.floor(now / 2000)) % 920) : 0;
 
   return {
-    cpuPercent,
-    memoryMb,
-    networkKbps,
+    cpuPercent: undefined,
+    memoryMb: undefined,
+    networkKbps: undefined,
     uptimeSec,
     lastUpdatedAt: new Date(now).toISOString(),
     title: previewTitle(instance.kind, instance.status),

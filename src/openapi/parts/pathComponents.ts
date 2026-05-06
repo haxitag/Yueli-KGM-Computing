@@ -151,6 +151,7 @@ export function buildOpenApiPathsV1(): Record<string, unknown> {
     "/v1/kgm/graph/communities": {
       post: {
         summary: "连通分量",
+        requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/GraphCommunitiesRequest" } } } },
         responses: { "200": j200("GraphCommunitiesResult"), "501": R.ni, ...postBodyNoGet404() },
       },
     },

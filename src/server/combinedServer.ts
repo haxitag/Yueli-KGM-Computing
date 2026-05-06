@@ -289,29 +289,66 @@ export function createCombinedServer(params: {
             kgmErrorBody("graph_communities_unavailable", "graphStore not provided or unsupported", 501),
           );
         }
-        return sendJson(res, 200, await graph.connectedCommunities());
+        const payload = (await readJson(req)) as { userId?: string; namespace?: string };
+        const namespace = readGraphNamespace(payload);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
+        }
+        return sendJson(res, 200, await graph.connectedCommunities({ namespace }));
       }
       if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/expand") {
         if (!graph?.reasonExpand) {
           return sendJson(res, 501, kgmErrorBody("graph_expand_unavailable", "graphStore not provided", 501));
         }
-        const b = (await readJson(req)) as { entity?: string; maxDepth?: number; relations?: string[] };
+        const b = (await readJson(req)) as {
+          entity?: string;
+          maxDepth?: number;
+          relations?: string[];
+          userId?: string;
+          namespace?: string;
+        };
         if (!b.entity?.trim()) {
           return sendJson(res, 400, kgmErrorBody("entity_required", "entity is required", 400));
+        }
+        const namespace = readGraphNamespace(b);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
         }
         return sendJson(
           res,
           200,
-          { result: await graph.reasonExpand({ entity: b.entity.trim(), maxDepth: b.maxDepth ?? 2, relations: b.relations }) },
+          {
+            result: await graph.reasonExpand({
+              entity: b.entity.trim(),
+              maxDepth: b.maxDepth ?? 2,
+              relations: b.relations,
+              namespace,
+            }),
+          },
         );
       }
       if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/rules") {
         if (!graph?.applyRules) {
           return sendJson(res, 501, kgmErrorBody("graph_rules_unavailable", "graphStore not provided", 501));
         }
-        const b = (await readJson(req)) as { rules?: GraphRule[]; maxRounds?: number; source?: string };
+        const b = (await readJson(req)) as {
+          rules?: GraphRule[];
+          maxRounds?: number;
+          source?: string;
+          userId?: string;
+          namespace?: string;
+        };
         const maxR = Math.max(1, Math.min(20, b.maxRounds ?? 5));
-        const added = await graph.applyRules({ rules: b.rules ?? [], maxRounds: maxR, source: b.source });
+        const namespace = readGraphNamespace(b);
+        if (!namespace) {
+          return sendJson(res, 400, kgmErrorBody("graph_namespace_required", "userId or namespace required", 400));
+        }
+        const added = await graph.applyRules({
+          rules: b.rules ?? [],
+          maxRounds: maxR,
+          source: b.source,
+          namespace,
+        });
         return sendJson(res, 200, { added, count: added.length });
       }
       if (req.method === "POST" && url.pathname === "/v1/kgm/multimodal/embed") {
@@ -393,6 +430,18 @@ function parseNumber(value: string | null): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function readGraphNamespace(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const payload = value as Record<string, unknown>;
+  return typeof payload.namespace === "string" && payload.namespace.trim()
+    ? payload.namespace.trim()
+    : typeof payload.userId === "string" && payload.userId.trim()
+      ? payload.userId.trim()
+      : undefined;
 }
 
 // 如果直接运行此文件，则启动服务器

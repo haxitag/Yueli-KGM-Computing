@@ -13,6 +13,7 @@ const retrieveSubgraphDefinition: ToolDefinition = {
       relations: { type: "array" },
       query: { type: "string" },
       limit: { type: "number" },
+      namespace: { type: "string" },
     },
   },
   outputSchema: {
@@ -39,6 +40,7 @@ export function registerGraphTools(registry: ToolRegistry, graphStore: GraphStor
     const relations = Array.isArray(args.relations) ? args.relations.map(String) : undefined;
     const query = typeof args.query === "string" ? args.query : undefined;
     const limit = args.limit !== undefined ? Number(args.limit) : undefined;
-    return graphStore.querySubgraph({ entities, relations, query, limit });
+    const namespace = typeof args.namespace === "string" ? args.namespace : undefined;
+    return graphStore.querySubgraph({ entities, relations, query, limit, namespace });
   });
 }

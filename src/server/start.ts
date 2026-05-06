@@ -1,9 +1,6 @@
 import {
   ConfigStore,
-  HashEmbedder,
-  MockLlmClient,
   createKgmServer,
-  createRuntime,
   createRuntimeWithStorage,
 } from "../index.js";
 import type { KgmConfigPatch } from "../core/configStore.js";
@@ -15,14 +12,7 @@ async function main(): Promise<void> {
     persistPath: configPath,
     loadFromDisk: true,
   });
-  const useMock = process.env.KGM_MOCK_MODE === "1";
-  const runtime = useMock
-    ? createRuntime({
-        llmClient: new MockLlmClient(),
-        embedder: new HashEmbedder(),
-        configStore,
-      })
-    : await createRuntimeWithStorage({ configStore });
+  const runtime = await createRuntimeWithStorage({ configStore });
   const server = createKgmServer({
     scheduler: runtime.scheduler,
     contextBuilder: runtime.contextBuilder,
@@ -71,9 +61,18 @@ function loadConfigFromEnv(): KgmConfigPatch {
   });
 
   const database = pickDefined({
-    provider: process.env.KGM_DB_PROVIDER as "sqlite" | undefined,
+    provider: process.env.KGM_DB_PROVIDER as "sqlite" | "postgresql" | undefined,
     filePath: process.env.KGM_DB_PATH,
     journalMode: process.env.KGM_DB_JOURNAL as "WAL" | "DELETE" | undefined,
+    host: process.env.KGM_DB_HOST,
+    port: process.env.KGM_DB_PORT ? parseInt(process.env.KGM_DB_PORT) : undefined,
+    database: process.env.KGM_DB_NAME,
+    username: process.env.KGM_DB_USER,
+    password: process.env.KGM_DB_PASSWORD,
+    ssl: process.env.KGM_DB_SSL === 'true',
+    maxConnections: process.env.KGM_DB_MAX_CONNECTIONS ? parseInt(process.env.KGM_DB_MAX_CONNECTIONS) : undefined,
+    idleTimeout: process.env.KGM_DB_IDLE_TIMEOUT ? parseInt(process.env.KGM_DB_IDLE_TIMEOUT) : undefined,
+    connectionTimeout: process.env.KGM_DB_CONNECTION_TIMEOUT ? parseInt(process.env.KGM_DB_CONNECTION_TIMEOUT) : undefined,
   });
 
   const vector = pickDefined({

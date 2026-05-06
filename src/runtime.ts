@@ -37,6 +37,7 @@ export function createRuntime(params: {
   embedder?: Embedder;
   memoryStore?: MemoryStore;
   configStore?: ConfigStore;
+  graphStore?: GraphStore;
 }): {
   scheduler: Scheduler;
   schemaRegistry: SchemaRegistry;
@@ -62,7 +63,7 @@ export function createRuntime(params: {
   const adapterClient = new AdapterClient(configStore);
   const artifactStore = new ArtifactStore(configStore.get().context.artifactDir);
   const sessionStore = new SessionStore(configStore.get().context.sessionDir);
-  const graphStore = new InMemoryGraphStore();
+  const graphStore = params.graphStore ?? new InMemoryGraphStore();
   const sandboxManager = new SandboxManager();
   const modelManager = new ManagedModelManager();
   const autoRoutingAuditStore = new AutoRoutingAuditStore();
@@ -151,6 +152,7 @@ export async function createRuntimeWithStorage(params: {
   llmClient?: LlmClient;
   embedder?: Embedder;
   configStore?: ConfigStore;
+  graphStore?: GraphStore;
 }): Promise<ReturnType<typeof createRuntime>> {
   const configStore = params.configStore ?? new ConfigStore();
   let memoryStore: MemoryStore | undefined;
@@ -164,5 +166,6 @@ export async function createRuntimeWithStorage(params: {
     embedder: params.embedder,
     memoryStore,
     configStore,
+    graphStore: params.graphStore,
   });
 }

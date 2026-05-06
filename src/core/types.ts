@@ -179,9 +179,9 @@ export type SandboxKind = "computer" | "browser" | "mobile";
 export type SandboxStatus = "stopped" | "starting" | "running" | "error";
 
 export type SandboxPreview = {
-  cpuPercent: number;
-  memoryMb: number;
-  networkKbps: number;
+  cpuPercent: number | undefined;
+  memoryMb: number | undefined;
+  networkKbps: number | undefined;
   uptimeSec: number;
   lastUpdatedAt: string;
   title: string;

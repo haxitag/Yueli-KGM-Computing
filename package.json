@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "private": false,
   "description": "Yueli KGM: OpenAI/Anthropic-compatible gateway, native engine, Playground; docs on haxitag.com",
   "type": "module",
@@ -90,12 +90,18 @@
   "dependencies": {
     "better-sqlite3": "^9.4.3",
     "cors": "^2.8.5",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "pino": "^9.0.0",
+    "pino-pretty": "^11.0.0",
+    "zod": "^3.22.4",
+    "opossum": "^8.1.3",
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^20.12.12",
+    "@types/opossum": "^8.1.6",
     "tsx": "^4.7.1",
     "typescript": "^5.5.4"
   }

@@ -153,7 +153,22 @@ export const openApiSchemaComponents: Record<string, unknown> = {
   GraphPath: {
     type: "object",
     required: ["from", "to"],
-    properties: { from: { type: "string" }, to: { type: "string" }, maxHops: { type: "integer" } },
+    anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
+    properties: {
+      from: { type: "string" },
+      to: { type: "string" },
+      maxHops: { type: "integer" },
+      userId: { type: "string", description: "图命名空间。与 namespace 二选一必填。" },
+      namespace: { type: "string", description: "图命名空间。与 userId 二选一必填。" },
+    },
+  },
+  GraphCommunitiesRequest: {
+    type: "object",
+    anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
+    properties: {
+      userId: { type: "string", description: "图命名空间。与 namespace 二选一必填。" },
+      namespace: { type: "string", description: "图命名空间。与 userId 二选一必填。" },
+    },
   },
   GraphShortestPathResult: {
     type: "object",
@@ -174,10 +189,13 @@ export const openApiSchemaComponents: Record<string, unknown> = {
   GraphReasonExpandRequest: {
     type: "object",
     required: ["entity"],
+    anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
     properties: {
       entity: { type: "string" },
       maxDepth: { type: "integer" },
       relations: { type: "array", items: { type: "string" } },
+      userId: { type: "string", description: "图命名空间。与 namespace 二选一必填。" },
+      namespace: { type: "string", description: "图命名空间。与 userId 二选一必填。" },
     },
   },
   GraphReasonExpandResult: {
@@ -216,15 +234,19 @@ export const openApiSchemaComponents: Record<string, unknown> = {
   },
   GraphRulesRequest: {
     type: "object",
+    anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
     properties: {
       rules: { type: "array", items: { $ref: "#/components/schemas/GraphRule" } },
       maxRounds: { type: "integer" },
       source: { type: "string" },
+      userId: { type: "string", description: "图命名空间。与 namespace 二选一必填。" },
+      namespace: { type: "string", description: "图命名空间。与 userId 二选一必填。" },
     },
   },
   GraphRulesResult: { type: "object", required: ["added", "count"], properties: { added: { type: "array" }, count: { type: "integer" } } },
   GraphTriplesRequest: {
     type: "object",
+    anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
     properties: {
       triples: {
         type: "array",
@@ -235,6 +257,8 @@ export const openApiSchemaComponents: Record<string, unknown> = {
         },
       },
       source: { type: "string" },
+      userId: { type: "string", description: "图命名空间。与 namespace 二选一必填。" },
+      namespace: { type: "string", description: "图命名空间。与 userId 二选一必填。" },
     },
   },
   GraphTriplesResult: { type: "object", properties: { status: { type: "string" }, count: { type: "integer" }, triples: { type: "array" } } },
@@ -283,6 +307,7 @@ export const openApiSchemaComponents: Record<string, unknown> = {
   KceComputeRequest: {
     type: "object",
     description: "KCE 服务端计算请求；以 KgmRequest 为基础，额外支持 kce.mode / llm / graphLimit / memoryTopK / maxParallel。",
+    required: ["userId", "input"],
     properties: {
       userId: { type: "string" },
       input: { type: "string" },
@@ -311,8 +336,20 @@ export const openApiSchemaComponents: Record<string, unknown> = {
     type: "object",
     required: ["answer", "evidence", "reasoning_trace", "execution_plan", "validation", "metrics"],
     properties: {
+      request_id: { type: "string" },
+      session_id: { type: "string" },
+      trace_id: { type: "string" },
       answer: { type: "string" },
       logical_form: { type: "object" },
+      session_ref: { type: "object", description: "会话审计引用，供 GET /v1/kgm/sessions/:id 使用。" },
+      artifacts: {
+        type: "object",
+        properties: {
+          request: { type: "object", description: "KCE 请求快照 artifact 引用" },
+          trace: { type: "object", description: "KCE reasoning/validation trace artifact 引用" },
+          response: { type: "object", description: "KCE 最终响应 artifact 引用" },
+        },
+      },
       evidence: {
         type: "object",
         properties: {

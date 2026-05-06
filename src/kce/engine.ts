@@ -1,9 +1,12 @@
 import type { ContextBuilder } from "../context/contextBuilder.js";
 import type { Constraints, Evidence, KgmRequest } from "../core/types.js";
+import type { ArtifactRef } from "../context/artifactStore.js";
+import type { SessionStoreRef } from "../context/sessionStore.js";
 import type { Embedder } from "../embedding/canonical.js";
 import type { GraphEdge, GraphStore, GraphSubgraph } from "../graph/store.js";
 import type { LlmClient } from "../llm/client.js";
 import type { MemoryStore } from "../memory/store.js";
+import { generateId } from "../utils/id.js";
 
 export type KceMode = "fast" | "balanced" | "quality";
 
@@ -12,6 +15,7 @@ export type KceComputeRequest = KgmRequest & {
     mode?: KceMode;
     llm?: {
       enabled?: boolean;
+      evidenceCompression?: boolean;
     };
     graphLimit?: number;
     memoryTopK?: number;
@@ -71,6 +75,8 @@ export type KcePlanNode = {
   type: "graph_op" | "retrieval_op" | "llm_op" | "logic_op";
   operator: string;
   depends_on: string[];
+  required?: boolean;
+  timeout_ms?: number;
   config?: Record<string, unknown>;
 };
 
@@ -110,14 +116,24 @@ export type KceExecutionStep = {
   operator: string;
   type: string;
   status: "completed" | "error";
+  required: boolean;
   batch: number;
   duration_ms: number;
   output: Record<string, unknown>;
 };
 
 export type KceComputeResponse = {
+  request_id?: string;
+  session_id?: string;
+  trace_id?: string;
   answer: string;
   logical_form: KceLogicalForm;
+  session_ref?: SessionStoreRef;
+  artifacts?: {
+    request?: ArtifactRef;
+    trace?: ArtifactRef;
+    response?: ArtifactRef;
+  };
   evidence: {
     nodes: KceEvidenceNode[];
     edges: KceEvidenceEdge[];
@@ -145,6 +161,18 @@ type KceExecutionResult = {
   results: Record<string, Record<string, unknown>>;
   batches: number;
 };
+
+export class KceExecutionFailure extends Error {
+  readonly code = "kce_execution_failed" as const;
+  readonly status = 500;
+  readonly step?: KceExecutionStep;
+
+  constructor(message: string, step?: KceExecutionStep) {
+    super(message);
+    this.name = "KceExecutionFailure";
+    this.step = step;
+  }
+}
 
 type KceOperatorState = {
   request: KceComputeRequest;
@@ -181,6 +209,9 @@ export class KceEngine {
   }
 
   async compute(request: KceComputeRequest): Promise<KceComputeResponse> {
+    if (!request.requestId) {
+      request.requestId = generateId("kce");
+    }
     const startedAt = Date.now();
     this.trace = [];
     this.llmCalls = 0;
@@ -295,6 +326,7 @@ export class KceEngine {
           relations: logicalForm.relations,
           query: request.input,
           limit: graphLimit,
+          namespace: request.userId,
         })
       : { triples: [], entities: [], relations: [] };
 
@@ -365,6 +397,8 @@ export class KceEngine {
         type: "graph_op",
         operator: "retrieve_graph",
         depends_on: [],
+        required: true,
+        timeout_ms: 3000,
       });
     }
 
@@ -374,6 +408,8 @@ export class KceEngine {
         type: "retrieval_op",
         operator: "retrieve_memory",
         depends_on: [],
+        required: false,
+        timeout_ms: 3000,
       });
     }
 
@@ -387,6 +423,8 @@ export class KceEngine {
         type: "graph_op",
         operator: "reason_over_graph",
         depends_on: ["graph_retrieval"],
+        required: logicalForm.intent === "path_analysis",
+        timeout_ms: 4000,
       });
     }
 
@@ -395,6 +433,8 @@ export class KceEngine {
       type: "llm_op",
       operator: "synthesize_answer",
       depends_on: nodes.map((node) => node.id),
+      required: true,
+      timeout_ms: 3000,
     });
 
     nodes.push({
@@ -402,6 +442,8 @@ export class KceEngine {
       type: "logic_op",
       operator: "validate_answer",
       depends_on: ["synthesis"],
+      required: true,
+      timeout_ms: 2000,
     });
 
     const dedupedNodes = nodes.map((node) =>
@@ -484,6 +526,7 @@ export class KceEngine {
                 operator: node.operator,
                 type: node.type,
                 status: "completed" as const,
+                required: node.required !== false,
                 batch: batches,
                 duration_ms: Date.now() - startedAt,
                 output,
@@ -497,6 +540,7 @@ export class KceEngine {
                 operator: node.operator,
                 type: node.type,
                 status: "error" as const,
+                required: node.required !== false,
                 batch: batches,
                 duration_ms: Date.now() - startedAt,
                 output: {
@@ -509,6 +553,13 @@ export class KceEngine {
       );
 
       for (const item of batchResults) {
+        if (item.step.status === "error" && item.step.required) {
+          steps.push(item.step);
+          throw new KceExecutionFailure(
+            `kce_required_node_failed:${item.node.id}`,
+            item.step,
+          );
+        }
         results.set(item.node.id, item.step.output);
         steps.push(item.step);
         for (const next of dependents.get(item.node.id) ?? []) {
@@ -543,7 +594,11 @@ export class KceEngine {
     if (!operator) {
       throw new Error(`kce_operator_not_found:${node.operator}`);
     }
-    return operator(state);
+    return withTimeout(
+      operator(state),
+      node.timeout_ms ?? 3000,
+      `kce_node_timeout:${node.id}`,
+    );
   }
 
   private async retrieveGraphOperator(state: KceOperatorState): Promise<Record<string, unknown>> {
@@ -583,6 +638,7 @@ export class KceEngine {
         from: entityNames[0]!,
         to: entityNames[1]!,
         maxHops: 6,
+        namespace: state.request.userId,
       });
       if (path) {
         return {
@@ -598,6 +654,7 @@ export class KceEngine {
         entity: entityNames[0]!,
         maxDepth: 2,
         relations: state.logicalForm.relations,
+        namespace: state.request.userId,
       });
       if (expanded) {
         return {
@@ -620,11 +677,32 @@ export class KceEngine {
     const memoryResult = state.dependencies.memory_retrieval;
     const reasoningResult = state.dependencies.graph_reasoning;
 
+    // Quality mode with evidence compression enabled
+    let compressedEvidence = memoryResult;
+    if (
+      state.request.kce?.mode === "quality" &&
+      state.request.kce?.llm?.evidenceCompression === true &&
+      this.deps.llmClient &&
+      Array.isArray(memoryResult?.evidence) &&
+      memoryResult.evidence.length > 3
+    ) {
+      try {
+        compressedEvidence = await this.compressEvidenceWithLLM(
+          state.request.input,
+          memoryResult.evidence as Array<Record<string, unknown>>,
+        );
+        this.llmCalls += 1;
+      } catch (error) {
+        // Fallback to original evidence if compression fails
+        console.warn("Evidence compression failed, using original:", error);
+      }
+    }
+
     const answer = buildDeterministicAnswer({
       query: state.request.input,
       logicalForm: state.logicalForm,
       graphResult,
-      memoryResult,
+      memoryResult: compressedEvidence,
       reasoningResult,
       constraints: state.request.constraints,
     });
@@ -634,8 +712,64 @@ export class KceEngine {
       citations: {
         graph_triples: state.subgraph.graph.triples.length,
         memory_items: state.subgraph.evidence.length,
+        compressed: compressedEvidence !== memoryResult,
       },
     };
+  }
+
+  private async compressEvidenceWithLLM(
+    query: string,
+    evidence: Array<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> {
+    const evidenceText = evidence
+      .slice(0, 8)
+      .map((item) => `[${item.source}] ${item.text}`)
+      .join("\n");
+
+    const prompt = [
+      "Compress and rewrite the following evidence to be more concise while preserving key information relevant to the query.",
+      "Return a JSON array with objects having 'source' and 'text' fields.",
+      "Do not include markdown.",
+      `Query: ${query}`,
+      `Evidence:\n${evidenceText}`,
+    ].join("\n");
+
+    const completion = await this.deps.llmClient!.complete(prompt, {
+      maxTokens: 400,
+      temperature: 0.1,
+      taskType: "kce.evidence_compression",
+      taskInput: query,
+    });
+
+    const parsed = extractJsonObject(completion.text);
+    if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+      const compressed = parsed
+        .slice(0, 5)
+        .map((item: unknown) => {
+          if (item && typeof item === "object" && "text" in item) {
+            const itemObj = item as Record<string, unknown>;
+            return {
+              id: `compressed_${Math.random().toString(36).slice(2, 9)}`,
+              source: typeof itemObj.source === "string" ? itemObj.source : "compressed",
+              text: String(itemObj.text).slice(0, 200),
+              score: 0.9,
+            };
+          }
+          return null;
+        })
+        .filter(Boolean) as Array<Record<string, unknown>>;
+
+      if (compressed.length > 0) {
+        return {
+          evidence: compressed,
+          count: compressed.length,
+          compressed: true,
+        };
+      }
+    }
+
+    // Fallback to original if parsing fails
+    return { evidence, count: evidence.length, compressed: false };
   }
 
   private async validateAnswerOperator(state: KceOperatorState): Promise<Record<string, unknown>> {
@@ -656,6 +790,7 @@ export class KceEngine {
   ): Promise<KceValidationResult> {
     const checks: KceValidationCheck[] = [];
     const successfulSteps = executionResult.steps.filter((step) => step.status === "completed").length;
+    const failedSteps = executionResult.steps.filter((step) => step.status === "error");
     const answer = executionResult.answer.trim();
 
     checks.push({
@@ -667,9 +802,9 @@ export class KceEngine {
 
     checks.push({
       name: "plan_complete",
-      passed: successfulSteps === plan.nodes.length,
-      confidence: successfulSteps === plan.nodes.length ? 0.95 : 0.4,
-      details: `${successfulSteps}/${plan.nodes.length} steps completed`,
+      passed: successfulSteps === plan.nodes.length && failedSteps.length === 0,
+      confidence: successfulSteps === plan.nodes.length && failedSteps.length === 0 ? 0.95 : 0.15,
+      details: `${successfulSteps}/${plan.nodes.length} steps completed, failed=${failedSteps.length}`,
     });
 
     const hasEvidence = subgraph.graph.triples.length > 0 || subgraph.evidence.length > 0;
@@ -691,6 +826,40 @@ export class KceEngine {
           : entityCoverage
             ? "answer mentions requested entity"
             : "answer misses requested entity",
+    });
+
+    const reasoningResult = executionResult.results.graph_reasoning;
+    const pathSatisfied =
+      logicalForm.intent !== "path_analysis" ||
+      (Array.isArray(reasoningResult?.path) && (reasoningResult.path as unknown[]).length >= 2);
+    checks.push({
+      name: "intent_specific_grounding",
+      passed: pathSatisfied,
+      confidence: pathSatisfied ? 0.9 : 0.2,
+      details:
+        logicalForm.intent !== "path_analysis"
+          ? "no extra grounding required"
+          : pathSatisfied
+            ? "path evidence present"
+            : "path evidence missing",
+    });
+
+    const evidenceTerms = new Set<string>();
+    for (const triple of subgraph.graph.triples) {
+      evidenceTerms.add(triple.subject.toLowerCase());
+      evidenceTerms.add(triple.object.toLowerCase());
+      evidenceTerms.add(triple.predicate.toLowerCase());
+    }
+    for (const item of subgraph.evidence) {
+      tokenize(item.text).slice(0, 24).forEach((token) => evidenceTerms.add(token.toLowerCase()));
+    }
+    const answerTokens = tokenize(answer);
+    const groundedTokens = answerTokens.filter((token) => token.length > 1 && evidenceTerms.has(token.toLowerCase()));
+    checks.push({
+      name: "answer_grounded_tokens",
+      passed: !hasEvidence || groundedTokens.length > 0,
+      confidence: !hasEvidence || groundedTokens.length > 0 ? 0.88 : 0.2,
+      details: `grounded_tokens=${groundedTokens.length}`,
     });
 
     if (constraints.language?.toLowerCase().startsWith("zh")) {
@@ -980,6 +1149,29 @@ function buildDeterministicAnswer(params: {
   }
 
   return lines.join("\n");
+}
+
+function tokenize(input: string): string[] {
+  return input
+    .toLowerCase()
+    .split(/[^a-zA-Z0-9_\u4e00-\u9fa5]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(label)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
 }
 
 function serializeGraphEdge(edge: GraphEdge): Record<string, unknown> {

@@ -22,6 +22,7 @@ import {
 import { LlmProviderFactory, type ProviderConfig } from "./providerFactory.js";
 import { streamCompletion } from "./client.js";
 import type { CompletionOptions, CompletionResult, CompletionStreamEvent, LlmClient } from "./client.js";
+import { createPricingService, type PricingService } from "./pricingService.js";
 
 type RoutingCandidate = {
   routeKey: string;
@@ -106,6 +107,7 @@ export class AutoRoutingLlmClient implements LlmClient {
   private auditStore: AutoRoutingAuditStore;
   private providerManager?: ProviderConfigurationManager;
   private providerLoadPromise?: Promise<void>;
+  private pricingService: PricingService;
 
   constructor(params: {
     fallback: LlmClient;
@@ -120,6 +122,10 @@ export class AutoRoutingLlmClient implements LlmClient {
     this.providerConfigPath =
       params.providerConfigPath ?? process.env.KGM_PROVIDER_CONFIG_PATH ?? "config/model-providers.json";
     this.auditStore = params.auditStore ?? new AutoRoutingAuditStore();
+    
+    const pricingConfig = this.configStore.get().autoRouting.pricing;
+    this.pricingService = createPricingService(pricingConfig.default, pricingConfig.overrides);
+    this.pricingService.warmup().catch(() => {});
   }
 
   async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
@@ -350,6 +356,13 @@ export class AutoRoutingLlmClient implements LlmClient {
     const expectedOutputTokens = Math.max(64, Math.min(options?.maxTokens ?? config.llm.maxTokens, 512));
     const maxCost = options?.routing?.maxCostPerRequest ?? autoRouting.thresholds.maxCostPerRequest;
     const candidates: RoutingCandidate[] = [];
+    const defaultCost = await this.resolveEstimatedCost({
+      routeKey: `default:${config.llm.provider}:${config.llm.model}`,
+      source: "default",
+      model: config.llm.model,
+      provider: config.llm.provider,
+    }, promptTokens, expectedOutputTokens);
+    
     const defaultCandidate = this.scoreCandidate(
       {
         routeKey: `default:${config.llm.provider}:${config.llm.model}`,
@@ -367,12 +380,7 @@ export class AutoRoutingLlmClient implements LlmClient {
       route.profile,
       autoRouting,
       maxCost,
-      this.resolveEstimatedCost({
-        routeKey: `default:${config.llm.provider}:${config.llm.model}`,
-        source: "default",
-        model: config.llm.model,
-        provider: config.llm.provider,
-      }, promptTokens, expectedOutputTokens),
+      defaultCost,
     );
 
     candidates.push(defaultCandidate);
@@ -411,7 +419,7 @@ export class AutoRoutingLlmClient implements LlmClient {
       for (const provider of providers) {
         const routeKey = `provider:${provider.type}:${provider.model}`;
         const stats = this.auditStore.getCandidateStats(routeKey, route.taskType);
-        const estimatedCost = this.resolveEstimatedCost(
+        const estimatedCost = await this.resolveEstimatedCost(
           {
             routeKey,
             source: "provider",
@@ -655,7 +663,7 @@ export class AutoRoutingLlmClient implements LlmClient {
   ): Promise<CompletionResult> {
     const promptTokens = estimateTokens(prompt);
     const completionTokens = estimateTokens(result.text);
-    const actualCost = this.resolveEstimatedCost(selection.selected, promptTokens, completionTokens);
+    const actualCost = await this.resolveEstimatedCost(selection.selected, promptTokens, completionTokens);
     const evaluation = await this.evaluateResult(selection, prompt, result.text, options);
 
     const trace: AutoRoutingTrace = {
@@ -874,7 +882,7 @@ export class AutoRoutingLlmClient implements LlmClient {
           promptTokens,
           completionTokens,
           totalTokens,
-          cost: this.resolveEstimatedCost(target, promptTokens, completionTokens),
+          cost: await this.resolveEstimatedCost(target, promptTokens, completionTokens),
         };
       } catch (error) {
         lastError = error;
@@ -1067,22 +1075,28 @@ export class AutoRoutingLlmClient implements LlmClient {
     });
   }
 
-  private resolveEstimatedCost(
+  private async resolveEstimatedCost(
     candidate: { routeKey: string; source: "managed" | "provider" | "default"; model: string; provider?: string },
     promptTokens: number,
     completionTokens: number,
-  ): number {
-    const pricing = this.resolvePricing(candidate);
+  ): Promise<number> {
+    const pricing = await this.resolvePricing(candidate);
     return (promptTokens / 1000) * pricing.inputPer1kTokens + (completionTokens / 1000) * pricing.outputPer1kTokens;
   }
 
-  private resolvePricing(candidate: {
+  private async resolvePricing(candidate: {
     routeKey: string;
     source: "managed" | "provider" | "default";
     model: string;
     provider?: string;
-  }): ModelPricingConfig {
+  }): Promise<ModelPricingConfig> {
     const pricing = this.configStore.get().autoRouting.pricing;
+    
+    const dynamicPricing = await this.pricingService.getPricing(candidate.model, candidate.provider);
+    if (dynamicPricing) {
+      return dynamicPricing;
+    }
+    
     const keys = [
       candidate.routeKey,
       candidate.provider ? `provider:${candidate.provider}:${candidate.model}` : undefined,

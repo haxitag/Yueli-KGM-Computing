@@ -1,14 +1,131 @@
 // KCE 任务管理模块 - Playground 集成
 // 负责任务创建、执行、时序图渲染
 
+// KCE API 客户端 - 调用服务端 /v1/kgm/kce/compute
+class KCEApiClient {
+  constructor(apiBase = '/v1') {
+    this.apiBase = apiBase;
+    this.trace = [];
+  }
+
+  async compute(request) {
+    this.trace = [];
+    const startTime = Date.now();
+    
+    try {
+      const response = await fetch(`${this.apiBase}/kgm/kce/compute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          input: request.query,
+          kce: {
+            mode: request.policy?.mode || 'quality',
+            llm: { enabled: true }
+          },
+          userId: 'playground_user',
+          kgm: request.context?.kgm || {}
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || `HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      // 构建前端兼容的 trace
+      this.trace = result.reasoning_trace || [];
+      
+      return {
+        answer: result.answer,
+        logical_form: result.logical_form,
+        evidence: result.evidence,
+        reasoning_trace: result.reasoning_trace,
+        execution_plan: result.execution_plan,
+        validation: result.validation,
+        confidence: result.confidence,
+        metrics: result.metrics
+      };
+    } catch (error) {
+      this.trace.push({
+        step: 'api_call',
+        status: 'error',
+        timestamp: Date.now(),
+        data: { message: error.message }
+      });
+      throw error;
+    }
+  }
+
+  generateMermaidSequenceDiagram(result) {
+    const trace = result.reasoning_trace || [];
+    let mermaid = 'sequenceDiagram\n';
+    mermaid += '    participant User\n';
+    mermaid += '    participant KCE\n';
+    mermaid += '    participant Graph\n';
+    mermaid += '    participant Memory\n';
+    mermaid += '    participant LLM\n\n';
+
+    trace.forEach(step => {
+      const stepName = step.step || 'unknown';
+      const status = step.status || 'unknown';
+      
+      if (stepName === 'semantic_parse') {
+        mermaid += '    User->>KCE: Query\n';
+        mermaid += '    KCE->>LLM: Parse intent\n';
+        mermaid += `    LLM-->>KCE: ${status}\n`;
+      } else if (stepName === 'knowledge_projection') {
+        mermaid += '    KCE->>Graph: Query subgraph\n';
+        mermaid += '    KCE->>Memory: Retrieve evidence\n';
+        mermaid += `    Graph-->>KCE: ${status}\n`;
+        mermaid += `    Memory-->>KCE: ${status}\n`;
+      } else if (stepName === 'plan_generation') {
+        mermaid += '    KCE->>KCE: Generate DAG\n';
+        mermaid += `    KCE-->>KCE: ${status}\n`;
+      } else if (stepName === 'dag_execution') {
+        mermaid += '    KCE->>Graph: Execute operations\n';
+        mermaid += `    Graph-->>KCE: ${status}\n`;
+      } else if (stepName === 'verification') {
+        mermaid += '    KCE->>KCE: Validate answer\n';
+        mermaid += `    KCE-->>KCE: ${status}\n`;
+      }
+    });
+
+    mermaid += '    KCE-->>User: Answer\n';
+    return mermaid;
+  }
+
+  generateMermaidDAG(executionPlan) {
+    if (!executionPlan || !executionPlan.nodes) {
+      return 'graph TD\n    A[No Plan Available]';
+    }
+
+    let mermaid = 'graph TD\n';
+    
+    // Add nodes
+    executionPlan.nodes.forEach(node => {
+      const label = `${node.id}\n(${node.operator})`;
+      mermaid += `    ${node.id}["${label}"]\n`;
+    });
+
+    // Add edges
+    executionPlan.edges.forEach(edge => {
+      mermaid += `    ${edge.from} --> ${edge.to}\n`;
+    });
+
+    return mermaid;
+  }
+}
+
 class KCETaskManager {
   constructor(playground) {
     this.playground = playground;
     this.tasks = [];
     this.currentTask = null;
-    this.kceEngine = new KCEEngine({
-      apiBase: this.playground.apiBase || '/v1'
-    });
+    this.kceEngine = new KCEApiClient(this.playground.apiBase || '/v1');
     
     this.initializeElements();
     this.setupEventListeners();

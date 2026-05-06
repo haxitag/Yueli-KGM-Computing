@@ -139,6 +139,7 @@ export class EnhancedContextBuilder {
       await this.graphStore.addTriples({
         triples: request.kgm.graph.triples,
         source: "request.kgm.graph",
+        namespace: request.userId,
       });
     }
 
@@ -199,7 +200,8 @@ export class EnhancedContextBuilder {
     const signal = await buildKnowledgeGraphSignal(
       this.graphStore,
       request.kgm.graph,
-      request.input
+      request.input,
+      request.userId,
     );
 
     const duration = Date.now() - startTime;
@@ -506,6 +508,7 @@ async function buildKnowledgeGraphSignal(
   graphStore: GraphStore,
   graph: NonNullable<NonNullable<KgmRequest["kgm"]>["graph"]>,
   query: string,
+  namespace: string,
 ): Promise<Signal | null> {
   const entities = graph.entities ?? [];
   const relations = graph.relations ?? [];
@@ -514,6 +517,7 @@ async function buildKnowledgeGraphSignal(
     relations,
     query: graph.subgraph ?? query,
     limit: 8,
+    namespace,
   });
 
   if (!graph.subgraph && subgraph.triples.length === 0 && entities.length === 0 && relations.length === 0) {

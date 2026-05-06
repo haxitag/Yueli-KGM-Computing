@@ -92,6 +92,295 @@ server.listen(process.env.PORT || 3000);
 
 ---
 
+## 跨语言集成指南
+
+KGM 作为 NPM 包，可与 Rust、Golang、Python、Node.js 等技术栈灵活集成。以下是常见集成方案：
+
+### Node.js 直接集成（推荐）
+
+```typescript
+import { createRuntime, createKgmServer } from "@haxitag/yueli-kgm-computing";
+
+// 初始化运行时
+const runtime = createRuntime({
+  llm: {
+    baseURL: process.env.KGM_LLM_BASE_URL,
+    apiKey: process.env.KGM_LLM_API_KEY,
+    model: process.env.KGM_LLM_MODEL,
+  },
+});
+
+// 创建服务
+const server = createKgmServer({
+  scheduler: runtime.scheduler,
+  contextBuilder: runtime.contextBuilder,
+  llmClient: runtime.llmClient,
+  toolRegistry: runtime.toolRegistry,
+  memoryStore: runtime.memoryStore,
+  graphStore: runtime.graphStore,
+  embedder: runtime.embedder,
+});
+
+server.listen(3000);
+```
+
+### Rust 集成（子进程 + STDIO）
+
+适用于需要高性能推理引擎的场景：
+
+```rust
+// rust_engine/src/main.rs
+use serde::{Deserialize, Serialize};
+use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+
+#[derive(Serialize)]
+struct InferenceRequest {
+    model: String,
+    prompt: String,
+    max_tokens: u32,
+}
+
+#[derive(Deserialize)]
+struct InferenceResponse {
+    content: String,
+    tokens: u32,
+}
+
+fn inference(request: InferenceRequest) -> Result<InferenceResponse, Box<dyn std::error::Error>> {
+    let mut child = Command::new("./target/release/shimmy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(serde_json::to_string(&request)?.as_bytes())?;
+    drop(stdin);
+
+    let reader = BufReader::new(child.stdout.take().unwrap());
+    let response: InferenceResponse = serde_json::from_reader(reader)?;
+    Ok(response)
+}
+```
+
+```typescript
+// src/integrations/rustEngine.ts
+import { spawn, ChildProcess } from 'child_process';
+
+export class RustEngineClient {
+  private process: ChildProcess;
+
+  constructor(binaryPath: string) {
+    this.process = spawn(binaryPath, [], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+  }
+
+  async inference(request: {
+    model: string;
+    prompt: string;
+    max_tokens: number;
+  }): Promise<{ content: string; tokens: number }> {
+    return new Promise((resolve, reject) => {
+      const data = JSON.stringify(request) + '\n';
+      this.process.stdin?.write(data);
+
+      let buffer = '';
+      const handler = (chunk: Buffer) => {
+        buffer += chunk.toString();
+        try {
+          const response = JSON.parse(buffer);
+          this.process.stdout?.removeListener('data', handler);
+          resolve(response);
+        } catch {
+          // 继续接收数据
+        }
+      };
+      this.process.stdout?.on('data', handler);
+      this.process.stderr?.on('data', (d) => reject(d.toString()));
+    });
+  }
+}
+```
+
+### Golang 集成（gRPC）
+
+适用于微服务架构：
+
+```protobuf
+// proto/kgm.proto
+syntax = "proto3";
+package kgm;
+
+service Orchestrator {
+  rpc Orchestrate(OrchestrateRequest) returns (OrchestrateResponse);
+  rpc StreamOrchestrate(stream OrchestrateRequest) returns (stream OrchestrateResponse);
+}
+
+message OrchestrateRequest {
+  string query = 1;
+  map<string, string> context = 2;
+  repeated string tools = 3;
+}
+
+message OrchestrateResponse {
+  string answer = 1;
+  repeated ToolCall tool_calls = 2;
+  map<string, string> metadata = 3;
+}
+
+message ToolCall {
+  string tool = 1;
+  map<string, string> params = 2;
+  string result = 3;
+}
+```
+
+```typescript
+// src/integrations/golangGrpc.ts
+import * as grpc from '@grpc/grpc-js';
+import * as protoLoader from '@grpc/proto-loader';
+
+const PROTO_PATH = './proto/kgm.proto';
+const packageDef = protoLoader.loadSync(PROTO_PATH, {
+  keepCase: true,
+  longs: String,
+  enums: String,
+  defaults: true,
+  oneofs: true,
+});
+const kgmProto = grpc.loadPackageDefinition(packageDef) as any;
+
+export class GolangOrchestratorClient {
+  private client: any;
+
+  constructor(address: string = 'localhost:50051') {
+    this.client = new kgmProto.kgm.Orchestrator(
+      address,
+      grpc.credentials.createInsecure()
+    );
+  }
+
+  orchestrate(query: string, context: Record<string, string> = {}, tools: string[] = []) {
+    return new Promise((resolve, reject) => {
+      this.client.Orchestrate(
+        { query, context, tools },
+        (err: any, response: any) => {
+          if (err) reject(err);
+          else resolve(response);
+        }
+      );
+    });
+  }
+}
+```
+
+### Python 集成（HTTP API / OpenAI 兼容）
+
+KGM 原生支持 OpenAI 兼容接口，Python 应用可直接调用：
+
+```python
+# python_client.py
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="your-api-key",
+    base_url="http://localhost:3000/v1"  # KGM 服务地址
+)
+
+# 方式 1：直接使用 OpenAI 兼容接口
+response = client.chat.completions.create(
+    model="auto",
+    messages=[
+        {"role": "system", "content": "你是一个助手"},
+        {"role": "user", "content": "你好，请介绍一下自己"}
+    ]
+)
+print(response.choices[0].message.content)
+
+# 方式 2：使用 KGM 扩展接口
+import requests
+
+# 调用知识图谱检索
+graph_response = requests.post(
+    "http://localhost:3000/v1/kgm/graph/retrieve",
+    headers={"Authorization": "Bearer your-api-key"},
+    json={"query": "查找相关实体", "top_k": 5}
+)
+print(graph_response.json())
+```
+
+### Python Orchestrator 桥接（避免生态不匹配）
+
+如果需要复用现有 Python Orchestrator 的调度逻辑，可通过以下方式桥接：
+
+```python
+# python_orchestrator_bridge.py
+from flask import Flask, request, jsonify
+from kgm_client import KGMRestClient
+
+app = Flask(__name__)
+kgm = KGMRestClient("http://localhost:3000")
+
+@app.route("/orchestrate", methods=["POST"])
+def orchestrate():
+    """
+    Python Orchestrator 桥接服务
+    将 Python 侧的调度逻辑暴露为 HTTP API
+    """
+    data = request.json
+    query = data.get("query")
+    strategy = data.get("strategy", "auto")
+
+    # 调用 KGM 的原生能力（知识图谱、记忆检索等）
+    graph_result = kgm.graph.query(query)
+    memory_result = kgm.memory.search(query)
+
+    # Python 侧的业务调度逻辑
+    orchestrated_result = your_orchestrator_logic(
+        query=query,
+        graph_data=graph_result,
+        memory_data=memory_result,
+        strategy=strategy
+    )
+
+    return jsonify(orchestrated_result)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
+```
+
+```typescript
+// src/integrations/pythonBridge.ts
+import { createLLMClient } from '../llm/client';
+
+export class PythonOrchestratorBridge {
+  private baseURL: string;
+  private client: ReturnType<typeof createLLMClient>;
+
+  constructor(baseURL: string = 'http://localhost:8000') {
+    this.baseURL = baseURL;
+    this.client = createLLMClient({
+      provider: 'openai-compatible',
+      baseURL: `${baseURL}/v1`,
+      apiKey: 'dummy',
+      model: 'orchestrator',
+    });
+  }
+
+  async orchestrate(query: string, strategy = 'auto') {
+    const response = await fetch(`${this.baseURL}/orchestrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, strategy }),
+    });
+    return response.json();
+  }
+}
+```
+
+---
+
 ## 从源码开发本仓库
 
 ```bash

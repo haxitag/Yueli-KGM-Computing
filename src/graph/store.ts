@@ -31,43 +31,64 @@ export type GraphRule = {
 };
 
 export type GraphStore = {
-  addTriples(params: { triples: KgmGraphTriple[]; source?: string }): Promise<GraphEdge[]>;
+  addTriples(params: {
+    triples: KgmGraphTriple[];
+    source?: string;
+    namespace?: string;
+  }): Promise<GraphEdge[]>;
   querySubgraph(params: {
     entities?: string[];
     relations?: string[];
     query?: string;
     limit?: number;
+    namespace?: string;
   }): Promise<GraphSubgraph>;
   /** 无向近似：在 subject/object 间做 BFS 最短链；无路径时返回 null */
-  shortestPath?(params: { from: string; to: string; maxHops?: number }): Promise<GraphShortestPathResult | null>;
+  shortestPath?(params: {
+    from: string;
+    to: string;
+    maxHops?: number;
+    namespace?: string;
+  }): Promise<GraphShortestPathResult | null>;
   /** 无向图上的连通分量（按实体 token 去重后） */
-  connectedCommunities?(): Promise<GraphCommunitiesResult>;
+  connectedCommunities?(params?: { namespace?: string }): Promise<GraphCommunitiesResult>;
   /** 自实体出发限定深度的 BFS 子图，可选谓词过滤 */
   reasonExpand?(params: {
     entity: string;
     maxDepth: number;
     relations?: string[];
+    namespace?: string;
   }): Promise<GraphExpandResult | null>;
   /** 一阶规则前向：匹配 if 中全部子句后 instantiates then 模板（仅支持字面替换 $s/$o 占位） */
-  applyRules?(params: { rules: GraphRule[]; maxRounds: number; source?: string }): Promise<GraphEdge[]>;
+  applyRules?(params: {
+    rules: GraphRule[];
+    maxRounds: number;
+    source?: string;
+    namespace?: string;
+  }): Promise<GraphEdge[]>;
 };
 
 export class InMemoryGraphStore implements GraphStore {
-  private edges = new Map<string, GraphEdge>();
+  private namespaces = new Map<string, Map<string, GraphEdge>>();
 
-  async addTriples(params: { triples: KgmGraphTriple[]; source?: string }): Promise<GraphEdge[]> {
+  async addTriples(params: {
+    triples: KgmGraphTriple[];
+    source?: string;
+    namespace?: string;
+  }): Promise<GraphEdge[]> {
     const createdAt = new Date().toISOString();
     const source = params.source ?? "kgm.graph";
+    const edges = this.edgesFor(params.namespace);
     const records = params.triples.map((triple) => {
       const key = `${triple.subject}|${triple.predicate}|${triple.object}`;
-      const existing = this.edges.get(key);
+      const existing = edges.get(key);
       const edge: GraphEdge = existing ?? {
         ...triple,
         id: key,
         source,
         createdAt,
       };
-      this.edges.set(key, edge);
+      edges.set(key, edge);
       return edge;
     });
     return records;
@@ -78,11 +99,12 @@ export class InMemoryGraphStore implements GraphStore {
     relations?: string[];
     query?: string;
     limit?: number;
+    namespace?: string;
   }): Promise<GraphSubgraph> {
     const entitySet = new Set((params.entities ?? []).map(normalizeToken));
     const relationSet = new Set((params.relations ?? []).map(normalizeToken));
     const queryTokens = tokenize(params.query ?? "");
-    const scored = Array.from(this.edges.values())
+    const scored = Array.from(this.edgesFor(params.namespace).values())
       .map((edge) => ({
         edge,
         score: scoreEdge(edge, entitySet, relationSet, queryTokens),
@@ -98,7 +120,12 @@ export class InMemoryGraphStore implements GraphStore {
     return { triples, entities, relations };
   }
 
-  async shortestPath(params: { from: string; to: string; maxHops?: number }): Promise<GraphShortestPathResult | null> {
+  async shortestPath(params: {
+    from: string;
+    to: string;
+    maxHops?: number;
+    namespace?: string;
+  }): Promise<GraphShortestPathResult | null> {
     const from = normalizeToken(params.from);
     const to = normalizeToken(params.to);
     if (from === to) {
@@ -106,7 +133,7 @@ export class InMemoryGraphStore implements GraphStore {
     }
     const maxH = Math.min(32, Math.max(1, params.maxHops ?? 8));
     const adj = new Map<string, Array<{ n: string; e: GraphEdge }>>();
-    for (const e of this.edges.values()) {
+    for (const e of this.edgesFor(params.namespace).values()) {
       const s = normalizeToken(e.subject);
       const o = normalizeToken(e.object);
       const push = (a: string, b: string) => {
@@ -141,7 +168,8 @@ export class InMemoryGraphStore implements GraphStore {
     return null;
   }
 
-  async connectedCommunities(): Promise<GraphCommunitiesResult> {
+  async connectedCommunities(params?: { namespace?: string }): Promise<GraphCommunitiesResult> {
+    const edges = this.edgesFor(params?.namespace);
     const parent = new Map<string, string>();
     const find = (x: string): string => {
       if (!parent.has(x)) {
@@ -161,11 +189,11 @@ export class InMemoryGraphStore implements GraphStore {
         parent.set(ra, rb);
       }
     };
-    for (const e of this.edges.values()) {
+    for (const e of edges.values()) {
       union(normalizeToken(e.subject), normalizeToken(e.object));
     }
     const all = new Set<string>();
-    for (const e of this.edges.values()) {
+    for (const e of edges.values()) {
       all.add(normalizeToken(e.subject));
       all.add(normalizeToken(e.object));
     }
@@ -184,12 +212,13 @@ export class InMemoryGraphStore implements GraphStore {
     entity: string;
     maxDepth: number;
     relations?: string[];
+    namespace?: string;
   }): Promise<GraphExpandResult | null> {
     const start = normalizeToken(params.entity);
     const maxD = Math.min(12, Math.max(1, params.maxDepth));
     const relF = new Set((params.relations ?? []).map(normalizeToken));
     const adj = new Map<string, Array<{ n: string; e: GraphEdge }>>();
-    for (const e of this.edges.values()) {
+    for (const e of this.edgesFor(params.namespace).values()) {
       const s = normalizeToken(e.subject);
       const o = normalizeToken(e.object);
       const p = normalizeToken(e.predicate);
@@ -238,15 +267,17 @@ export class InMemoryGraphStore implements GraphStore {
     rules: GraphRule[];
     maxRounds: number;
     source?: string;
+    namespace?: string;
   }): Promise<GraphEdge[]> {
     const source = params.source ?? "kgm.graph.rules";
     const added: GraphEdge[] = [];
+    const edges = this.edgesFor(params.namespace);
     for (let r = 0; r < params.maxRounds; r += 1) {
       let round = 0;
       for (const rule of params.rules) {
         const matchAll = (ifs: { subject: string; predicate: string; object: string }[]): boolean => {
           for (const c of ifs) {
-            const found = Array.from(this.edges.values()).some((e) => matchClause(e, c));
+            const found = Array.from(edges.values()).some((e) => matchClause(e, c));
             if (!found) {
               return false;
             }
@@ -257,7 +288,7 @@ export class InMemoryGraphStore implements GraphStore {
           continue;
         }
         const t = expandThenTemplate(rule.then);
-        const exists = Array.from(this.edges.values()).some(
+        const exists = Array.from(edges.values()).some(
           (e) =>
             normalizeToken(e.subject) === normalizeToken(t.subject) &&
             normalizeToken(e.predicate) === normalizeToken(t.predicate) &&
@@ -266,7 +297,7 @@ export class InMemoryGraphStore implements GraphStore {
         if (exists) {
           continue;
         }
-        const created = await this.addTriples({ triples: [t], source });
+        const created = await this.addTriples({ triples: [t], source, namespace: params.namespace });
         added.push(...created);
         round += 1;
       }
@@ -275,6 +306,14 @@ export class InMemoryGraphStore implements GraphStore {
       }
     }
     return added;
+  }
+
+  private edgesFor(namespace?: string): Map<string, GraphEdge> {
+    const key = namespace?.trim() || "__global__";
+    if (!this.namespaces.has(key)) {
+      this.namespaces.set(key, new Map());
+    }
+    return this.namespaces.get(key)!;
   }
 }
 

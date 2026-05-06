@@ -49,7 +49,11 @@ import type { KgmRetrievalOptions } from "../core/types.js";
 import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
 import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
 import type { GraphRule } from "../graph/store.js";
-import { KceEngine, type KceComputeRequest } from "../kce/engine.js";
+import { KceEngine, KceExecutionFailure, type KceComputeRequest } from "../kce/engine.js";
+import { generateId } from "../utils/id.js";
+import { logger } from "../observability/logger.js";
+import { validateEnv } from "../config/envValidation.js";
+import { setupGracefulShutdown } from "../observability/gracefulShutdown.js";
 
 export function createKgmServer(params: {
   scheduler: Scheduler;
@@ -68,6 +72,10 @@ export function createKgmServer(params: {
   artifactStore?: ArtifactStore;
   sessionStore?: SessionStore;
 }): http.Server {
+  // Validate environment variables on startup
+  const env = validateEnv();
+  logger.info({ env: { NODE_ENV: env.NODE_ENV, PORT: env.PORT } }, 'Environment validated');
+
   const modelManager = params.modelManager ?? new ManagedModelManager();
   const routingHistory = createRoutingHistoryStoreFromEnv();
   const responseStore = new OpenAiResponseStore();
@@ -79,14 +87,30 @@ export function createKgmServer(params: {
     embedder: params.embedder,
     llmClient: params.llmClient,
   });
-  return http.createServer(async (req, res) => {
+
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "", "http://localhost");
       if (!access.check(req, res, url.pathname)) {
         return;
       }
       if (req.method === "GET" && url.pathname === "/health") {
-        return sendJson(res, 200, { status: "ok" });
+        const health = {
+          status: "ok",
+          timestamp: new Date().toISOString(),
+          uptime: process.uptime(),
+          environment: env.NODE_ENV,
+          version: process.env.npm_package_version || "0.2.0",
+          checks: {
+            memory: {
+              used: process.memoryUsage().heapUsed / 1024 / 1024,
+              total: process.memoryUsage().heapTotal / 1024 / 1024,
+              rss: process.memoryUsage().rss / 1024 / 1024,
+            },
+            cpu: process.cpuUsage(),
+          },
+        };
+        return sendJson(res, 200, health);
       }
 
       if (req.method === "GET" && url.pathname === "/metrics") {
@@ -379,7 +403,13 @@ export function createKgmServer(params: {
       }
 
       if (req.method === "POST" && url.pathname === "/v1/kgm/graph/shortest_path") {
-        const payload = (await readJson(req)) as { from?: string; to?: string; maxHops?: number };
+        const payload = (await readJson(req)) as {
+          from?: string;
+          to?: string;
+          maxHops?: number;
+          userId?: string;
+          namespace?: string;
+        };
         const from = payload.from?.trim();
         const to = payload.to?.trim();
         if (!from || !to) {
@@ -396,10 +426,12 @@ export function createKgmServer(params: {
             kgmErrorBody("graph_path_unavailable", "Graph backend does not expose shortestPath", 501),
           );
         }
+        const namespace = requireGraphNamespace(payload);
         const result = await params.graphStore.shortestPath({
           from,
           to,
           maxHops: payload.maxHops,
+          namespace,
         });
         return sendJson(res, 200, { result });
       }
@@ -412,7 +444,9 @@ export function createKgmServer(params: {
             kgmErrorBody("graph_communities_unavailable", "Graph backend has no community API", 501),
           );
         }
-        const result = await params.graphStore.connectedCommunities();
+        const payload = (await readJson(req)) as { userId?: string; namespace?: string };
+        const namespace = requireGraphNamespace(payload);
+        const result = await params.graphStore.connectedCommunities({ namespace });
         return sendJson(res, 200, result);
       }
 
@@ -421,6 +455,8 @@ export function createKgmServer(params: {
           entity?: string;
           maxDepth?: number;
           relations?: string[];
+          userId?: string;
+          namespace?: string;
         };
         if (!body.entity?.trim()) {
           return sendJson(res, 400, kgmErrorBody("entity_required", "entity is required", 400));
@@ -432,16 +468,24 @@ export function createKgmServer(params: {
             kgmErrorBody("graph_expand_unavailable", "Graph backend has no reasonExpand", 501),
           );
         }
+        const namespace = requireGraphNamespace(body);
         const result = await params.graphStore.reasonExpand({
           entity: body.entity.trim(),
           maxDepth: body.maxDepth ?? 2,
           relations: body.relations,
+          namespace,
         });
         return sendJson(res, 200, { result });
       }
 
       if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/rules") {
-        const body = (await readJson(req)) as { rules?: GraphRule[]; maxRounds?: number; source?: string };
+        const body = (await readJson(req)) as {
+          rules?: GraphRule[];
+          maxRounds?: number;
+          source?: string;
+          userId?: string;
+          namespace?: string;
+        };
         if (!params.graphStore.applyRules) {
           return sendJson(
             res,
@@ -451,7 +495,13 @@ export function createKgmServer(params: {
         }
         const rules = body.rules ?? [];
         const maxR = Math.max(1, Math.min(20, body.maxRounds ?? 5));
-        const added = await params.graphStore.applyRules({ rules, maxRounds: maxR, source: body.source });
+        const namespace = requireGraphNamespace(body);
+        const added = await params.graphStore.applyRules({
+          rules,
+          maxRounds: maxR,
+          source: body.source,
+          namespace,
+        });
         return sendJson(res, 200, { added, count: added.length });
       }
 
@@ -480,11 +530,15 @@ export function createKgmServer(params: {
         const payload = (await readJson(req)) as {
           triples?: Array<{ subject: string; predicate: string; object: string; weight?: number }>;
           source?: string;
+          userId?: string;
+          namespace?: string;
         };
         const triples = payload.triples ?? [];
+        const namespace = requireGraphNamespace(payload);
         const stored = await params.graphStore.addTriples({
           triples,
           source: payload.source ?? "api",
+          namespace,
         });
         return sendJson(res, 200, { status: "ok", count: stored.length, triples: stored });
       }
@@ -667,14 +721,148 @@ export function createKgmServer(params: {
       }
 
       if (req.method === "POST" && url.pathname === "/v1/kgm/kce/compute") {
-        const payload = (await readJson(req)) as KceComputeRequest;
-        const response = await kceEngine.compute(payload);
-        return sendJson(res, 200, response);
+        const payload = validateKceComputePayload(await readJson(req));
+        const requestId = payload.requestId ?? generateId("kce");
+        const traceId = readTraceId(payload.metadata) ?? generateId("trace");
+        const sessionId = payload.sessionId ?? payload.userId;
+        const previewChars = params.configStore.get().context.artifactPreviewChars ?? 240;
+        const enrichedPayload: KceComputeRequest = {
+          ...payload,
+          requestId,
+          sessionId,
+          metadata: {
+            ...(payload.metadata ?? {}),
+            traceId,
+          },
+        };
+
+        if (params.sessionStore) {
+          params.sessionStore.append(sessionId, {
+            timestamp: new Date().toISOString(),
+            role: "user",
+            type: "input",
+            content: payload.input,
+          });
+        }
+
+        const requestArtifact = params.artifactStore?.writeJson(
+          "kce_request",
+          {
+            request_id: requestId,
+            session_id: sessionId,
+            trace_id: traceId,
+            payload: enrichedPayload,
+          },
+          previewChars,
+        );
+
+        try {
+          const response = await kceEngine.compute(enrichedPayload);
+          const traceArtifact = params.artifactStore?.writeJson(
+            "kce_trace",
+            {
+              request_id: requestId,
+              trace_id: traceId,
+              reasoning_trace: response.reasoning_trace,
+              execution_plan: response.execution_plan,
+              validation: response.validation,
+            },
+            previewChars,
+          );
+          const responseArtifact = params.artifactStore?.writeJson(
+            "kce_response",
+            {
+              request_id: requestId,
+              session_id: sessionId,
+              trace_id: traceId,
+              response,
+            },
+            previewChars,
+          );
+          const sessionRef = params.sessionStore?.getRef(
+            sessionId,
+            params.configStore.get().context.sessionPreviewChars ?? 240,
+          );
+          if (params.sessionStore) {
+            params.sessionStore.append(sessionId, {
+              timestamp: new Date().toISOString(),
+              role: "assistant",
+              type: "final",
+              content: response.answer,
+            });
+            params.sessionStore.append(sessionId, {
+              timestamp: new Date().toISOString(),
+              role: "tool",
+              type: "tool",
+              name: "kce_audit",
+              output: {
+                request_id: requestId,
+                trace_id: traceId,
+                validation: response.validation,
+                artifacts: {
+                  request: requestArtifact,
+                  trace: traceArtifact,
+                  response: responseArtifact,
+                },
+              },
+            });
+          }
+          return sendJson(res, 200, {
+            ...response,
+            request_id: requestId,
+            session_id: sessionId,
+            trace_id: traceId,
+            session_ref: sessionRef,
+            artifacts: {
+              request: requestArtifact,
+              trace: traceArtifact,
+              response: responseArtifact,
+            },
+          });
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorArtifact = params.artifactStore?.writeJson(
+            "kce_error",
+            {
+              request_id: requestId,
+              session_id: sessionId,
+              trace_id: traceId,
+              error: errorMessage,
+            },
+            previewChars,
+          );
+          if (params.sessionStore) {
+            params.sessionStore.append(sessionId, {
+              timestamp: new Date().toISOString(),
+              role: "tool",
+              type: "tool",
+              name: "kce_compute_error",
+              output: {
+                request_id: requestId,
+                trace_id: traceId,
+                error: errorMessage,
+                artifact: errorArtifact,
+              },
+            });
+          }
+          if (error instanceof KceExecutionFailure) {
+            return sendJson(res, error.status, {
+              ...kgmErrorBody(error.code, error.message, error.status),
+              request_id: requestId,
+              trace_id: traceId,
+              failed_step: error.step,
+            });
+          }
+          throw error;
+        }
       }
 
       return sendJson(res, 404, { error: "not_found" });
     } catch (error) {
       if (error instanceof KgmJsonParseError) {
+        return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
+      }
+      if (error instanceof KgmRequestValidationError) {
         return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
       }
       if (!res.headersSent) {
@@ -686,6 +874,12 @@ export function createKgmServer(params: {
       }
     }
   });
+
+  // Setup graceful shutdown
+  setupGracefulShutdown(server);
+
+  logger.info('Server created successfully');
+  return server;
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
@@ -778,4 +972,109 @@ function parseNumber(value: string | null): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+class KgmRequestValidationError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, message: string, status = 400) {
+    super(message);
+    this.name = "KgmRequestValidationError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function validateKceComputePayload(payload: unknown): KceComputeRequest {
+  if (!isRecord(payload)) {
+    throw new KgmRequestValidationError("invalid_kce_request", "KCE request body must be an object");
+  }
+  const userId = typeof payload.userId === "string" ? payload.userId.trim() : "";
+  const input = typeof payload.input === "string" ? payload.input.trim() : "";
+  if (!userId) {
+    throw new KgmRequestValidationError("user_id_required", "KCE request must include non-empty userId");
+  }
+  if (!input) {
+    throw new KgmRequestValidationError("input_required", "KCE request must include non-empty input");
+  }
+  if (payload.kce !== undefined) {
+    if (!isRecord(payload.kce)) {
+      throw new KgmRequestValidationError("invalid_kce_options", "kce must be an object");
+    }
+    if (payload.kce.mode !== undefined && !["fast", "balanced", "quality"].includes(String(payload.kce.mode))) {
+      throw new KgmRequestValidationError("invalid_kce_mode", "kce.mode must be one of fast, balanced, quality");
+    }
+    if (payload.kce.llm !== undefined && !isRecord(payload.kce.llm)) {
+      throw new KgmRequestValidationError("invalid_kce_llm", "kce.llm must be an object");
+    }
+    if (payload.kce.llm && payload.kce.llm.enabled !== undefined && typeof payload.kce.llm.enabled !== "boolean") {
+      throw new KgmRequestValidationError("invalid_kce_llm_enabled", "kce.llm.enabled must be a boolean");
+    }
+    validateIntegerRange(payload.kce.graphLimit, "kce.graphLimit", 1, 32);
+    validateIntegerRange(payload.kce.memoryTopK, "kce.memoryTopK", 0, 16);
+    validateIntegerRange(payload.kce.maxParallel, "kce.maxParallel", 1, 8);
+  }
+  if (payload.kgm?.graph?.triples !== undefined) {
+    if (!Array.isArray(payload.kgm.graph.triples)) {
+      throw new KgmRequestValidationError("invalid_graph_triples", "kgm.graph.triples must be an array");
+    }
+    for (const triple of payload.kgm.graph.triples) {
+      if (
+        !isRecord(triple) ||
+        typeof triple.subject !== "string" ||
+        typeof triple.predicate !== "string" ||
+        typeof triple.object !== "string" ||
+        !triple.subject.trim() ||
+        !triple.predicate.trim() ||
+        !triple.object.trim()
+      ) {
+        throw new KgmRequestValidationError(
+          "invalid_graph_triple_item",
+          "Each kgm.graph.triples item must include non-empty subject, predicate, and object",
+        );
+      }
+    }
+  }
+  return payload as KceComputeRequest;
+}
+
+function validateIntegerRange(value: unknown, field: string, min: number, max: number): void {
+  if (value === undefined) {
+    return;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new KgmRequestValidationError(
+      "invalid_numeric_range",
+      `${field} must be an integer between ${min} and ${max}`,
+    );
+  }
+}
+
+function requireGraphNamespace(value: unknown): string {
+  if (!isRecord(value)) {
+    throw new KgmRequestValidationError("graph_namespace_required", "Graph request must include userId or namespace");
+  }
+  const namespace =
+    typeof value.namespace === "string" && value.namespace.trim()
+      ? value.namespace.trim()
+      : typeof value.userId === "string" && value.userId.trim()
+        ? value.userId.trim()
+        : "";
+  if (!namespace) {
+    throw new KgmRequestValidationError("graph_namespace_required", "Graph request must include userId or namespace");
+  }
+  return namespace;
+}
+
+function readTraceId(metadata: unknown): string | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const traceId = metadata.traceId;
+  return typeof traceId === "string" && traceId.trim() ? traceId.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
