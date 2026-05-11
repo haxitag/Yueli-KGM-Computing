@@ -6,21 +6,111 @@ import { collectPlaygroundSystemAddons } from "../playground/systemAddons.js";
 import { generateId } from "../utils/id.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
+import { annotateOpenAiModels } from "../models/modelTypeAnnotator.js";
 export function buildOpenAiModelList(configStore, modelManager) {
     const llm = configStore.get().llm;
+    const data = modelManager?.listOpenAiModels(llm.model, llm.provider) ?? [
+        {
+            id: llm.model,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: llm.provider,
+        },
+    ];
     return {
         object: "list",
-        data: modelManager?.listOpenAiModels(llm.model, llm.provider) ?? [
+        data: annotateOpenAiModels([
             {
-                id: llm.model,
+                id: "auto",
                 object: "model",
                 created: Math.floor(Date.now() / 1000),
-                owned_by: llm.provider,
+                owned_by: "kgm",
             },
-        ],
+            ...data,
+        ]),
     };
 }
+function isMockMode() {
+    return process.env.KGM_MOCK_MODE === "1";
+}
+function resolveRequestedModel(model, configStore) {
+    return model && model !== "auto" ? model : configStore.get().llm.model;
+}
+function createMockChatCompletion(request, configStore) {
+    const requestId = generateId();
+    const created = Math.floor(Date.now() / 1000);
+    const model = resolveRequestedModel(request.model, configStore);
+    return {
+        id: `chatcmpl_${requestId}`,
+        object: "chat.completion",
+        created,
+        model,
+        choices: [
+            {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+            },
+        ],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        metadata: request.metadata ?? {},
+        kgm: { mock: true, reason: "KGM_MOCK_MODE=1" },
+    };
+}
+function createMockResponse(request, configStore) {
+    const requestId = generateId();
+    const created = Math.floor(Date.now() / 1000);
+    const model = resolveRequestedModel(request.model, configStore);
+    return {
+        id: `resp_${requestId}`,
+        object: "response",
+        created,
+        model,
+        status: "completed",
+        output: [
+            {
+                id: `msg_${requestId}`,
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "ok" }],
+            },
+        ],
+        output_text: "ok",
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        metadata: request.metadata ?? {},
+        kgm: { mock: true, reason: "KGM_MOCK_MODE=1" },
+    };
+}
+async function* streamMockChatCompletion(request, configStore) {
+    const body = createMockChatCompletion(request, configStore);
+    yield JSON.stringify({
+        id: body.id,
+        object: "chat.completion.chunk",
+        created: body.created,
+        model: body.model,
+        choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }],
+    });
+    yield JSON.stringify({
+        id: body.id,
+        object: "chat.completion.chunk",
+        created: body.created,
+        model: body.model,
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: body.usage,
+        metadata: body.metadata,
+        kgm: body.kgm,
+    });
+}
+async function* streamMockResponse(request, configStore) {
+    const body = createMockResponse(request, configStore);
+    yield JSON.stringify({ type: "response.created", response: { id: body.id, object: "response", created: body.created, model: body.model, status: "in_progress" } });
+    yield JSON.stringify({ type: "response.output_text.delta", delta: "ok" });
+    yield JSON.stringify({ type: "response.completed", response: body });
+}
 export async function createOpenAiChatCompletion(params) {
+    if (isMockMode()) {
+        return createMockChatCompletion(params.request, params.configStore);
+    }
     const run = await executeCompatibilityRun({
         ...params,
         model: params.request.model,
@@ -62,6 +152,9 @@ export async function createOpenAiChatCompletion(params) {
     };
 }
 export async function createOpenAiResponse(params) {
+    if (isMockMode()) {
+        return createMockResponse(params.request, params.configStore);
+    }
     const run = await executeCompatibilityRun({
         ...params,
         model: params.request.model,
@@ -81,6 +174,9 @@ export async function createOpenAiResponse(params) {
     return buildResponsesObject(run);
 }
 export function streamOpenAiChatCompletion(params) {
+    if (isMockMode()) {
+        return streamMockChatCompletion(params.request, params.configStore);
+    }
     return streamChatCompletionChunks({
         ...params,
         model: params.request.model,
@@ -99,6 +195,9 @@ export function streamOpenAiChatCompletion(params) {
     });
 }
 export function streamOpenAiResponse(params) {
+    if (isMockMode()) {
+        return streamMockResponse(params.request, params.configStore);
+    }
     return streamResponsesChunks({
         ...params,
         model: params.request.model,
@@ -120,7 +219,7 @@ async function executeCompatibilityRun(params) {
     const requestId = generateId();
     const created = Math.floor(Date.now() / 1000);
     const config = params.configStore.get();
-    const model = params.model ?? config.llm.model;
+    const model = resolveRequestedModel(params.model, params.configStore);
     let resolvedModel = model;
     const kgm = normalizeKgmExtensions(requestId, params.kgm);
     const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
@@ -140,7 +239,7 @@ async function executeCompatibilityRun(params) {
             userId: params.user ?? "openai_compat",
             sessionId: deriveSessionId(params.metadata),
             input: extractLatestUserInput(conversation),
-            model: params.model,
+            model,
             conversation,
             constraints: {
                 maxTokens: params.maxTokens,
@@ -485,7 +584,7 @@ async function prepareDirectStream(params) {
     const requestId = generateId();
     const created = Math.floor(Date.now() / 1000);
     const config = params.configStore.get();
-    const model = params.model ?? config.llm.model;
+    const model = resolveRequestedModel(params.model, params.configStore);
     const kgm = normalizeKgmExtensions(requestId, params.kgm);
     const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
     const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
@@ -497,7 +596,7 @@ async function prepareDirectStream(params) {
         userId: params.user ?? "openai_compat",
         sessionId: deriveSessionId(params.metadata),
         input: extractLatestUserInput(params.messages),
-        model: params.model,
+        model,
         conversation: [...params.messages],
         constraints: {
             maxTokens: params.maxTokens,

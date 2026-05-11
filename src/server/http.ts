@@ -24,7 +24,7 @@ import {
 } from "../openai/compat.js";
 import { maybeProxyNativeOpenAiStream } from "../openai/passthrough.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
-import { SandboxManager } from "../sandbox/manager.js";
+import { SandboxConfigurationError, SandboxManager } from "../sandbox/manager.js";
 import { SchemaRegistry } from "../schema/registry.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -54,6 +54,10 @@ import { generateId } from "../utils/id.js";
 import { logger } from "../observability/logger.js";
 import { validateEnv } from "../config/envValidation.js";
 import { setupGracefulShutdown } from "../observability/gracefulShutdown.js";
+import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
+import { handleRuntimeRoute } from "./routes/runtime.js";
+import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
+import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 
 export function createKgmServer(params: {
   scheduler: Scheduler;
@@ -80,6 +84,8 @@ export function createKgmServer(params: {
   const routingHistory = createRoutingHistoryStoreFromEnv();
   const responseStore = new OpenAiResponseStore();
   const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
+  const startedAt = Date.now();
+  const discoveryService = new InferenceDiscoveryService();
   const kceEngine = new KceEngine({
     contextBuilder: params.contextBuilder,
     graphStore: params.graphStore,
@@ -135,11 +141,37 @@ export function createKgmServer(params: {
         return sendJson(res, 200, getKgmOpenApiV1());
       }
 
+      if (url.pathname.startsWith("/v1/runtime/")) {
+        const body = req.method === "POST" ? await readJson(req) : undefined;
+        const handled = await handleRuntimeRoute({
+          method: req.method ?? "GET",
+          pathname: url.pathname,
+          body,
+          res,
+          sendJson,
+          configStore: params.configStore,
+          modelManager,
+          discoveryService,
+          startedAt,
+        });
+        if (handled) return;
+      }
+
       if (req.method === "GET" && url.pathname === "/v1/models") {
         return sendJson(res, 200, buildOpenAiModelList(params.configStore, modelManager));
       }
 
-      if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      if (req.method === "GET" && url.pathname === "/v1/models/effective") {
+        const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+        return sendJson(res, 200, buildEffectiveModels({ configStore: params.configStore, modelManager, discovery }));
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/models/raw") {
+        const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+        return sendJson(res, 200, buildRawModels({ configStore: params.configStore, modelManager, discovery }));
+      }
+
+      if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
         const payload = (await readJson(req)) as OpenAiChatCompletionRequest;
         if (payload.stream) {
           const proxied = await maybeProxyNativeOpenAiStream({
@@ -865,11 +897,15 @@ export function createKgmServer(params: {
       if (error instanceof KgmRequestValidationError) {
         return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
       }
+      if (error instanceof SandboxConfigurationError) {
+        return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
+      }
       if (!res.headersSent) {
+        const structured = toKgmStructuredError(error);
         return sendJson(
           res,
-          500,
-          kgmErrorBody("internal_error", error instanceof Error ? error.message : String(error), 500),
+          structured.status,
+          structuredErrorBody(structured),
         );
       }
     }

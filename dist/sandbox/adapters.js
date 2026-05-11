@@ -1,9 +1,10 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 export function createDefaultSandboxAdapters() {
+    const config = loadSandboxAdapterConfig();
     return {
         computer: new CommandSandboxAdapter({
             kind: "computer",
@@ -17,6 +18,7 @@ export function createDefaultSandboxAdapters() {
             embeddedScript: "qemu-vm-adapter.sh",
             hint: "Wire this to QEMU, Firecracker, or another VM runtime command. Set KGM_SANDBOX_COMPUTER_USE_EMBEDDED=1 to use the bundled QEMU adapter.",
             note: "If commands are configured, the sandbox manager will start and stop a real VM-side process.",
+            config: config.computer,
         }),
         browser: new CommandSandboxAdapter({
             kind: "browser",
@@ -30,6 +32,7 @@ export function createDefaultSandboxAdapters() {
             embeddedScript: "playwright-browser-adapter.mjs",
             hint: "Wire this to a Playwright worker, browser pool, or browser WebSocket endpoint. Set KGM_SANDBOX_BROWSER_USE_EMBEDDED=1 to use the bundled Playwright adapter.",
             note: "Recommended: point start command at a Playwright adapter process or provide a WS endpoint.",
+            config: config.browser,
         }),
         mobile: new CommandSandboxAdapter({
             kind: "mobile",
@@ -43,6 +46,7 @@ export function createDefaultSandboxAdapters() {
             embeddedScript: "android-emulator-adapter.sh",
             hint: "Wire this to Android Emulator, ADB-managed devices, or another mobile simulator. Set KGM_SANDBOX_MOBILE_USE_EMBEDDED=1 to use the bundled emulator adapter.",
             note: "Recommended: use emulator start/stop commands or an adapter service that fronts the device runtime.",
+            config: config.mobile,
         }),
     };
 }
@@ -58,10 +62,11 @@ class CommandSandboxAdapter {
     embeddedScript;
     hint;
     note;
+    config;
     processes = new Map();
     constructor(params) {
         this.kind = params.kind;
-        this.label = params.label;
+        this.label = params.config?.label ?? params.label;
         this.startEnv = params.startEnv;
         this.stopEnv = params.stopEnv;
         this.statusEnv = params.statusEnv;
@@ -69,11 +74,12 @@ class CommandSandboxAdapter {
         this.embeddedFlagEnv = params.embeddedFlagEnv;
         this.embeddedRunner = params.embeddedRunner;
         this.embeddedScript = params.embeddedScript;
-        this.hint = params.hint;
-        this.note = params.note;
+        this.hint = params.config?.hint ?? params.hint;
+        this.note = params.config?.note ?? params.note;
+        this.config = params.config;
     }
     isConfigured() {
-        return Boolean(this.resolveCommand("start") || process.env[this.endpointEnv]);
+        return Boolean(this.resolveCommand("start") || this.resolveEndpoint());
     }
     adapterHint() {
         return this.hint;
@@ -82,7 +88,7 @@ class CommandSandboxAdapter {
         return [this.note];
     }
     start(instance) {
-        const endpoint = process.env[this.endpointEnv];
+        const endpoint = this.resolveEndpoint();
         if (endpoint) {
             return;
         }
@@ -132,7 +138,7 @@ class CommandSandboxAdapter {
         this.processes.delete(instance.id);
     }
     isRunning(instance) {
-        const endpoint = process.env[this.endpointEnv];
+        const endpoint = this.resolveEndpoint();
         if (endpoint) {
             return true;
         }
@@ -166,7 +172,7 @@ class CommandSandboxAdapter {
         }
     }
     preview(instance) {
-        const endpoint = process.env[this.endpointEnv];
+        const endpoint = this.resolveEndpoint();
         if (endpoint) {
             return {
                 detail: `${this.label} attached via ${endpoint}`,
@@ -228,6 +234,14 @@ class CommandSandboxAdapter {
         return {};
     }
     resolveCommand(commandType) {
+        const configured = commandType === "start"
+            ? this.config?.startCommand
+            : commandType === "stop"
+                ? this.config?.stopCommand
+                : this.config?.statusCommand;
+        if (configured?.trim()) {
+            return configured.trim();
+        }
         const envName = commandType === "start" ? this.startEnv : commandType === "stop" ? this.stopEnv : this.statusEnv;
         const explicit = process.env[envName];
         if (explicit) {
@@ -245,6 +259,9 @@ class CommandSandboxAdapter {
     usingEmbeddedAdapter() {
         return parseBoolEnv(this.embeddedFlagEnv);
     }
+    resolveEndpoint() {
+        return this.config?.endpoint?.trim() || process.env[this.endpointEnv];
+    }
 }
 const SANDBOX_SCRIPT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/sandbox");
 function parseBoolEnv(name) {
@@ -253,4 +270,29 @@ function parseBoolEnv(name) {
         return false;
     }
     return value === "1" || value.toLowerCase() === "true";
+}
+function loadSandboxAdapterConfig() {
+    const raw = process.env.KGM_SANDBOX_ADAPTERS_JSON?.trim() || readOptionalConfigFile(process.env.KGM_SANDBOX_ADAPTERS_PATH);
+    if (!raw) {
+        return { computer: undefined, browser: undefined, mobile: undefined };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+        computer: normalizeConfig(parsed.computer),
+        browser: normalizeConfig(parsed.browser),
+        mobile: normalizeConfig(parsed.mobile),
+    };
+}
+function readOptionalConfigFile(filePath) {
+    if (!filePath?.trim()) {
+        return undefined;
+    }
+    const resolved = path.resolve(filePath);
+    return existsSync(resolved) ? readFileSync(resolved, "utf8") : undefined;
+}
+function normalizeConfig(value) {
+    if (!value || typeof value !== "object") {
+        return undefined;
+    }
+    return value;
 }

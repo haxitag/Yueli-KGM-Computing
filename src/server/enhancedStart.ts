@@ -6,9 +6,6 @@ import { fileURLToPath } from 'url';
 import type { ServerResponse } from 'node:http';
 import { 
   ConfigStore,
-  HashEmbedder,
-  MockLlmClient,
-  createRuntime,
   createRuntimeWithStorage,
 } from "../index.js";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
@@ -32,6 +29,10 @@ import {
 } from "../openai/compat.js";
 import { maybeProxyNativeOpenAiStream } from "../openai/passthrough.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
+import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
+import { handleRuntimeRoute } from "./routes/runtime.js";
+import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
+import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 import type { Scheduler } from "../scheduler/fsm.js";
 import type { SchemaRegistry } from "../schema/registry.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -57,17 +58,12 @@ async function main(): Promise<void> {
     persistPath: configPath,
     loadFromDisk: true,
   });
-  const useMock = process.env.KGM_MOCK_MODE === "1";
-  const runtime = useMock
-    ? createRuntime({
-        llmClient: new MockLlmClient(),
-        embedder: new HashEmbedder(),
-        configStore,
-      })
-    : await createRuntimeWithStorage({ configStore });
+  const runtime = await createRuntimeWithStorage({ configStore });
 
   const routingHistory = createRoutingHistoryStoreFromEnv();
   const responseStore = new OpenAiResponseStore();
+  const startedAt = Date.now();
+  const discoveryService = new InferenceDiscoveryService();
 
   // 创建Express应用
   const app = express();
@@ -105,11 +101,37 @@ async function main(): Promise<void> {
         return sendJson(res, 200, getKgmOpenApiV1());
       }
 
+      if (url.pathname.startsWith("/v1/runtime/")) {
+        const body = req.method === "POST" ? await readJson(req) : undefined;
+        const handled = await handleRuntimeRoute({
+          method: req.method ?? "GET",
+          pathname: url.pathname,
+          body,
+          res,
+          sendJson,
+          configStore: runtime.configStore,
+          modelManager: runtime.modelManager,
+          discoveryService,
+          startedAt,
+        });
+        if (handled) return;
+      }
+
       if (req.method === "GET" && url.pathname === "/v1/models") {
         return sendJson(res, 200, buildOpenAiModelList(runtime.configStore, runtime.modelManager));
       }
 
-      if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      if (req.method === "GET" && url.pathname === "/v1/models/effective") {
+        const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+        return sendJson(res, 200, buildEffectiveModels({ configStore: runtime.configStore, modelManager: runtime.modelManager, discovery }));
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/models/raw") {
+        const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+        return sendJson(res, 200, buildRawModels({ configStore: runtime.configStore, modelManager: runtime.modelManager, discovery }));
+      }
+
+      if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
         const payload = (await readJson(req)) as OpenAiChatCompletionRequest;
         if (payload.stream) {
           const proxied = await maybeProxyNativeOpenAiStream({
@@ -646,11 +668,8 @@ async function main(): Promise<void> {
       if (error instanceof KgmJsonParseError) {
         return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
       }
-      return sendJson(
-        res,
-        500,
-        kgmErrorBody("internal_error", error instanceof Error ? error.message : String(error), 500),
-      );
+      const structured = toKgmStructuredError(error);
+      return sendJson(res, structured.status, structuredErrorBody(structured));
     }
   });
 

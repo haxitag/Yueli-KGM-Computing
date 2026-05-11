@@ -8,6 +8,7 @@
 - **npm 包内容**：`dist/`（运行时代码）+ `playground/`（Web Playground 静态资源）+ 本 `README`；**不**再内置仓库中的大量 `docs/*.md`，以减小包体；完整文档以官网为准
 - **生产加固（可选）**：`KGM_HTTP_API_KEY`（`Authorization: Bearer` 或 `X-API-Key`）；`KGM_HTTP_AUTH_EXEMPT` 逗号路径前缀，默认只豁免 `/health`（若开启 API Key 且需本机 Playground，可加入 `/api` 等前缀）；`KGM_HTTP_RATE_LIMIT_MAX` + `KGM_HTTP_RATE_LIMIT_WINDOW_MS`（`MAX=0` 表示不限流）
 - **OpenAPI 3.1**：`GET /openapi.json`（主规范同 `src/openapi/kgmOpenApiV1Spec.ts`）
+- **Runtime 观测层**：`GET /v1/runtime/status`、`/topology`、`/discovery`、`/diagnostics`，以及 `POST /v1/runtime/route/explain`，用于应用端启动体检、模型发现、路由预检与失败解释
 - **检索三阶段**：`kgm.retrieval.strategy=hybrid`（BM25+向量）、`kgm.retrieval.rerank=embed`（双塔成对编码）或 `rerank=http` + `KGM_RERANK_HTTP_URL`
 - **图与多模态**
   - 图：`POST /v1/kgm/graph/communities`、`reason/expand`、`reason/rules` 等
@@ -15,6 +16,19 @@
     - 必填：`KGM_MULTIMODAL_BASE_URL`
     - 常用：`KGM_MULTIMODAL_PATH`（默认 `"/v1/embeddings"`）、`KGM_MULTIMODAL_MODEL`（默认 `"clip"`）、`KGM_MULTIMODAL_KEY`、`KGM_MULTIMODAL_TIMEOUT_MS`（默认 `120000`）
     - `KGM_MULTIMODAL_JSON_TEMPLATE=1`：对上游发 `{ model, image, mime, text? }`；否则默认 `{ model, input: [dataUrl] }`
+
+---
+
+## Non-goals
+
+KGM 主包聚焦统一推理入口、模型与引擎生命周期、动态路由、运行时可观测性。以下能力不由 KGM 主包持有：
+
+- KGM 不管理应用层 session / 对话历史
+- KGM 不执行应用业务 skill；只承载 OpenAI Compatible 的 `tools` / `tool_choice` 协议
+- KGM 不做 multi-agent orchestration
+- KGM 不持有应用端 UI 状态
+
+Agent、Workflow、Evaluation、Skills registry 等高层能力建议以 plugin extension 形式挂载，避免主包承担应用编排职责。
 
 ---
 
@@ -31,6 +45,7 @@ export KGM_LLM_API_KEY="sk-..."
 export KGM_LLM_MODEL="gpt-4o-mini"
 export KGM_LLM_MODE="chat"
 export KGM_LLM_PATH="/chat/completions"
+export KGM_MOCK_MODE=0
 
 node ./node_modules/@haxitag/yueli-kgm-computing/dist/server/enhancedStart.js
 ```
@@ -48,6 +63,43 @@ curl -sS "http://127.0.0.1:3000/v1/chat/completions" \
       { "role": "user", "content": "用一句话说明 KGM 是什么" }
     ]
   }'
+```
+
+---
+
+## Runtime Layer 与应用端预检
+
+应用端推荐启动时先调用：
+
+```bash
+curl -sS http://127.0.0.1:3000/v1/runtime/status
+curl -sS http://127.0.0.1:3000/v1/runtime/discovery
+curl -sS http://127.0.0.1:3000/v1/models/effective
+```
+
+发起推理前可用 `POST /v1/runtime/route/explain` 做 preflight。该接口不执行推理、不消耗 token，只返回 KGM 会选择的路径、候选模型、阻塞问题和 `wouldUseMock`。
+
+`KGM_MOCK_MODE=1` 仅用于本地开发；所有受影响响应会带 `kgm.mock=true`，`/v1/runtime/status` 会返回 `mockMode=true`。生产环境应 unset 或设置 `KGM_MOCK_MODE=0`。
+
+### KGM 核心环境变量
+
+配置优先级为：`env > playground > discovery > config-file > default`。`/v1/runtime/status` 会在 `llm.source` / `embedding.source` 中暴露当前可识别来源。
+
+```text
+KGM_LLM_BASE_URL / KGM_LLM_API_KEY / KGM_LLM_MODEL / KGM_LLM_PATH / KGM_LLM_MODE / KGM_LLM_PROVIDER
+KGM_EMBEDDING_BASE_URL / KGM_EMBEDDING_API_KEY / KGM_EMBEDDING_MODEL / KGM_EMBEDDING_PATH / KGM_EMBEDDING_PROVIDER
+KGM_DISCOVERY_ENABLED / KGM_DISCOVERY_PORTS / KGM_DISCOVERY_TIMEOUT_MS
+KGM_MOCK_MODE
+KGM_HTTP_API_KEY / KGM_HTTP_RATE_LIMIT_MAX / KGM_HTTP_RATE_LIMIT_WINDOW_MS
+KGM_CONFIG_PATH / KGM_DB_PATH / KGM_VECTOR_BACKEND
+```
+
+自动发现本机 OpenAI-compatible 引擎示例：
+
+```bash
+export KGM_DISCOVERY_ENABLED=1
+export KGM_DISCOVERY_PORTS="11434 8002 8080 1234 8000 5000"
+export KGM_DISCOVERY_TIMEOUT_MS=2000
 ```
 
 ---

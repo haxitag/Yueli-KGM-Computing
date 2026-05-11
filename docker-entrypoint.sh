@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+: "${KGM_MOCK_MODE:=0}"
+export KGM_MOCK_MODE
+
 # 等待依赖服务就绪
 if [ "$WAIT_FOR_DEPENDENCIES" = "true" ]; then
   echo "Waiting for dependencies to be ready..."

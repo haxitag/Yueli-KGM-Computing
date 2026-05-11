@@ -1,12 +1,9 @@
-import { createRuntime, HashEmbedder, MockLlmClient, ModelRegistry, ModelRouter, MultiModelOrchestrator, ModelCapabilitySelector, ModelPerformanceMonitor, ModelConfigurationManager, MultimodalProcessor, LanguageAsAService, SeparatedMemoryManager, MemoryDecayMechanism, WriteGatingMechanism } from "../index.js";
+import { createRuntimeWithStorage, ModelRegistry, ModelRouter, MultiModelOrchestrator, ModelCapabilitySelector, ModelPerformanceMonitor, ModelConfigurationManager, MultimodalProcessor, LanguageAsAService, SeparatedMemoryManager, MemoryDecayMechanism, WriteGatingMechanism } from "../index.js";
 async function main() {
     console.log("=== KGM-Computing Multi-Model & Multi-Modal Demo ===\n");
     // 1. 初始化基础运行时
     console.log("1. Initializing base runtime...");
-    const baseRuntime = createRuntime({
-        llmClient: new MockLlmClient(),
-        embedder: new HashEmbedder()
-    });
+    const baseRuntime = await createRuntimeWithStorage({});
     // 2. 创建模型注册中心
     console.log("2. Setting up Model Registry...");
     const modelRegistry = new ModelRegistry();

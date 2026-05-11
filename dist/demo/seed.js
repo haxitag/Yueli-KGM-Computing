@@ -1,6 +1,6 @@
-import { createRuntime, HashEmbedder, MockLlmClient } from "../index.js";
+import { createRuntimeWithStorage } from "../index.js";
 async function main() {
-    const runtime = createRuntime({ llmClient: new MockLlmClient(), embedder: new HashEmbedder() });
+    const runtime = await createRuntimeWithStorage({});
     const embedding = await runtime.embedder.embed("seed memory");
     await runtime.memoryStore.add({
         id: "mem_seed",

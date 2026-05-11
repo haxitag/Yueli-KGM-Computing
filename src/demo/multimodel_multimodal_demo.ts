@@ -1,7 +1,5 @@
 import { 
-  createRuntime, 
-  HashEmbedder, 
-  MockLlmClient,
+  createRuntimeWithStorage,
   ModelRegistry,
   ModelRouter,
   MultiModelOrchestrator,
@@ -22,10 +20,7 @@ async function main(): Promise<void> {
 
   // 1. 初始化基础运行时
   console.log("1. Initializing base runtime...");
-  const baseRuntime = createRuntime({ 
-    llmClient: new MockLlmClient(), 
-    embedder: new HashEmbedder() 
-  });
+  const baseRuntime = await createRuntimeWithStorage({});
   
   // 2. 创建模型注册中心
   console.log("2. Setting up Model Registry...");

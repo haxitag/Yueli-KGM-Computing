@@ -1,5 +1,5 @@
-import { createRuntime, createKgmServer, HashEmbedder, MockLlmClient } from "../index.js";
-const runtime = createRuntime({ llmClient: new MockLlmClient(), embedder: new HashEmbedder() });
+import { createRuntimeWithStorage, createKgmServer } from "../index.js";
+const runtime = await createRuntimeWithStorage({});
 const server = createKgmServer({
     scheduler: runtime.scheduler,
     contextBuilder: runtime.contextBuilder,

@@ -9,6 +9,7 @@ export * from "./schema/defaults.js";
 export * from "./schema/validator.js";
 export * from "./tools/registry.js";
 export * from "./tools/builtin.js";
+export * from "./tools/ioTools.js";
 export * from "./tools/graphTools.js";
 export * from "./tools/sandboxTools.js";
 export * from "./skills/runtime.js";

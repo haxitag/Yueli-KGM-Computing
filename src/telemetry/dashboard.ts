@@ -213,11 +213,10 @@ export class MonitoringDashboard {
       }
     }
     
-    // 业务指标（简化）
     const businessMetrics = {
-      activeUsers: Math.floor(Math.random() * 100) + 50,
-      conversionRate: 0.15,
-      revenue: 15000,
+      activeUsers: 0,
+      conversionRate: 0,
+      revenue: 0,
       keyTransactions: {},
     };
     
@@ -618,11 +617,6 @@ export class MonitoringDashboard {
     metric: string,
     period: string
   ): TimeSeriesData[] {
-    // 这里应该根据实际数据生成时间序列
-    // 为了演示，我们生成一些模拟数据
-    
-    const points = 60; // 60个数据点
-    const data: TimeSeriesData[] = [];
     const now = Date.now();
     
     let interval: number;
@@ -639,39 +633,32 @@ export class MonitoringDashboard {
       default:
         interval = 60 * 1000;
     }
-    
-    for (let i = points; i >= 0; i--) {
-      const timestamp = new Date(now - i * interval);
-      const value = this.generateMockMetricValue(metric, timestamp);
-      
-      data.push({
-        timestamp,
-        value,
+
+    const cutoff = now - interval * 60;
+    return this.metricsHistory
+      .filter(item => item.timestamp.getTime() >= cutoff)
+      .map(item => ({
+        timestamp: item.timestamp,
+        value: this.readMetricValue(metric, item),
         labels: { metric, period },
-      });
-    }
-    
-    return data;
+      }))
+      .filter(item => Number.isFinite(item.value));
   }
-  
-  private generateMockMetricValue(metric: string, timestamp: Date): number {
-    const hour = timestamp.getHours();
-    const minute = timestamp.getMinutes();
-    
-    // 根据不同的metric生成模拟值
+
+  private readMetricValue(metric: string, item: DashboardMetrics): number {
     switch (metric) {
       case 'request.count':
-        return 100 + Math.sin(hour * 0.26) * 50 + Math.random() * 20;
+        return item.application.requests.total;
       case 'response.time':
-        return 200 + Math.cos(hour * 0.26) * 100 + Math.random() * 50;
+        return item.application.responses.latency.p95;
       case 'error.rate':
-        return 0.02 + Math.sin(hour * 0.26) * 0.01 + Math.random() * 0.005;
+        return item.application.errors.total;
       case 'cpu.usage':
-        return 0.3 + Math.sin(hour * 0.26) * 0.2 + Math.random() * 0.1;
+        return item.system.cpu.usage;
       case 'memory.usage':
-        return 500 + Math.cos(hour * 0.26) * 200 + Math.random() * 100;
+        return item.system.memory.used;
       default:
-        return Math.random() * 100;
+        return Number.NaN;
     }
   }
 }

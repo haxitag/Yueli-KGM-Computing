@@ -1,7 +1,7 @@
 import { ContextBuilder } from "./context/contextBuilder.js";
 import { ArtifactStore } from "./context/artifactStore.js";
 import { SessionStore } from "./context/sessionStore.js";
-import { ConfigurableEmbedder, HashEmbedder } from "./embedding/canonical.js";
+import { ConfigurableEmbedder } from "./embedding/canonical.js";
 import type { Embedder } from "./embedding/canonical.js";
 import { InMemoryGraphStore } from "./graph/store.js";
 import type { GraphStore } from "./graph/store.js";
@@ -17,6 +17,7 @@ import { registerDefaultSchemas } from "./schema/defaults.js";
 import { SchemaRegistry } from "./schema/registry.js";
 import { Scheduler } from "./scheduler/fsm.js";
 import { registerBuiltinTools } from "./tools/builtin.js";
+import { registerIoTools } from "./tools/ioTools.js";
 import { registerGraphTools } from "./tools/graphTools.js";
 import { registerArtifactTools } from "./tools/artifactTools.js";
 import { registerSessionTools } from "./tools/sessionTools.js";
@@ -74,6 +75,7 @@ export function createRuntime(params: {
 
   const toolRegistry = new ToolRegistry();
   registerBuiltinTools(toolRegistry);
+  registerIoTools(toolRegistry);
   registerGraphTools(toolRegistry, graphStore);
   registerSandboxTools(toolRegistry, sandboxManager);
   if (configStore.get().context.enableArtifactTool) {

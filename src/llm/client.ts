@@ -3,6 +3,7 @@ import type { RoutingHints } from "../core/types.js";
 import { OllamaLlmClient } from "./third-party.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
+import { KgmStructuredError } from "../errors/structuredError.js";
 
 export type CompletionOptions = {
   model?: string;
@@ -123,12 +124,26 @@ export class HttpLlmClient implements LlmClient {
       headers: buildAuthHeaders(this.apiKey),
       timeoutMs: this.timeoutMs,
     })) as {
-      choices?: Array<{ text?: string; message?: { content?: string } }>;
+      choices?: Array<{ text?: string; message?: { content?: string; reasoning?: string; thinking?: string } }>;
       output_text?: string;
     };
 
     const choice = data.choices?.[0];
-    const text = data.output_text ?? choice?.text ?? choice?.message?.content ?? "";
+    const firstNonEmpty = (...cands: Array<unknown>) => {
+      for (const c of cands) {
+        if (typeof c === "string" && c.trim().length > 0) return c;
+      }
+      return "";
+    };
+
+    // 兼容 reasoning-only 模型：部分 OpenAI-compat 返回 content=""，而真正输出在 message.reasoning/thinking
+    const text = firstNonEmpty(
+      data.output_text,
+      choice?.text,
+      choice?.message?.content,
+      choice?.message?.reasoning,
+      choice?.message?.thinking,
+    );
     return { text, raw: data };
   }
 }
@@ -143,7 +158,18 @@ export class ConfigurableLlmClient implements LlmClient {
   async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
     const config = this.store.get().llm;
     if (config.provider === "openai" && !config.apiKey) {
-      throw new Error("llm apiKey is required for openai provider");
+      throw new KgmStructuredError({
+        code: "LLM_API_KEY_MISSING",
+        message: "LLM provider is openai but apiKey is missing",
+        type: "kgm_configuration_error",
+        param: "KGM_LLM_API_KEY",
+        status: 500,
+        stage: "inference.llm_provider",
+        path: "llmProvider",
+        routeAttempted: true,
+        suggestedFix: "Set KGM_LLM_API_KEY, or point KGM_LLM_BASE_URL to an OpenAI-compatible local engine.",
+        affectedFeatures: ["chat", "completions", "responses"],
+      });
     }
     const client =
       config.provider === "ollama"
@@ -306,39 +332,6 @@ export class OpenAILlmClient implements LlmClient {
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
     }
-  }
-}
-
-export class MockLlmClient implements LlmClient {
-  async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
-    const toolMatch = prompt.match(/search_web|web_search|market.*trend|查找|搜索/);
-    if (toolMatch) {
-      return {
-        text: JSON.stringify({
-          type: "call",
-          target: "search_web",
-          arguments: { query: prompt },
-        }),
-        raw: {},
-      };
-    }
-    return {
-      text: `Mock response for: ${prompt.slice(0, 50)}${prompt.length > 50 ? "..." : ""}`,
-      raw: {},
-    };
-  }
-
-  async* streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
-    yield { type: "started", model: options?.model ?? "mock-model" };
-    const response = await this.complete(prompt, options);
-    for (let i = 0; i < response.text.length; i += 10) {
-      yield {
-        type: "token",
-        text: response.text.slice(i, Math.min(i + 10, response.text.length)),
-        index: i,
-      };
-    }
-    yield { type: "finished", result: response };
   }
 }
 

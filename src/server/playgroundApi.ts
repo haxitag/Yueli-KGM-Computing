@@ -4,7 +4,7 @@ import path from 'node:path';
 import express, { Request, Response, NextFunction } from 'express';
 import { HttpLlmClient } from '../llm/client.js';
 import { ProviderRoutedLlmClient } from '../llm/providerRoutedClient.js';
-import { MultimodalProcessor } from '../multimodal/processor.js';
+import { MultimodalProcessor, type MediaContent, type MediaType } from '../multimodal/processor.js';
 import { LanguageAsAService } from '../multimodal/languageService.js';
 import { parseSkillMd } from '../playground/skillMd.js';
 
@@ -180,26 +180,7 @@ playgroundRouter.post('/trust-proxy-process', async (req: Request, res: Response
     
     // 信任委托 - 通过知识图谱补全和上下文丰富性处理多模态内容
     if (mediaInputs) {
-      const mediaContent = [];
-      
-      // 处理图片
-      if (mediaInputs.images && mediaInputs.images.length > 0) {
-        for (const imageName of mediaInputs.images) {
-          // 在实际实现中，这里会处理上传的图片
-          // 暂时简单处理，实际应该从上传的文件中提取信息
-          mediaContent.push(`Image: ${imageName} (image content would be processed here)`);
-        }
-      }
-      
-      // 处理音频
-      if (mediaInputs.audio) {
-        mediaContent.push(`Audio: ${mediaInputs.audio} (audio content would be transcribed here)`);
-      }
-      
-      // 处理视频
-      if (mediaInputs.video) {
-        mediaContent.push(`Video: ${mediaInputs.video} (video content would be analyzed here)`);
-      }
+      const mediaContent = await processMediaInputs(mediaInputs);
       
       if (mediaContent.length > 0) {
         // 构建丰富上下文 - 信任委托的基础
@@ -257,7 +238,8 @@ async function processOutputBasedOnRequest(prompt: string, llmResult: any): Prom
     text: llmResult?.text || llmResult || '处理完成',
     images: [],
     video: null,
-    audio: null
+    audio: null,
+    unsupportedMediaRequests: []
   };
 
   // 检查是否请求生成图片
@@ -266,9 +248,10 @@ async function processOutputBasedOnRequest(prompt: string, llmResult: any): Prom
       lowerPrompt.includes('picture') ||
       lowerPrompt.includes('draw')) {
     
-    // 在实际实现中，这里会调用图像生成API
-    // 暂时返回模拟的图片URL
-    response.images = [`/generated-images/mock-${Date.now()}.jpg`];
+    response.unsupportedMediaRequests.push({
+      type: 'image',
+      reason: 'image_generation_provider_not_configured'
+    });
   }
   
   // 检查是否请求生成视频
@@ -276,9 +259,10 @@ async function processOutputBasedOnRequest(prompt: string, llmResult: any): Prom
       lowerPrompt.includes('video') || 
       lowerPrompt.includes('animate')) {
     
-    // 在实际实现中，这里会调用视频生成API
-    // 暂时返回模拟的视频URL
-    response.video = `/generated-videos/mock-${Date.now()}.mp4`;
+    response.unsupportedMediaRequests.push({
+      type: 'video',
+      reason: 'video_generation_provider_not_configured'
+    });
   }
   
   // 检查是否请求生成音频
@@ -287,12 +271,52 @@ async function processOutputBasedOnRequest(prompt: string, llmResult: any): Prom
       lowerPrompt.includes('speech') ||
       lowerPrompt.includes('声音')) {
     
-    // 在实际实现中，这里会调用音频生成API
-    // 暂时返回模拟的音频URL
-    response.audio = `/generated-audio/mock-${Date.now()}.mp3`;
+    response.unsupportedMediaRequests.push({
+      type: 'audio',
+      reason: 'audio_generation_provider_not_configured'
+    });
   }
 
   return response;
+}
+
+async function processMediaInputs(mediaInputs: unknown): Promise<string[]> {
+  const items = normalizeMediaInputs(mediaInputs);
+  const processed = await multimodalProcessor.processBatch(items);
+  return processed
+    .map((item) => item.textRepresentation.trim())
+    .filter(Boolean);
+}
+
+function normalizeMediaInputs(mediaInputs: unknown): MediaContent[] {
+  if (!mediaInputs || typeof mediaInputs !== 'object') {
+    return [];
+  }
+  const record = mediaInputs as Record<string, unknown>;
+  return [
+    ...normalizeMediaList(record.images, 'image'),
+    ...normalizeMediaList(record.audio, 'audio'),
+    ...normalizeMediaList(record.video, 'video'),
+    ...normalizeMediaList(record.documents, 'document'),
+  ];
+}
+
+function normalizeMediaList(value: unknown, type: MediaType): MediaContent[] {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  return values.map((item) => {
+    if (item && typeof item === 'object') {
+      const record = item as Record<string, unknown>;
+      return {
+        type: (typeof record.type === 'string' ? record.type : type) as MediaType,
+        data: String(record.data ?? record.url ?? record.base64 ?? ''),
+        metadata: {
+          filename: typeof record.filename === 'string' ? record.filename : undefined,
+          mimeType: typeof record.mimeType === 'string' ? record.mimeType : undefined,
+        },
+      };
+    }
+    return { type, data: String(item) };
+  }).filter((item) => item.data.trim());
 }
 
 function createPlaygroundFallbackClient(): HttpLlmClient {

@@ -37,6 +37,15 @@ const envSchema = z.object({
     KGM_MULTIMODAL_KEY: z.string().optional(),
     KGM_MULTIMODAL_TIMEOUT_MS: z.string().transform(Number).default('120000'),
     KGM_MULTIMODAL_JSON_TEMPLATE: z.string().transform(v => v === '1').default('0'),
+    // Sandbox adapters
+    KGM_SANDBOX_ADAPTERS_PATH: z.string().optional(),
+    KGM_SANDBOX_ADAPTERS_JSON: z.string().optional(),
+    // File/API/executor tools
+    KGM_FILE_TOOL_ROOTS: z.string().optional(),
+    KGM_HTTP_TOOL_ALLOWED_ORIGINS: z.string().optional(),
+    KGM_EXECUTOR_URL: z.string().url().optional(),
+    KGM_EXECUTOR_PATH: z.string().default('/execute'),
+    KGM_EXECUTOR_API_KEY: z.string().optional(),
     // Telemetry
     KGM_TELEMETRY_SAMPLING_RATE: z.string().transform(v => parseFloat(v)).default('0.1'),
     // Logging

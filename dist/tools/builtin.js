@@ -1,7 +1,7 @@
 const searchWebDefinition = {
     name: "search_web",
     kind: "tool",
-    description: "Search the web for relevant documents using DuckDuckGo API",
+    description: "Search the web via a JSON search endpoint and convert result pages to Markdown with Jina Reader.",
     inputSchema: {
         type: "object",
         required: ["query"],
@@ -21,6 +21,7 @@ const searchWebDefinition = {
                         title: { type: "string" },
                         snippet: { type: "string" },
                         url: { type: "string" },
+                        markdown: { type: "string" },
                     },
                 },
             },
@@ -72,17 +73,22 @@ const getWeatherDefinition = {
 async function searchWeb(query, topK) {
     const encodedQuery = encodeURIComponent(query);
     const url = `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`;
-    const response = await fetch(url);
+    const response = await fetch(url, {
+        headers: {
+            accept: "application/json",
+            "user-agent": "Yueli-KGM-Computing/0.2",
+        },
+    });
     if (!response.ok) {
         throw new Error(`search_web failed: ${response.status}`);
     }
-    const data = await response.json();
-    const results = (data?.Results || []).slice(0, topK).map((result) => ({
-        title: result?.Title || "Untitled",
-        snippet: result?.Text || "",
-        url: result?.FirstURL || "",
-    }));
-    return results;
+    const body = await response.text();
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json") || body.trim().startsWith("{")) {
+        const candidates = parseDuckDuckGoJson(body, topK);
+        return readCandidatesAsMarkdown(candidates);
+    }
+    throw new Error(`search_web expected json response, got ${contentType || "unknown"}`);
 }
 async function getWeather(location) {
     const apiKey = process.env.OPENWEATHER_API_KEY;
@@ -113,26 +119,98 @@ export function registerBuiltinTools(registry) {
         if (!query.trim()) {
             return { results: [] };
         }
-        try {
-            const results = await searchWeb(query, topK);
-            return { results };
-        }
-        catch (error) {
-            console.error("search_web error:", error);
-            return { results: [{ title: "Search unavailable", snippet: "Unable to fetch search results at this time", url: "" }] };
-        }
+        const results = await searchWeb(query, topK);
+        return { results };
     });
     registry.register(getWeatherDefinition, async (args) => {
         const location = String(args.location ?? "");
         if (!location.trim()) {
             throw new Error("location is required");
         }
-        try {
-            return await getWeather(location);
-        }
-        catch (error) {
-            console.error("get_weather error:", error);
-            throw error;
-        }
+        return getWeather(location);
     });
+}
+function parseDuckDuckGoJson(body, topK) {
+    const data = JSON.parse(body);
+    const direct = data.Results ?? [];
+    const related = (data.RelatedTopics ?? []).flatMap((item) => item.Topics ?? [item]);
+    return [...direct, ...related]
+        .map((result) => ({
+        title: cleanText(result.Title ?? deriveTitle(result.Text ?? "")),
+        snippet: cleanText(result.Text ?? ""),
+        url: normalizeDuckDuckGoUrl(result.FirstURL ?? ""),
+    }))
+        .filter((result) => result.url || result.snippet)
+        .slice(0, topK);
+}
+async function readCandidatesAsMarkdown(candidates) {
+    const results = [];
+    for (const candidate of candidates) {
+        if (!candidate.url) {
+            continue;
+        }
+        results.push({
+            ...candidate,
+            markdown: await readMarkdownWithJina(candidate.url),
+        });
+    }
+    return results;
+}
+async function readMarkdownWithJina(targetUrl) {
+    const readerUrl = `${jinaReaderBaseUrl().replace(/\/+$/, "")}/${targetUrl}`;
+    const headers = {
+        accept: "text/markdown, application/json",
+        "user-agent": "Yueli-KGM-Computing/0.2",
+    };
+    const apiKey = process.env.JINA_API_KEY ?? process.env.JINA_READER_API_KEY;
+    if (apiKey?.trim()) {
+        headers.authorization = `Bearer ${apiKey.trim()}`;
+    }
+    const response = await fetch(readerUrl, { headers });
+    if (!response.ok) {
+        throw new Error(`jina_reader failed: ${response.status}`);
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = await response.text();
+    if (contentType.includes("application/json") || body.trim().startsWith("{")) {
+        const json = JSON.parse(body);
+        const markdown = json.data?.content ?? json.content;
+        if (typeof markdown === "string") {
+            return markdown;
+        }
+        throw new Error("jina_reader json missing markdown content");
+    }
+    if (contentType.includes("text/markdown") || contentType.includes("text/plain") || looksLikeMarkdown(body)) {
+        return body;
+    }
+    throw new Error(`jina_reader expected markdown or json response, got ${contentType || "unknown"}`);
+}
+function jinaReaderBaseUrl() {
+    return process.env.JINA_READER_BASE_URL ?? "https://r.jina.ai";
+}
+function deriveTitle(text) {
+    const trimmed = cleanText(text);
+    const separator = trimmed.indexOf(" - ");
+    return separator > 0 ? trimmed.slice(0, separator) : trimmed.slice(0, 80);
+}
+function normalizeDuckDuckGoUrl(value) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return "";
+    }
+    try {
+        const url = new URL(trimmed, "https://duckduckgo.com");
+        const uddg = url.searchParams.get("uddg");
+        return uddg ? decodeURIComponent(uddg) : url.href;
+    }
+    catch {
+        return trimmed;
+    }
+}
+function cleanText(value) {
+    return value.replace(/\s+/g, " ").trim();
+}
+function looksLikeMarkdown(value) {
+    const trimmed = value.trim();
+    return Boolean(trimmed) && !trimmed.startsWith("<!DOCTYPE") && !trimmed.startsWith("<html");
 }

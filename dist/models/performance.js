@@ -1,10 +1,194 @@
 import { generateId } from "../utils/id.js";
+export class RealBenchmarkExecutor {
+    llmClient;
+    configStore;
+    scoringStrategy;
+    maxTokens;
+    temperature;
+    timeoutMs;
+    constructor(config) {
+        this.llmClient = config.llmClient;
+        this.configStore = config.configStore;
+        this.scoringStrategy = config.scoringStrategy ?? this.defaultScoringStrategy();
+        this.maxTokens = config.maxTokens ?? 1024;
+        this.temperature = config.temperature ?? 0.7;
+        this.timeoutMs = config.timeoutMs ?? 30000;
+    }
+    async invokeModel(modelName, prompt, options) {
+        const startTime = Date.now();
+        const config = this.configStore?.get();
+        const modelConfig = config?.llm;
+        const costPerToken = this.estimateCost(modelName, modelConfig);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+        try {
+            const result = await this.llmClient.complete(prompt, {
+                ...options,
+                model: options?.model ?? modelName,
+                maxTokens: options?.maxTokens ?? this.maxTokens,
+                temperature: options?.temperature ?? this.temperature,
+                signal: controller.signal,
+            });
+            const endTime = Date.now();
+            const latencyMs = endTime - startTime;
+            const { promptTokens, completionTokens, totalTokens } = this.estimateTokens(result.text, prompt);
+            return {
+                output: result.text,
+                latencyMs,
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                cost: (promptTokens * costPerToken.input + completionTokens * costPerToken.output) / 1000,
+                raw: result.raw,
+            };
+        }
+        finally {
+            clearTimeout(timeoutId);
+        }
+    }
+    async scoreOutput(output, taskType, expectedOutput) {
+        const strategy = this.scoringStrategy;
+        let accuracy = 0;
+        let usefulness = 0.5;
+        let creativity = 0.5;
+        let consistency = 1;
+        if (strategy.scoreAccuracy && expectedOutput) {
+            accuracy = await strategy.scoreAccuracy(output, expectedOutput);
+        }
+        else if (expectedOutput) {
+            accuracy = this.calculateAccuracy(output, expectedOutput);
+        }
+        if (strategy.scoreUsefulness) {
+            usefulness = await strategy.scoreUsefulness(output, taskType);
+        }
+        if (strategy.scoreCreativity) {
+            creativity = await strategy.scoreCreativity(output, taskType);
+        }
+        if (strategy.scoreConsistency) {
+            consistency = await strategy.scoreConsistency([output]);
+        }
+        return {
+            responseTimeMs: 0,
+            throughputTokensPerSecond: 0,
+            errorRate: 0,
+            cost: 0,
+            accuracy,
+            usefulness,
+            creativity,
+            consistency,
+        };
+    }
+    defaultScoringStrategy() {
+        return {
+            name: "default",
+            scoreAccuracy: (output, expected) => {
+                if (!expected)
+                    return 0;
+                return this.calculateAccuracy(output, expected);
+            },
+            scoreUsefulness: (output, _taskType) => {
+                const length = output.length;
+                if (length < 10)
+                    return 0.1;
+                if (length < 50)
+                    return 0.3;
+                if (length < 200)
+                    return 0.6;
+                if (length < 500)
+                    return 0.8;
+                return 0.9;
+            },
+            scoreCreativity: (output, _taskType) => {
+                const uniqueWords = new Set(output.split(/\s+/)).size;
+                const totalWords = output.split(/\s+/).length;
+                const diversity = totalWords > 0 ? uniqueWords / totalWords : 0;
+                const hasEmoji = /[\u{1F300}-\u{1F9FF}]/u.test(output);
+                const hasSpecialChars = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(output);
+                return Math.min(1, diversity * 1.2 + (hasEmoji ? 0.1 : 0) + (hasSpecialChars ? 0.1 : 0));
+            },
+            scoreConsistency: (outputs) => {
+                if (outputs.length < 2)
+                    return 1;
+                return 1 - this.levenshteinDistance(outputs[0], outputs[1]) / Math.max(outputs[0].length, outputs[1].length);
+            },
+        };
+    }
+    estimateCost(modelName, config) {
+        const modelLower = (modelName ?? "").toLowerCase();
+        const providerLower = (config?.provider ?? "").toLowerCase();
+        if (modelLower.includes("gpt-4o") || modelLower.includes("gpt-4-turbo")) {
+            return { input: 0.005, output: 0.015 };
+        }
+        if (modelLower.includes("gpt-4") || modelLower.includes("gpt-4o-mini")) {
+            return { input: 0.01, output: 0.03 };
+        }
+        if (modelLower.includes("gpt-3.5")) {
+            return { input: 0.0005, output: 0.0015 };
+        }
+        if (modelLower.includes("claude-3-5-sonnet") || modelLower.includes("claude-3-5")) {
+            return { input: 0.003, output: 0.015 };
+        }
+        if (modelLower.includes("claude-3-opus")) {
+            return { input: 0.015, output: 0.075 };
+        }
+        if (modelLower.includes("claude-3-haiku")) {
+            return { input: 0.00025, output: 0.00125 };
+        }
+        if (modelLower.includes("claude-3-sonnet") || modelLower.includes("claude-3")) {
+            return { input: 0.003, output: 0.015 };
+        }
+        if (providerLower.includes("anthropic")) {
+            return { input: 0.003, output: 0.015 };
+        }
+        if (providerLower.includes("openai")) {
+            return { input: 0.001, output: 0.002 };
+        }
+        return { input: 0.001, output: 0.002 };
+    }
+    estimateTokens(text, prompt) {
+        const promptTokens = Math.ceil(prompt.length / 4);
+        const completionTokens = Math.ceil(text.length / 4);
+        return {
+            promptTokens,
+            completionTokens,
+            totalTokens: promptTokens + completionTokens,
+        };
+    }
+    calculateAccuracy(actual, expected) {
+        const actualLower = actual.toLowerCase();
+        const expectedLower = expected.toLowerCase();
+        if (actualLower === expectedLower)
+            return 1;
+        if (actualLower.includes(expectedLower) || expectedLower.includes(actualLower))
+            return 0.8;
+        const distance = this.levenshteinDistance(actualLower, expectedLower);
+        const maxLength = Math.max(actualLower.length, expectedLower.length);
+        if (maxLength === 0)
+            return 1;
+        return Math.max(0, 1 - (distance / maxLength));
+    }
+    levenshteinDistance(str1, str2) {
+        const matrix = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(null));
+        for (let i = 0; i <= str1.length; i++)
+            matrix[0][i] = i;
+        for (let j = 0; j <= str2.length; j++)
+            matrix[j][0] = j;
+        for (let j = 1; j <= str2.length; j++) {
+            for (let i = 1; i <= str1.length; i++) {
+                const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
+                matrix[j][i] = Math.min(matrix[j][i - 1] + 1, matrix[j - 1][i] + 1, matrix[j - 1][i - 1] + indicator);
+            }
+        }
+        return matrix[str2.length][str1.length];
+    }
+}
 export class ModelPerformanceMonitor {
     records = [];
     benchmarks = new Map();
     evaluationResults = [];
     autoConfig;
     lastEvaluationTime = 0;
+    executor = null;
     constructor(config) {
         this.autoConfig = {
             enabled: config?.enabled ?? true,
@@ -15,6 +199,24 @@ export class ModelPerformanceMonitor {
             sampleSize: config?.sampleSize ?? 10,
             saveDetailedLogs: config?.saveDetailedLogs ?? true,
         };
+    }
+    /**
+     * 注册基准测试执行器
+     */
+    registerExecutor(executor) {
+        this.executor = executor;
+    }
+    /**
+     * 获取已注册的执行器
+     */
+    getExecutor() {
+        return this.executor;
+    }
+    /**
+     * 检查是否已注册执行器
+     */
+    hasExecutor() {
+        return this.executor !== null;
     }
     /**
      * 记录单次模型调用的性能
@@ -55,87 +257,76 @@ export class ModelPerformanceMonitor {
         if (!benchmark) {
             throw new Error(`Benchmark not found: ${benchmarkId}`);
         }
-        const startTime = Date.now();
-        let totalMetrics = {
-            responseTimeMs: 0,
-            throughputTokensPerSecond: 0,
-            errorRate: 0,
-            cost: 0,
-            accuracy: 0,
-            usefulness: 0,
-            creativity: 0,
-            consistency: 0,
-        };
-        let successCount = 0;
-        for (let i = 0; i < Math.min(benchmark.inputs.length, this.autoConfig.sampleSize); i++) {
-            try {
-                const input = benchmark.inputs[i];
-                // 模拟模型调用和评估
-                const startTime = Date.now();
-                // 这里应该实际调用模型，为了演示目的，我们模拟一些结果
-                const simulatedOutput = `Simulated output for: ${input.substring(0, 20)}...`;
-                const responseTime = Math.random() * 2000 + 500; // 500-2500ms
-                // 模拟计算各项指标
-                const tokensPerSecond = 100 + Math.random() * 200; // 100-300 tokens/sec
-                const accuracy = benchmark.expectedOutputs && i < benchmark.expectedOutputs.length
-                    ? this.calculateAccuracy(simulatedOutput, benchmark.expectedOutputs[i])
-                    : Math.random();
-                const usefulness = 0.5 + Math.random() * 0.4; // 0.5-0.9
-                const creativity = 0.3 + Math.random() * 0.5; // 0.3-0.8
-                const consistency = 0.6 + Math.random() * 0.3; // 0.6-0.9
-                totalMetrics.responseTimeMs += responseTime;
-                totalMetrics.throughputTokensPerSecond += tokensPerSecond;
-                totalMetrics.accuracy += accuracy;
-                totalMetrics.usefulness += usefulness;
-                totalMetrics.creativity += creativity;
-                totalMetrics.consistency += consistency;
-                successCount++;
-                // 记录单次性能
-                this.recordPerformance(modelName, input, simulatedOutput, {
-                    responseTimeMs: responseTime,
-                    throughputTokensPerSecond: tokensPerSecond,
-                    errorRate: 0,
-                    cost: 0.0001 * input.length / 1000, // 模拟成本
-                    accuracy,
-                    usefulness,
-                    creativity,
-                    consistency,
-                }, benchmark.taskType);
-            }
-            catch (error) {
-                totalMetrics.errorRate += 1;
-            }
+        if (!this.executor) {
+            throw new Error(`benchmark_executor_not_registered:${modelName}:${benchmarkId}. Register a BenchmarkExecutor using registerExecutor() before running benchmarks.`);
         }
-        // 计算平均值
-        if (successCount > 0) {
-            totalMetrics.responseTimeMs /= successCount;
-            totalMetrics.throughputTokensPerSecond /= successCount;
-            totalMetrics.accuracy /= successCount;
-            totalMetrics.usefulness /= successCount;
-            totalMetrics.creativity /= successCount;
-            totalMetrics.consistency /= successCount;
-            totalMetrics.errorRate /= benchmark.inputs.length; // 错误率相对于总请求数
+        const results = [];
+        const outputs = [];
+        for (let i = 0; i < benchmark.inputs.length; i++) {
+            const input = benchmark.inputs[i];
+            const expected = benchmark.expectedOutputs?.[i];
+            const invocationResult = await this.executor.invokeModel(modelName, input);
+            const scoredMetrics = await this.executor.scoreOutput(invocationResult.output, benchmark.taskType, expected);
+            results.push({
+                ...scoredMetrics,
+                responseTimeMs: invocationResult.latencyMs,
+                throughputTokensPerSecond: invocationResult.totalTokens > 0
+                    ? (invocationResult.completionTokens / invocationResult.latencyMs) * 1000
+                    : 0,
+                cost: invocationResult.cost,
+                errorRate: 0,
+            });
+            outputs.push(invocationResult.output);
         }
-        // 计算整体评分（加权平均）
-        const overallScore = (totalMetrics.accuracy * 0.3 +
-            totalMetrics.usefulness * 0.25 +
-            totalMetrics.consistency * 0.2 +
-            (1 - totalMetrics.responseTimeMs / 10000) * 0.15 + // 响应时间越短越好，最大10秒
-            totalMetrics.creativity * 0.1);
-        const result = {
+        const avgMetrics = this.averageMetrics(results);
+        const evaluationResult = {
             id: generateId(),
             modelName,
             benchmarkId,
-            overallScore: Math.min(overallScore, 1), // 确保不超过1
-            metrics: totalMetrics,
+            overallScore: this.calculateOverallScore(avgMetrics),
+            metrics: avgMetrics,
             timestamp: new Date().toISOString(),
         };
-        this.evaluationResults.push(result);
-        // 只保留最近100个评估结果
-        if (this.evaluationResults.length > 100) {
-            this.evaluationResults = this.evaluationResults.slice(-100);
+        this.evaluationResults.push(evaluationResult);
+        if (this.autoConfig.saveDetailedLogs) {
+            for (let i = 0; i < benchmark.inputs.length; i++) {
+                this.recordPerformance(modelName, benchmark.inputs[i], outputs[i], results[i], benchmark.taskType);
+            }
         }
-        return result;
+        return evaluationResult;
+    }
+    averageMetrics(metricsList) {
+        if (metricsList.length === 0) {
+            return {
+                responseTimeMs: 0,
+                throughputTokensPerSecond: 0,
+                errorRate: 0,
+                cost: 0,
+                accuracy: 0,
+                usefulness: 0,
+                creativity: 0,
+                consistency: 0,
+            };
+        }
+        const count = metricsList.length;
+        return {
+            responseTimeMs: metricsList.reduce((sum, m) => sum + m.responseTimeMs, 0) / count,
+            throughputTokensPerSecond: metricsList.reduce((sum, m) => sum + m.throughputTokensPerSecond, 0) / count,
+            errorRate: metricsList.reduce((sum, m) => sum + m.errorRate, 0) / count,
+            cost: metricsList.reduce((sum, m) => sum + m.cost, 0) / count,
+            accuracy: metricsList.reduce((sum, m) => sum + m.accuracy, 0) / count,
+            usefulness: metricsList.reduce((sum, m) => sum + m.usefulness, 0) / count,
+            creativity: metricsList.reduce((sum, m) => sum + m.creativity, 0) / count,
+            consistency: metricsList.reduce((sum, m) => sum + m.consistency, 0) / count,
+        };
+    }
+    calculateOverallScore(metrics) {
+        return (metrics.accuracy * 0.3 +
+            metrics.usefulness * 0.25 +
+            metrics.consistency * 0.2 +
+            metrics.creativity * 0.1 +
+            Math.max(0, 1 - metrics.responseTimeMs / 10000) * 0.1 +
+            Math.max(0, 1 - metrics.cost / 10) * 0.05);
     }
     /**
      * 计算输出准确性
@@ -322,37 +513,7 @@ export class ModelPerformanceMonitor {
         const results = [];
         // 为每个注册的基准测试运行评估
         for (const benchmarkId of this.autoConfig.benchmarkIds) {
-            // 这里应该获取所有可用模型并运行基准测试
-            // 由于我们没有实际的模型注册表，我们使用模拟模型名
-            const mockModelNames = ["gpt-4", "claude-3", "gemini-pro", "llama-3"];
-            for (const modelName of mockModelNames) {
-                try {
-                    // 注意：在实际实现中，我们需要实际的模型调用
-                    // 这里只是模拟返回结果
-                    const mockResult = {
-                        id: generateId(),
-                        modelName,
-                        benchmarkId,
-                        overallScore: 0.7 + Math.random() * 0.3, // 模拟分数
-                        metrics: {
-                            responseTimeMs: 1000 + Math.random() * 2000,
-                            throughputTokensPerSecond: 50 + Math.random() * 100,
-                            errorRate: Math.random() * 0.1,
-                            cost: 0.01 + Math.random() * 0.05,
-                            accuracy: 0.6 + Math.random() * 0.4,
-                            usefulness: 0.6 + Math.random() * 0.4,
-                            creativity: 0.5 + Math.random() * 0.4,
-                            consistency: 0.7 + Math.random() * 0.3,
-                        },
-                        timestamp: new Date().toISOString(),
-                    };
-                    results.push(mockResult);
-                    this.evaluationResults.push(mockResult);
-                }
-                catch (error) {
-                    console.error(`Failed to evaluate model ${modelName} on benchmark ${benchmarkId}:`, error);
-                }
-            }
+            void benchmarkId;
         }
         this.lastEvaluationTime = Date.now();
         // 只保留最近的评估结果

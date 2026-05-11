@@ -253,7 +253,7 @@ export function buildOpenApiPathsV1(): Record<string, unknown> {
       post: {
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         summary: "启动",
-        responses: { "200": { description: "sandbox" }, "404": R.nf, ...postWithBody() },
+        responses: { "200": { description: "sandbox" }, "404": R.nf, "503": { description: "sandbox adapter required" }, ...postWithBody() },
       },
     },
     "/v1/kgm/sandboxes/{id}/stop": {

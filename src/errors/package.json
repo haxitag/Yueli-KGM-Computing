@@ -2,6 +2,7 @@
   "name": "@kgm/errors",
   "version": "1.0.0",
   "description": "Production-grade error handling system for KGM Computing",
+  "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
   "exports": {

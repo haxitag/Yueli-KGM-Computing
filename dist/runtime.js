@@ -13,6 +13,7 @@ import { registerDefaultSchemas } from "./schema/defaults.js";
 import { SchemaRegistry } from "./schema/registry.js";
 import { Scheduler } from "./scheduler/fsm.js";
 import { registerBuiltinTools } from "./tools/builtin.js";
+import { registerIoTools } from "./tools/ioTools.js";
 import { registerGraphTools } from "./tools/graphTools.js";
 import { registerArtifactTools } from "./tools/artifactTools.js";
 import { registerSessionTools } from "./tools/sessionTools.js";
@@ -43,6 +44,7 @@ export function createRuntime(params) {
     const outputSchema = schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {};
     const toolRegistry = new ToolRegistry();
     registerBuiltinTools(toolRegistry);
+    registerIoTools(toolRegistry);
     registerGraphTools(toolRegistry, graphStore);
     registerSandboxTools(toolRegistry, sandboxManager);
     if (configStore.get().context.enableArtifactTool) {

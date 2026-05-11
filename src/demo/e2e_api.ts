@@ -1,8 +1,8 @@
 import { once } from "node:events";
-import { createKgmServer, createRuntime, HashEmbedder, KgmSdk, MockLlmClient } from "../index.js";
+import { createKgmServer, createRuntimeWithStorage, KgmSdk } from "../index.js";
 
 async function main(): Promise<void> {
-  const runtime = createRuntime({ llmClient: new MockLlmClient(), embedder: new HashEmbedder() });
+  const runtime = await createRuntimeWithStorage({});
   const server = createKgmServer({
     scheduler: runtime.scheduler,
     contextBuilder: runtime.contextBuilder,

@@ -30,12 +30,12 @@ export class SandboxManager {
       kind,
       name: params.name ?? defaultName(kind),
       status: "stopped",
-      runtimeMode: adapter.isConfigured() ? "external" : "simulated",
+      runtimeMode: adapter.isConfigured() ? "external" : "unconfigured",
       adapterHint: adapter.adapterHint(),
       notes: [
         adapter.isConfigured()
           ? "Sandbox adapter is configured. Start/stop will target a real external runtime."
-          : "Minimal embedded sandbox. Replace runtimeMode=simulated with an adapter-backed implementation for real isolation.",
+          : "Sandbox adapter is not configured. Start is unavailable until an external adapter command or endpoint is configured.",
         ...defaultNotes(kind),
         ...adapter.notes(),
         ...(params.notes ?? []),
@@ -51,11 +51,14 @@ export class SandboxManager {
   start(id: string): SandboxInstance {
     const sandbox = this.require(id);
     const adapter = this.adapters[sandbox.kind];
+    if (!adapter.isConfigured()) {
+      throw new SandboxConfigurationError(sandbox.kind, adapter.adapterHint());
+    }
     adapter.start(sandbox);
     const updated: SandboxInstance = {
       ...sandbox,
       status: "running" as SandboxStatus,
-      runtimeMode: adapter.isConfigured() ? "external" : "simulated",
+      runtimeMode: "external",
       updatedAt: new Date().toISOString(),
     };
     this.sandboxes.set(id, updated);
@@ -84,7 +87,7 @@ export class SandboxManager {
 
   private withPreview(instance: SandboxInstance): SandboxInstance {
     const adapter = this.adapters[instance.kind];
-    const running = instance.runtimeMode === "external" ? adapter.isRunning(instance) : instance.status === "running";
+    const running = instance.runtimeMode === "external" ? adapter.isRunning(instance) : false;
     const preview = buildPreview({
       ...instance,
       status: running ? instance.status : "stopped",
@@ -106,6 +109,15 @@ export class SandboxManager {
     this.create({ kind: "computer", name: "Virtual Computer" });
     this.create({ kind: "browser", name: "Virtual Browser" });
     this.create({ kind: "mobile", name: "Virtual Mobile" });
+  }
+}
+
+export class SandboxConfigurationError extends Error {
+  readonly code = "sandbox_adapter_required";
+  readonly status = 503;
+
+  constructor(kind: SandboxKind, hint: string) {
+    super(`No real ${kind} sandbox adapter is configured. ${hint}`);
   }
 }
 

@@ -193,7 +193,7 @@ export type SandboxInstance = {
   kind: SandboxKind;
   name: string;
   status: SandboxStatus;
-  runtimeMode: "simulated" | "external";
+  runtimeMode: "external" | "unconfigured";
   adapterHint: string;
   notes: string[];
   createdAt: string;

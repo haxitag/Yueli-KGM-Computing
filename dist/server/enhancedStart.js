@@ -3,7 +3,7 @@ import http from 'node:http';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { ConfigStore, HashEmbedder, MockLlmClient, createRuntime, createRuntimeWithStorage, } from "../index.js";
+import { ConfigStore, createRuntimeWithStorage, } from "../index.js";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
 import { playgroundRouter } from './playgroundApi.js';
 import { syncPlaygroundFromConfig } from "../playground/syncPlayground.js";
@@ -14,6 +14,10 @@ import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import { buildOpenAiModelList, createOpenAiChatCompletion, createOpenAiResponse, streamOpenAiChatCompletion, streamOpenAiResponse, } from "../openai/compat.js";
 import { maybeProxyNativeOpenAiStream } from "../openai/passthrough.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
+import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
+import { handleRuntimeRoute } from "./routes/runtime.js";
+import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
+import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from "../routing/routingService.js";
 // 获取当前文件目录
@@ -26,16 +30,11 @@ async function main() {
         persistPath: configPath,
         loadFromDisk: true,
     });
-    const useMock = process.env.KGM_MOCK_MODE === "1";
-    const runtime = useMock
-        ? createRuntime({
-            llmClient: new MockLlmClient(),
-            embedder: new HashEmbedder(),
-            configStore,
-        })
-        : await createRuntimeWithStorage({ configStore });
+    const runtime = await createRuntimeWithStorage({ configStore });
     const routingHistory = createRoutingHistoryStoreFromEnv();
     const responseStore = new OpenAiResponseStore();
+    const startedAt = Date.now();
+    const discoveryService = new InferenceDiscoveryService();
     // 创建Express应用
     const app = express();
     const server = http.createServer(app);
@@ -64,10 +63,34 @@ async function main() {
             if (req.method === "GET" && (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json")) {
                 return sendJson(res, 200, getKgmOpenApiV1());
             }
+            if (url.pathname.startsWith("/v1/runtime/")) {
+                const body = req.method === "POST" ? await readJson(req) : undefined;
+                const handled = await handleRuntimeRoute({
+                    method: req.method ?? "GET",
+                    pathname: url.pathname,
+                    body,
+                    res,
+                    sendJson,
+                    configStore: runtime.configStore,
+                    modelManager: runtime.modelManager,
+                    discoveryService,
+                    startedAt,
+                });
+                if (handled)
+                    return;
+            }
             if (req.method === "GET" && url.pathname === "/v1/models") {
                 return sendJson(res, 200, buildOpenAiModelList(runtime.configStore, runtime.modelManager));
             }
-            if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+            if (req.method === "GET" && url.pathname === "/v1/models/effective") {
+                const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+                return sendJson(res, 200, buildEffectiveModels({ configStore: runtime.configStore, modelManager: runtime.modelManager, discovery }));
+            }
+            if (req.method === "GET" && url.pathname === "/v1/models/raw") {
+                const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+                return sendJson(res, 200, buildRawModels({ configStore: runtime.configStore, modelManager: runtime.modelManager, discovery }));
+            }
+            if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
                 const payload = (await readJson(req));
                 if (payload.stream) {
                     const proxied = await maybeProxyNativeOpenAiStream({
@@ -504,7 +527,8 @@ async function main() {
             if (error instanceof KgmJsonParseError) {
                 return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
             }
-            return sendJson(res, 500, kgmErrorBody("internal_error", error instanceof Error ? error.message : String(error), 500));
+            const structured = toKgmStructuredError(error);
+            return sendJson(res, structured.status, structuredErrorBody(structured));
         }
     });
     const port = Number(process.env.PORT ?? 3000);

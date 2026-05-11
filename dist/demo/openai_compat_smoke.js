@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { createKgmServer, createRuntime, HashEmbedder, MockLlmClient } from "../index.js";
+import { createKgmServer, createRuntimeWithStorage } from "../index.js";
 async function main() {
-    const runtime = createRuntime({
-        llmClient: new MockLlmClient(),
-        embedder: new HashEmbedder(),
-    });
+    const runtime = await createRuntimeWithStorage({});
+    const smokeModel = process.env.KGM_LLM_MODEL ?? "gpt-4o-mini";
     const server = createKgmServer({
         scheduler: runtime.scheduler,
         contextBuilder: runtime.contextBuilder,
@@ -29,7 +27,7 @@ async function main() {
     }
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const finalResponse = await postJson(`${baseUrl}/v1/chat/completions`, {
-        model: "mock-model",
+        model: smokeModel,
         messages: [{ role: "user", content: "say hello" }],
         metadata: { session_id: "smoke-session" },
     });
@@ -38,7 +36,7 @@ async function main() {
     assert.equal(typeof finalResponse.choices?.[0]?.message?.content, "string");
     assert.equal(finalResponse.kgm?.ops?.slaOwner, "self");
     const toolResponse = await postJson(`${baseUrl}/v1/chat/completions`, {
-        model: "mock-model",
+        model: smokeModel,
         messages: [{ role: "user", content: "search market trends" }],
         kgm: {
             capabilities: {
@@ -55,7 +53,7 @@ async function main() {
     assert.equal(toolResponse.choices?.[0]?.finish_reason, "tool_calls");
     assert.equal(toolResponse.choices?.[0]?.message?.tool_calls?.[0]?.function?.name, "search_web");
     const autoExecResponse = await postJson(`${baseUrl}/v1/chat/completions`, {
-        model: "mock-model",
+        model: smokeModel,
         messages: [{ role: "user", content: "search market trends" }],
         kgm: {
             capabilities: {
@@ -68,7 +66,7 @@ async function main() {
     assert.equal(autoExecResponse.choices?.[0]?.message?.tool_calls?.[0]?.function?.name, "search_web");
     assert.equal(typeof autoExecResponse.choices?.[0]?.message?.content, "string");
     const responsesResult = await postJson(`${baseUrl}/v1/responses`, {
-        model: "mock-model",
+        model: smokeModel,
         input: "search market trends",
         kgm: {
             capabilities: {
@@ -81,7 +79,7 @@ async function main() {
     assert.equal(responsesResult.status, "completed");
     assert.equal(typeof responsesResult.output_text, "string");
     const anthropicMsg = await postJson(`${baseUrl}/v1/messages`, {
-        model: "mock-model",
+        model: smokeModel,
         max_tokens: 256,
         messages: [{ role: "user", content: "say hello" }],
     });
@@ -91,7 +89,7 @@ async function main() {
     assert.equal(anthropicMsg.content[0]?.type, "text");
     assert.equal(typeof anthropicMsg.content[0]?.text, "string");
     const anthropicTools = await postJson(`${baseUrl}/v1/messages`, {
-        model: "mock-model",
+        model: smokeModel,
         max_tokens: 256,
         messages: [{ role: "user", content: "search market trends" }],
         kgm: {
@@ -111,7 +109,7 @@ async function main() {
     assert.ok(toolUseBlock);
     assert.equal(toolUseBlock.name, "search_web");
     const anthropicStream = await postStream(`${baseUrl}/v1/messages`, {
-        model: "mock-model",
+        model: smokeModel,
         max_tokens: 256,
         stream: true,
         messages: [{ role: "user", content: "hi" }],
@@ -119,7 +117,7 @@ async function main() {
     assert.match(anthropicStream, /content_block_delta/);
     assert.ok(!anthropicStream.includes("[DONE]"));
     const chatStream = await postStream(`${baseUrl}/v1/chat/completions`, {
-        model: "mock-model",
+        model: smokeModel,
         stream: true,
         messages: [{ role: "user", content: "search market trends" }],
         kgm: {

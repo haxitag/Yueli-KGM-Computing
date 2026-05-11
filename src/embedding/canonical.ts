@@ -2,6 +2,7 @@ import { CANONICAL_EMBEDDING } from "../core/config.js";
 import type { ConfigStore } from "../core/configStore.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
+import { KgmStructuredError } from "../errors/structuredError.js";
 
 export type Embedder = {
   embed(text: string): Promise<number[]>;
@@ -98,7 +99,18 @@ export class ConfigurableEmbedder implements Embedder {
   async embed(text: string): Promise<number[]> {
     const config = this.store.get().embedding;
     if (config.provider === "openai" && !config.apiKey) {
-      throw new Error("embedding apiKey is required for openai provider");
+      throw new KgmStructuredError({
+        code: "EMBEDDING_API_KEY_MISSING",
+        message: "Embedding provider is openai but apiKey is missing",
+        type: "kgm_configuration_error",
+        param: "KGM_EMBEDDING_API_KEY",
+        status: 500,
+        stage: "context.memory_search",
+        path: "llmProvider",
+        routeAttempted: true,
+        suggestedFix: "Set KGM_EMBEDDING_* environment variables, or disable memory retrieval via options.memory=false",
+        affectedFeatures: ["memory_search", "rag", "context_builder"],
+      });
     }
     const client =
       config.provider === "ollama"

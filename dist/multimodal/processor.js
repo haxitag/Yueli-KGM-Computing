@@ -4,14 +4,16 @@ export class MultimodalProcessor {
      */
     async processMedia(content, options = {}) {
         const { embedder, timeoutMs = 30000 } = options;
-        // 设置超时
+        let timeout;
         const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Media processing timeout')), timeoutMs);
+            timeout = setTimeout(() => reject(new Error('Media processing timeout')), timeoutMs);
         });
-        // 根据媒体类型处理内容
         const processingPromise = this.processMediaType(content, options);
-        // 使用竞态条件来处理超时
-        const result = await Promise.race([processingPromise, timeoutPromise]);
+        const result = await Promise.race([processingPromise, timeoutPromise]).finally(() => {
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+        });
         // 如果提供了嵌入器，生成嵌入向量
         if (embedder && result.textRepresentation) {
             result.embedding = await embedder.embed(result.textRepresentation);
@@ -24,19 +26,8 @@ export class MultimodalProcessor {
     async processBatch(contents, options = {}) {
         const results = [];
         for (const content of contents) {
-            try {
-                const processed = await this.processMedia(content, options);
-                results.push(processed);
-            }
-            catch (error) {
-                console.error(`Failed to process media content:`, error);
-                // 添加错误占位符
-                results.push({
-                    type: content.type,
-                    textRepresentation: `Error processing ${content.type} content`,
-                    metadata: content.metadata || {},
-                });
-            }
+            const processed = await this.processMedia(content, options);
+            results.push(processed);
         }
         return results;
     }
@@ -46,11 +37,11 @@ export class MultimodalProcessor {
     async processMediaType(content, options) {
         switch (content.type) {
             case 'image':
-                return this.processImage(content, options.image || {});
+                return this.processImage(content, options.image || {}, options);
             case 'audio':
-                return this.processAudio(content, options.audio || {});
+                return this.processAudio(content, options.audio || {}, options);
             case 'video':
-                return this.processVideo(content, options.video || {});
+                return this.processVideo(content, options.video || {}, options);
             case 'document':
             case 'pdf':
                 return this.processDocument(content, options.document || {});
@@ -63,79 +54,57 @@ export class MultimodalProcessor {
     /**
      * 处理图像内容
      */
-    async processImage(content, options) {
+    async processImage(content, options, rootOptions) {
         const { extractText = true, extractFeatures = true, generateDescription = true } = options;
-        let textRepresentation = '';
-        const features = {};
-        // 在实际实现中，这里会调用图像处理服务
-        // 例如调用Vision API进行图像描述或OCR
-        if (extractText) {
-            // 模拟OCR结果
-            textRepresentation += 'Image OCR result: [OCR content would appear here]\n';
-        }
-        if (generateDescription) {
-            // 模拟图像描述
-            textRepresentation += 'Image description: [Visual content description would appear here]\n';
-        }
-        if (extractFeatures) {
-            // 模拟视觉特征
-            features.visualTags = ['object1', 'object2', 'scene_type'];
-            features.colorPalette = ['#FF0000', '#00FF00', '#0000FF'];
+        if (extractText || generateDescription || extractFeatures) {
+            return callMultimodalProvider(content, {
+                tasks: { extractText, extractFeatures, generateDescription },
+                provider: rootOptions.provider,
+                timeoutMs: rootOptions.timeoutMs,
+            });
         }
         return {
             type: 'image',
-            textRepresentation: textRepresentation.trim(),
-            features,
+            textRepresentation: '',
+            features: {},
             metadata: content.metadata || {},
         };
     }
     /**
      * 处理音频内容
      */
-    async processAudio(content, options) {
+    async processAudio(content, options, rootOptions) {
         const { transcribe = true, extractFeatures = true } = options;
-        let textRepresentation = '';
-        const features = {};
-        if (transcribe) {
-            // 模拟音频转录
-            textRepresentation = 'Audio transcription: [Transcribed speech would appear here]';
-        }
-        if (extractFeatures) {
-            // 模拟音频特征
-            features.transcript = '[Transcribed speech would appear here]';
-            features.speakers = ['Speaker 1'];
-            features.language = 'en';
+        if (transcribe || extractFeatures) {
+            return callMultimodalProvider(content, {
+                tasks: { transcribe, extractFeatures },
+                provider: rootOptions.provider,
+                timeoutMs: rootOptions.timeoutMs,
+            });
         }
         return {
             type: 'audio',
-            textRepresentation,
-            features,
+            textRepresentation: '',
+            features: {},
             metadata: content.metadata || {},
         };
     }
     /**
      * 处理视频内容
      */
-    async processVideo(content, options) {
+    async processVideo(content, options, rootOptions) {
         const { extractKeyFrames = true, transcribeAudio = true, generateDescription = true } = options;
-        let textRepresentation = '';
-        const features = {};
-        if (extractKeyFrames) {
-            textRepresentation += 'Video key frames extracted\n';
-        }
-        if (transcribeAudio) {
-            textRepresentation += 'Video audio transcription: [Transcribed speech would appear here]\n';
-        }
-        if (generateDescription) {
-            textRepresentation += 'Video description: [Video content description would appear here]\n';
-        }
-        if (extractKeyFrames) {
-            features.keyFrames = ['frame1', 'frame2', 'frame3'];
+        if (extractKeyFrames || transcribeAudio || generateDescription) {
+            return callMultimodalProvider(content, {
+                tasks: { extractKeyFrames, transcribeAudio, generateDescription },
+                provider: rootOptions.provider,
+                timeoutMs: rootOptions.timeoutMs,
+            });
         }
         return {
             type: 'video',
-            textRepresentation: textRepresentation.trim(),
-            features,
+            textRepresentation: '',
+            features: {},
             metadata: content.metadata || {},
         };
     }
@@ -146,8 +115,7 @@ export class MultimodalProcessor {
         const { extractText = true, preserveFormat = false } = options;
         let textRepresentation = '';
         if (extractText) {
-            // 模拟文档文本提取
-            textRepresentation = content.data; // 假设数据已经是文本内容
+            textRepresentation = content.data;
         }
         return {
             type: content.type,
@@ -203,30 +171,51 @@ export class MultimodalProcessor {
      * 从URL加载媒体内容
      */
     async loadFromUrl(url) {
-        // 在实际实现中，这里会下载媒体文件并识别类型
-        // 模拟实现
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`media_fetch_failed:${response.status}`);
+        }
+        const contentType = response.headers.get("content-type") ?? "";
+        const data = await response.arrayBuffer();
         const extension = url.split('.').pop()?.toLowerCase() || '';
-        let mediaType = 'text';
-        if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension)) {
+        let mediaType = this.getMediaTypeFromMime(contentType);
+        if (!mediaType && ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension)) {
             mediaType = 'image';
         }
-        else if (['mp3', 'wav', 'ogg', 'flac'].includes(extension)) {
+        else if (!mediaType && ['mp3', 'wav', 'ogg', 'flac'].includes(extension)) {
             mediaType = 'audio';
         }
-        else if (['mp4', 'avi', 'mov', 'mkv'].includes(extension)) {
+        else if (!mediaType && ['mp4', 'avi', 'mov', 'mkv'].includes(extension)) {
             mediaType = 'video';
         }
-        else if (['pdf', 'doc', 'docx'].includes(extension)) {
+        else if (!mediaType && ['pdf', 'doc', 'docx'].includes(extension)) {
             mediaType = 'document';
+        }
+        if (!mediaType) {
+            mediaType = 'text';
         }
         return {
             type: mediaType,
-            data: url,
+            data: mediaType === 'text' ? new TextDecoder().decode(data) : Buffer.from(data).toString('base64'),
             metadata: {
                 filename: url.split('/').pop(),
-                mimeType: this.getMimeType(mediaType),
+                mimeType: contentType || this.getMimeType(mediaType),
+                size: data.byteLength,
             },
         };
+    }
+    getMediaTypeFromMime(mimeType) {
+        if (mimeType.startsWith("image/"))
+            return "image";
+        if (mimeType.startsWith("audio/"))
+            return "audio";
+        if (mimeType.startsWith("video/"))
+            return "video";
+        if (mimeType === "application/pdf")
+            return "pdf";
+        if (mimeType.startsWith("text/") || mimeType.includes("json") || mimeType.includes("xml"))
+            return "text";
+        return undefined;
     }
     /**
      * 获取媒体类型对应的MIME类型
@@ -281,4 +270,91 @@ export class MultimodalProcessor {
                 return baseTime;
         }
     }
+}
+async function callMultimodalProvider(content, params) {
+    const provider = params.provider ?? providerFromEnv();
+    if (!provider) {
+        throw new Error(`${content.type}_processing_provider_not_configured`);
+    }
+    const timeoutMs = params.timeoutMs ?? provider.timeoutMs ?? 120000;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(joinUrl(provider.baseUrl, provider.path), {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                ...(provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {}),
+            },
+            body: JSON.stringify({
+                model: provider.model,
+                type: content.type,
+                data: content.data,
+                metadata: content.metadata ?? {},
+                tasks: params.tasks,
+            }),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            throw new Error(`multimodal_provider_http_${response.status}:${await response.text()}`);
+        }
+        return parseProviderResponse(content, await response.json());
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+}
+function parseProviderResponse(content, raw) {
+    if (!raw || typeof raw !== "object") {
+        throw new Error("multimodal_provider_invalid_response");
+    }
+    const record = raw;
+    const nested = record.data && typeof record.data === "object" ? record.data : record;
+    const textRepresentation = readString(nested, "textRepresentation")
+        ?? readString(nested, "text")
+        ?? readString(nested, "markdown")
+        ?? readString(nested, "description")
+        ?? readString(nested, "transcript")
+        ?? "";
+    const features = readRecord(nested, "features") ?? readRecord(nested, "metadata") ?? {};
+    return {
+        type: content.type,
+        textRepresentation,
+        features,
+        metadata: {
+            ...(content.metadata ?? {}),
+            ...(readRecord(nested, "mediaMetadata") ?? {}),
+        },
+    };
+}
+function providerFromEnv() {
+    const baseUrl = process.env.KGM_MULTIMODAL_BASE_URL?.trim();
+    if (!baseUrl) {
+        return undefined;
+    }
+    return {
+        baseUrl,
+        path: process.env.KGM_MULTIMODAL_PATH?.trim() || "/v1/media/process",
+        model: process.env.KGM_MULTIMODAL_MODEL?.trim() || undefined,
+        apiKey: process.env.KGM_MULTIMODAL_KEY?.trim() || undefined,
+        timeoutMs: parseNumber(process.env.KGM_MULTIMODAL_TIMEOUT_MS),
+    };
+}
+function joinUrl(baseUrl, path) {
+    return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+function readString(record, key) {
+    const value = record[key];
+    return typeof value === "string" ? value : undefined;
+}
+function readRecord(record, key) {
+    const value = record[key];
+    return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+function parseNumber(value) {
+    if (!value) {
+        return undefined;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
 }

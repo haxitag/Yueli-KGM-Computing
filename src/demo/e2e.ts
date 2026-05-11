@@ -1,7 +1,7 @@
-import { createRuntime, HashEmbedder, MockLlmClient } from "../index.js";
+import { createRuntimeWithStorage } from "../index.js";
 
 async function main(): Promise<void> {
-  const runtime = createRuntime({ llmClient: new MockLlmClient(), embedder: new HashEmbedder() });
+  const runtime = await createRuntimeWithStorage({});
 
   const embedding = await runtime.embedder.embed("user prefers short answers");
   await runtime.memoryStore.add({
