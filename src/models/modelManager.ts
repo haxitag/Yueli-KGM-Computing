@@ -14,7 +14,7 @@ import { generateId } from "../utils/id.js";
 import { parseKgmfile, toModelRequests, type KgmfileSpec } from "./kgmfile.js";
 import { detectJangInModelDirectory } from "../native/jang.js";
 
-export type ManagedModelSourceType = "huggingface" | "ollama" | "github" | "modelscope" | "direct" | "local";
+export type ManagedModelSourceType = "huggingface" | "ollama" | "github" | "modelscope" | "direct" | "local" | "kgm";
 export type ManagedModelArtifactStatus = "ready" | "downloading" | "pulling" | "error";
 export type ManagedModelRuntimeKind =
   | "native"
@@ -44,6 +44,7 @@ export type ManagedModelArtifact = {
   status: ManagedModelArtifactStatus;
   runtimeHints: ManagedModelRuntimeKind[];
   notes: string[];
+  tags: string[];
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -76,6 +77,7 @@ export type ManagedModelRuntime = {
   healthStatus?: ManagedRuntimeHealthStatus;
   lastProbeAt?: string;
   notes: string[];
+  tags: string[];
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -140,6 +142,7 @@ export type ManagedModelPullRequest = {
   filePath?: string;
   revision?: string;
   authToken?: string;
+  localPath?: string;
 };
 
 export type ManagedModelCreateRuntimeRequest = {
@@ -670,6 +673,7 @@ export class ManagedModelManager {
         status: resolved.sourceType === "ollama" ? "pulling" : "downloading",
         runtimeHints: resolved.runtimeHints,
         notes: [...resolved.notes],
+        tags: [],
         metadata: resolved.metadata,
         createdAt: now,
         updatedAt: now,
@@ -754,6 +758,7 @@ export class ManagedModelManager {
       healthPath: request.healthPath ?? "/health",
       healthStatus: "unknown",
       notes: runtimeNotes(runtime, artifact),
+      tags: [],
       metadata: artifact ? { artifactId: artifact.id, sourceType: artifact.sourceType } : {},
       createdAt,
       updatedAt: createdAt,
@@ -1512,6 +1517,63 @@ export class ManagedModelManager {
     }
     Object.assign(runtime, patch, { updatedAt: new Date().toISOString() });
     this.persist();
+  }
+
+  /**
+   * 为模型添加标签
+   */
+  addTags(id: string, tags: string[]): void {
+    // 先尝试查找 artifact
+    const artifact = this.getArtifact(id);
+    if (artifact) {
+      const newTags = [...new Set([...artifact.tags, ...tags])];
+      this.patchArtifact(id, { tags: newTags });
+      return;
+    }
+    // 再尝试查找 runtime
+    const runtime = this.getRuntime(id);
+    if (runtime) {
+      const newTags = [...new Set([...runtime.tags, ...tags])];
+      this.patchRuntime(id, { tags: newTags });
+      return;
+    }
+    throw new Error(`model_not_found:${id}`);
+  }
+
+  /**
+   * 移除模型标签
+   */
+  removeTags(id: string, tags: string[]): void {
+    const artifact = this.getArtifact(id);
+    if (artifact) {
+      const newTags = artifact.tags.filter((tag) => !tags.includes(tag));
+      this.patchArtifact(id, { tags: newTags });
+      return;
+    }
+    const runtime = this.getRuntime(id);
+    if (runtime) {
+      const newTags = runtime.tags.filter((tag) => !tags.includes(tag));
+      this.patchRuntime(id, { tags: newTags });
+      return;
+    }
+    throw new Error(`model_not_found:${id}`);
+  }
+
+  /**
+   * 设置模型标签（完全替换）
+   */
+  setTags(id: string, tags: string[]): void {
+    const artifact = this.getArtifact(id);
+    if (artifact) {
+      this.patchArtifact(id, { tags: [...new Set(tags)] });
+      return;
+    }
+    const runtime = this.getRuntime(id);
+    if (runtime) {
+      this.patchRuntime(id, { tags: [...new Set(tags)] });
+      return;
+    }
+    throw new Error(`model_not_found:${id}`);
   }
 
   private requireArtifact(id: string): ManagedModelArtifact {

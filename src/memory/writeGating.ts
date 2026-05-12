@@ -409,10 +409,12 @@ export class WriteGatingMechanism {
       const id = finalChunk.id || generateId();
       
       // 创建完整的记忆块
+      const now = new Date().toISOString();
       const completeChunk: MemoryChunk = {
         ...finalChunk,
         id,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        lastAccessedAt: now,
         embeddingVersion: finalChunk.embeddingVersion || 'default',
       };
 

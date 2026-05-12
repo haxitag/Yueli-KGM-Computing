@@ -173,7 +173,8 @@ async function main(): Promise<void> {
     text: "This is a test memory entry with normal content.",
     source: "demo-app",
     embedding: await baseRuntime.embedder.embed("This is a test memory entry with normal content."),
-    embeddingVersion: "default"
+    embeddingVersion: "default",
+    lastAccessedAt: new Date().toISOString()
   }, "user-123");
   
   console.log(`   Write successful: ${writeResult.success}`);

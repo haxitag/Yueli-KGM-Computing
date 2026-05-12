@@ -444,17 +444,57 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明 0.1.9
+## 版本说明 0.2.3
 
-### 实现内容
+### ✅ 新增功能
+
+**模型管理增强**
+- 模型扫描发现：`POST /v1/models/discover` 扫描宿主机可用模型
+- 模型上传：`POST /v1/models/upload` 上传本地模型文件
+- 模型删除：`DELETE /v1/models/{model}` 删除模型
+- 模型标签：`POST /v1/models/{model}/tags/add`、`/remove`、`PUT /v1/models/{model}/tags`
+
+**流式响应稳定性**
+- 流式请求超时控制（默认 5 分钟），可通过 `KGM_STREAM_TIMEOUT_MS` 配置
+- 客户端断开连接检测与资源清理
+- **安全增强**: 添加 `headersSent` 检查，防止重复发送响应头
+- **安全增强**: 完善 `enhancedStart.ts` 中 `sendSse` 和 `relayUpstreamSse` 函数的超时、取消和错误处理
+
+**内存存储优化**
+- LRU/FIFO 驱逐策略
+- 用户级和全局级容量限制
+- 环境变量：`KGM_MEMORY_MAX_CHUNKS_PER_USER`、`KGM_MEMORY_MAX_TOTAL_CHUNKS`、`KGM_MEMORY_EVICTION_POLICY`
+- **修复**: 环境变量解析 NaN 处理，无效值自动回退到默认值
+
+**请求安全加固**
+- 请求体大小限制（默认 5MB），可通过 `KGM_HTTP_MAX_BODY_SIZE_MB` 配置
+- 完整 CORS 配置支持（`KGM_CORS_ORIGINS`、`KGM_CORS_METHODS`、`KGM_CORS_HEADERS`）
+- **修复**: CORS 安全漏洞，通配符模式下不再设置 `Access-Control-Allow-Credentials`
+- 敏感信息日志脱敏
+
+**Intent 解析鲁棒性**
+- 多种解析策略：直接解析、JSON 查找、函数调用模式匹配
+- 推理模式支持：`content`、`reasoning_content`、`reasoning`、`thinking`、`thought` 字段
+
+### 🔒 安全修复
+
+| 问题 | 严重程度 | 描述 |
+|------|----------|------|
+| CORS 安全漏洞 | 严重 | 通配符源模式下错误设置 `Access-Control-Allow-Credentials: true` |
+| sendSse 头部检查缺失 | 高 | 缺少 `headersSent` 检查，可能导致运行时错误 |
+| 环境变量解析错误 | 中 | `parseInt` 结果未验证 NaN |
+| enhancedStart.ts 流式安全 | 高 | `sendSse` 和 `relayUpstreamSse` 缺少超时和取消机制 |
+
+### 📦 本地 GPU 推理支持
+
 | 模型系列 | 文件 | 支持型号 | 状态 |
 |---------|------|---------|------|
-| **Qwen 3.5/3.6** | [src/native/gpu/qwen3.ts](./Yueli-KGM-Computing/src/native/gpu/qwen3.ts:0:0-0:0) | 7B/14B/32B/72B | ✅ |
-| **GLM 5.0/5.1** | [src/native/gpu/glm5.ts](./Yueli-KGM-Computing/src/native/gpu/glm5.ts:0:0-0:0) | 9B/32B | ✅ |
-| **Google Gemma 4** | [src/native/gpu/gemma4.ts](./Yueli-KGM-Computing/src/native/gpu/gemma4.ts:0:0-0:0) | 2B/4B/9B/27B | ✅ |
-| **MiniMax 2.5/2.7** | [src/native/gpu/minimax25.ts](./Yueli-KGM-Computing/src/native/gpu/minimax25.ts:0:0-0:0) | 4B/8B/32B/456B | ✅ |
-| **MiMo 2.5** | [src/native/gpu/mimo25.ts](./Yueli-KGM-Computing/src/native/gpu/mimo25.ts:0:0-0:0) | 1.5B/7B/13B/30B | ✅ |
-| **vMLX (Apple Silicon)** | [src/native/gpu/vmlxAdapter.ts](./Yueli-KGM-Computing/src/native/gpu/vmlxAdapter.ts:0:0-0:0) | M1/M2/M3/M4 | ✅ |
+| **Qwen 3.5/3.6** | [src/native/gpu/qwen3.ts](./src/native/gpu/qwen3.ts) | 7B/14B/32B/72B | ✅ |
+| **GLM 5.0/5.1** | [src/native/gpu/glm5.ts](./src/native/gpu/glm5.ts) | 9B/32B | ✅ |
+| **Google Gemma 4** | [src/native/gpu/gemma4.ts](./src/native/gpu/gemma4.ts) | 2B/4B/9B/27B | ✅ |
+| **MiniMax 2.5/2.7** | [src/native/gpu/minimax25.ts](./src/native/gpu/minimax25.ts) | 4B/8B/32B/456B | ✅ |
+| **MiMo 2.5** | [src/native/gpu/mimo25.ts](./src/native/gpu/mimo25.ts) | 1.5B/7B/13B/30B | ✅ |
+| **vMLX (Apple Silicon)** | [src/native/gpu/vmlxAdapter.ts](./src/native/gpu/vmlxAdapter.ts) | M1/M2/M3/M4 | ✅ |
 
 ### 运行测试
 ```bash
@@ -466,7 +506,7 @@ npm run test:native-gpu-models
 ### 主要功能
 - **权重别名映射**: 支持 Hugging Face 格式 → 本地 GPU 格式
 - **内存估算**: 支持多种量化格式 (Q4_0, Q8_0, F16 等)
-- **统一接口**: [getModelConfig()](./Yueli-KGM-Computing/src/native/gpu/index.ts:151:0-195:1), [estimateModelMemory()](./Yueli-KGM-Computing/src/native/gpu/index.ts:197:0-270:1)
+- **统一接口**: [getModelConfig()](./src/native/gpu/index.ts), [estimateModelMemory()](./src/native/gpu/index.ts)
 - **模型注册表**: `MODEL_REGISTRY` 包含所有支持模型
 - **特色功能**:
   - Qwen: 滑动窗口、Yarn RoPE

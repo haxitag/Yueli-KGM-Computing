@@ -2,6 +2,7 @@ import { createRuntimeWithStorage } from "../index.js";
 async function main() {
     const runtime = await createRuntimeWithStorage({});
     const embedding = await runtime.embedder.embed("user prefers short answers");
+    const now = new Date().toISOString();
     await runtime.memoryStore.add({
         id: "mem_001",
         userId: "user_1",
@@ -9,7 +10,8 @@ async function main() {
         embedding,
         embeddingVersion: "canon-2025-01",
         source: "profile",
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        lastAccessedAt: now,
     });
     const response = await runtime.scheduler.run({
         userId: "user_1",

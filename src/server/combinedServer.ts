@@ -243,6 +243,7 @@ export function createCombinedServer(params: {
             source: string;
           };
           const embedding = await params.embedder.embed(typedPayload.text);
+          const now = new Date().toISOString();
           await params.memoryStore.add({
             id: `mem_${Date.now()}`,
             userId: typedPayload.userId,
@@ -250,7 +251,8 @@ export function createCombinedServer(params: {
             embedding,
             embeddingVersion: params.configStore.get().embedding.version,
             source: typedPayload.source,
-            createdAt: new Date().toISOString(),
+            createdAt: now,
+            lastAccessedAt: now,
           });
           return sendJson(res, 200, { status: "ok" });
         } else {

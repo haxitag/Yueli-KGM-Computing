@@ -422,6 +422,7 @@ export class ManagedModelManager {
                 status: resolved.sourceType === "ollama" ? "pulling" : "downloading",
                 runtimeHints: resolved.runtimeHints,
                 notes: [...resolved.notes],
+                tags: [],
                 metadata: resolved.metadata,
                 createdAt: now,
                 updatedAt: now,
@@ -506,6 +507,7 @@ export class ManagedModelManager {
             healthPath: request.healthPath ?? "/health",
             healthStatus: "unknown",
             notes: runtimeNotes(runtime, artifact),
+            tags: [],
             metadata: artifact ? { artifactId: artifact.id, sourceType: artifact.sourceType } : {},
             createdAt,
             updatedAt: createdAt,
@@ -1207,6 +1209,60 @@ export class ManagedModelManager {
         }
         Object.assign(runtime, patch, { updatedAt: new Date().toISOString() });
         this.persist();
+    }
+    /**
+     * 为模型添加标签
+     */
+    addTags(id, tags) {
+        // 先尝试查找 artifact
+        const artifact = this.getArtifact(id);
+        if (artifact) {
+            const newTags = [...new Set([...artifact.tags, ...tags])];
+            this.patchArtifact(id, { tags: newTags });
+            return;
+        }
+        // 再尝试查找 runtime
+        const runtime = this.getRuntime(id);
+        if (runtime) {
+            const newTags = [...new Set([...runtime.tags, ...tags])];
+            this.patchRuntime(id, { tags: newTags });
+            return;
+        }
+        throw new Error(`model_not_found:${id}`);
+    }
+    /**
+     * 移除模型标签
+     */
+    removeTags(id, tags) {
+        const artifact = this.getArtifact(id);
+        if (artifact) {
+            const newTags = artifact.tags.filter((tag) => !tags.includes(tag));
+            this.patchArtifact(id, { tags: newTags });
+            return;
+        }
+        const runtime = this.getRuntime(id);
+        if (runtime) {
+            const newTags = runtime.tags.filter((tag) => !tags.includes(tag));
+            this.patchRuntime(id, { tags: newTags });
+            return;
+        }
+        throw new Error(`model_not_found:${id}`);
+    }
+    /**
+     * 设置模型标签（完全替换）
+     */
+    setTags(id, tags) {
+        const artifact = this.getArtifact(id);
+        if (artifact) {
+            this.patchArtifact(id, { tags: [...new Set(tags)] });
+            return;
+        }
+        const runtime = this.getRuntime(id);
+        if (runtime) {
+            this.patchRuntime(id, { tags: [...new Set(tags)] });
+            return;
+        }
+        throw new Error(`model_not_found:${id}`);
     }
     requireArtifact(id) {
         const artifact = this.getArtifact(id);

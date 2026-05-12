@@ -693,24 +693,32 @@ function extractFinalContentDelta(rawText, emittedContent) {
     }
     return current.slice(emittedContent.length);
 }
+// 支持推理模式的字段列表
+const CONTENT_FIELDS = [
+    "content",
+    "reasoning_content",
+    "reasoning",
+    "thinking",
+    "thought",
+];
 function extractProgressiveFinalContent(rawText) {
     const typeIndex = rawText.indexOf("\"type\"");
-    if (typeIndex === -1) {
-        return "";
+    // 尝试从所有可能的内容字段中提取
+    for (const field of CONTENT_FIELDS) {
+        const fieldIndex = rawText.indexOf(`"${field}"`, typeIndex);
+        if (fieldIndex !== -1) {
+            const colonIndex = rawText.indexOf(":", fieldIndex);
+            if (colonIndex === -1)
+                continue;
+            const openingQuoteIndex = rawText.indexOf("\"", colonIndex + 1);
+            if (openingQuoteIndex === -1)
+                continue;
+            const content = decodeJsonStringPrefix(rawText.slice(openingQuoteIndex + 1));
+            if (content)
+                return content;
+        }
     }
-    const contentIndex = rawText.indexOf("\"content\"", typeIndex);
-    if (contentIndex === -1) {
-        return "";
-    }
-    const colonIndex = rawText.indexOf(":", contentIndex);
-    if (colonIndex === -1) {
-        return "";
-    }
-    const openingQuoteIndex = rawText.indexOf("\"", colonIndex + 1);
-    if (openingQuoteIndex === -1) {
-        return "";
-    }
-    return decodeJsonStringPrefix(rawText.slice(openingQuoteIndex + 1));
+    return "";
 }
 function decodeJsonStringPrefix(value) {
     let decoded = "";

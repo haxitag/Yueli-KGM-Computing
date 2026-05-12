@@ -53,6 +53,7 @@ export class SeparatedMemoryManager {
     expirationHours) {
         const embedding = await this.embedder.embed(text);
         const chunkId = generateId();
+        const now = new Date().toISOString();
         const memoryChunk = {
             id: chunkId,
             userId,
@@ -60,7 +61,8 @@ export class SeparatedMemoryManager {
             embedding,
             embeddingVersion: 'default',
             source,
-            createdAt: new Date().toISOString(),
+            createdAt: now,
+            lastAccessedAt: now,
         };
         // 添加到短期存储
         await this.shortTermStore.add(memoryChunk);
@@ -75,6 +77,7 @@ export class SeparatedMemoryManager {
     ) {
         const embedding = await this.embedder.embed(text);
         const chunkId = generateId();
+        const now = new Date().toISOString();
         const memoryChunk = {
             id: chunkId,
             userId,
@@ -82,7 +85,8 @@ export class SeparatedMemoryManager {
             embedding,
             embeddingVersion: 'default',
             source,
-            createdAt: new Date().toISOString(),
+            createdAt: now,
+            lastAccessedAt: now,
         };
         await this.longTermStore.add(memoryChunk);
         return chunkId;

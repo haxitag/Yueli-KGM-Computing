@@ -159,6 +159,7 @@ export class SeparatedMemoryManager {
   ): Promise<string> {
     const embedding = await this.embedder.embed(text);
     const chunkId = generateId();
+    const now = new Date().toISOString();
     
     const memoryChunk: MemoryChunk = {
       id: chunkId,
@@ -167,7 +168,8 @@ export class SeparatedMemoryManager {
       embedding,
       embeddingVersion: 'default',
       source,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      lastAccessedAt: now,
     };
 
     // 添加到短期存储
@@ -191,6 +193,7 @@ export class SeparatedMemoryManager {
   ): Promise<string> {
     const embedding = await this.embedder.embed(text);
     const chunkId = generateId();
+    const now = new Date().toISOString();
     
     const memoryChunk: MemoryChunk = {
       id: chunkId,
@@ -199,7 +202,8 @@ export class SeparatedMemoryManager {
       embedding,
       embeddingVersion: 'default',
       source,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      lastAccessedAt: now,
     };
 
     await this.longTermStore.add(memoryChunk);

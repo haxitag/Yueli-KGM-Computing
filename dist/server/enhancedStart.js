@@ -272,6 +272,7 @@ async function main() {
                 if (typeof payload === 'object' && payload !== null) {
                     const typedPayload = payload;
                     const embedding = await runtime.embedder.embed(typedPayload.text);
+                    const now = new Date().toISOString();
                     await runtime.memoryStore.add({
                         id: `mem_${Date.now()}`,
                         userId: typedPayload.userId,
@@ -279,7 +280,8 @@ async function main() {
                         embedding,
                         embeddingVersion: runtime.configStore.get().embedding.version,
                         source: typedPayload.source,
-                        createdAt: new Date().toISOString(),
+                        createdAt: now,
+                        lastAccessedAt: now,
                     });
                     return sendJson(res, 200, { status: "ok" });
                 }
@@ -578,18 +580,54 @@ function sendText(res, status, body, contentType = "text/plain; charset=utf-8") 
     res.end(body);
 }
 async function sendSse(res, events) {
+    if (res.headersSent) {
+        console.warn("Attempted to send SSE response after headers were already sent");
+        return;
+    }
     res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
     });
-    for await (const event of events) {
-        res.write(`data: ${event}\n\n`);
+    const abortController = new AbortController();
+    const timeoutMs = parseInt(process.env.KGM_STREAM_TIMEOUT_MS || "300000", 10);
+    const validTimeout = isNaN(timeoutMs) ? 300000 : timeoutMs;
+    const timeoutId = setTimeout(() => {
+        abortController.abort(new Error("Stream timeout"));
+    }, validTimeout);
+    const onClose = () => {
+        abortController.abort(new Error("Client disconnected"));
+    };
+    res.on("close", onClose);
+    try {
+        for await (const event of events) {
+            if (abortController.signal.aborted) {
+                break;
+            }
+            res.write(`data: ${event}\n\n`);
+        }
+        if (!abortController.signal.aborted) {
+            res.write("data: [DONE]\n\n");
+        }
     }
-    res.write("data: [DONE]\n\n");
-    res.end();
+    catch (error) {
+        if (!(error instanceof Error) || error.message !== "Client disconnected") {
+            console.error("SSE stream error:", error);
+        }
+    }
+    finally {
+        clearTimeout(timeoutId);
+        res.off("close", onClose);
+        if (!res.destroyed) {
+            res.end();
+        }
+    }
 }
 async function relayUpstreamSse(res, upstream) {
+    if (res.headersSent) {
+        console.warn("Attempted to relay SSE after headers were already sent");
+        return;
+    }
     res.writeHead(200, {
         "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
         "cache-control": "no-cache, no-transform",
@@ -600,13 +638,40 @@ async function relayUpstreamSse(res, upstream) {
         res.end();
         return;
     }
-    while (true) {
-        const { value, done } = await reader.read();
-        if (done)
-            break;
-        res.write(Buffer.from(value));
+    const abortController = new AbortController();
+    const timeoutMs = parseInt(process.env.KGM_STREAM_TIMEOUT_MS || "300000", 10);
+    const validTimeout = isNaN(timeoutMs) ? 300000 : timeoutMs;
+    const timeoutId = setTimeout(() => {
+        abortController.abort(new Error("Upstream SSE timeout"));
+    }, validTimeout);
+    const onClose = () => {
+        abortController.abort(new Error("Client disconnected"));
+    };
+    res.on("close", onClose);
+    try {
+        while (!abortController.signal.aborted) {
+            const result = await Promise.race([
+                reader.read(),
+                new Promise((_, reject) => abortController.signal.addEventListener("abort", () => reject(abortController.signal.reason)))
+            ]);
+            if (!result || result.done)
+                break;
+            res.write(Buffer.from(result.value));
+        }
     }
-    res.end();
+    catch (error) {
+        if (!(error instanceof Error) || error.name !== "AbortError") {
+            console.error("Upstream SSE relay error:", error);
+        }
+    }
+    finally {
+        clearTimeout(timeoutId);
+        res.off("close", onClose);
+        reader.cancel().catch(() => { });
+        if (!res.destroyed) {
+            res.end();
+        }
+    }
 }
 function parseQueryNumber(value) {
     if (!value)

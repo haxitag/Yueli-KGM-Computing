@@ -40,8 +40,232 @@ export function createKgmServer(params) {
         embedder: params.embedder,
         llmClient: params.llmClient,
     });
+    const agentStore = {
+        agents: {},
+        create(data) {
+            const id = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            const agent = {
+                ...data,
+                id,
+                createdAt: new Date().toISOString(),
+            };
+            this.agents[id] = agent;
+            return agent;
+        },
+        get(id) {
+            return this.agents[id];
+        },
+        list() {
+            return Object.values(this.agents);
+        },
+        delete(id) {
+            if (this.agents[id]) {
+                delete this.agents[id];
+                return true;
+            }
+            return false;
+        },
+    };
+    const taskStore = {
+        tasks: {},
+        create(data) {
+            const id = `task_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            this.tasks[id] = {
+                ...data,
+                id,
+                progress: 0,
+                createdAt: new Date().toISOString(),
+            };
+            return id;
+        },
+        get(id) {
+            return this.tasks[id];
+        },
+        list() {
+            return Object.values(this.tasks);
+        },
+        update(id, updates) {
+            if (this.tasks[id]) {
+                this.tasks[id] = { ...this.tasks[id], ...updates };
+                return true;
+            }
+            return false;
+        },
+        delete(id) {
+            if (this.tasks[id]) {
+                delete this.tasks[id];
+                return true;
+            }
+            return false;
+        },
+        cancel(id) {
+            if (this.tasks[id] && this.tasks[id].status === "queued") {
+                this.tasks[id].status = "cancelled";
+                this.tasks[id].completedAt = new Date().toISOString();
+                return true;
+            }
+            return false;
+        },
+    };
+    const workflowStore = {
+        workflows: {},
+        create(data) {
+            const id = `workflow_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            const workflow = {
+                ...data,
+                id,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            };
+            this.workflows[id] = workflow;
+            return workflow;
+        },
+        get(id) {
+            return this.workflows[id];
+        },
+        list() {
+            return Object.values(this.workflows);
+        },
+        update(id, updates) {
+            if (this.workflows[id]) {
+                this.workflows[id] = { ...this.workflows[id], ...updates, updatedAt: new Date().toISOString() };
+                return true;
+            }
+            return false;
+        },
+        delete(id) {
+            if (this.workflows[id]) {
+                delete this.workflows[id];
+                return true;
+            }
+            return false;
+        },
+    };
+    const workflowExecutionStore = {
+        executions: {},
+        create(data) {
+            const id = `wfexec_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            const execution = {
+                ...data,
+                id,
+                history: [],
+                createdAt: new Date().toISOString(),
+            };
+            this.executions[id] = execution;
+            return execution;
+        },
+        get(id) {
+            return this.executions[id];
+        },
+        list() {
+            return Object.values(this.executions);
+        },
+        update(id, updates) {
+            if (this.executions[id]) {
+                this.executions[id] = { ...this.executions[id], ...updates };
+                return true;
+            }
+            return false;
+        },
+        delete(id) {
+            if (this.executions[id]) {
+                delete this.executions[id];
+                return true;
+            }
+            return false;
+        },
+    };
+    const evaluationStore = {
+        evaluations: {},
+        runs: {},
+        create(data) {
+            const id = `eval_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            const evaluation = {
+                ...data,
+                id,
+                createdAt: new Date().toISOString(),
+            };
+            this.evaluations[id] = evaluation;
+            this.runs[id] = [];
+            return evaluation;
+        },
+        get(id) {
+            return this.evaluations[id];
+        },
+        list() {
+            return Object.values(this.evaluations);
+        },
+        update(id, updates) {
+            if (this.evaluations[id]) {
+                this.evaluations[id] = { ...this.evaluations[id], ...updates };
+                return true;
+            }
+            return false;
+        },
+        delete(id) {
+            if (this.evaluations[id]) {
+                delete this.evaluations[id];
+                delete this.runs[id];
+                return true;
+            }
+            return false;
+        },
+        addRun(evaluationId, run) {
+            const id = `evalrun_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            const evaluationRun = {
+                ...run,
+                id,
+                evaluationId,
+                createdAt: new Date().toISOString(),
+            };
+            if (!this.runs[evaluationId]) {
+                this.runs[evaluationId] = [];
+            }
+            this.runs[evaluationId].push(evaluationRun);
+            return evaluationRun;
+        },
+        getRuns(evaluationId) {
+            return this.runs[evaluationId] || [];
+        },
+    };
+    // CORS配置
+    const corsOrigins = process.env.KGM_CORS_ORIGINS ? process.env.KGM_CORS_ORIGINS.split(",") : ["*"];
+    const corsMethods = process.env.KGM_CORS_METHODS || "GET,POST,PUT,DELETE,OPTIONS,PATCH";
+    const corsHeaders = process.env.KGM_CORS_HEADERS || "Content-Type,Authorization,X-API-Key,X-KGM-Error";
+    const corsMaxAge = process.env.KGM_CORS_MAX_AGE || "86400"; // 24小时
+    const hasWildcardOrigin = corsOrigins.includes("*");
+    function handleCors(req, res) {
+        const origin = req.headers.origin;
+        // 设置CORS头部
+        if (origin) {
+            const allowedOrigin = hasWildcardOrigin ? "*" :
+                corsOrigins.includes(origin) ? origin : corsOrigins[0];
+            res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+        }
+        else if (hasWildcardOrigin) {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+        }
+        res.setHeader("Access-Control-Allow-Methods", corsMethods);
+        res.setHeader("Access-Control-Allow-Headers", corsHeaders);
+        res.setHeader("Access-Control-Max-Age", corsMaxAge);
+        // 只有在不是通配符源时才允许携带凭证
+        if (!hasWildcardOrigin) {
+            res.setHeader("Access-Control-Allow-Credentials", "true");
+        }
+        // 处理OPTIONS预检请求
+        if (req.method === "OPTIONS") {
+            res.writeHead(204);
+            res.end();
+            return true;
+        }
+        return false;
+    }
     const server = http.createServer(async (req, res) => {
         try {
+            // 处理CORS
+            if (handleCors(req, res)) {
+                return;
+            }
             const url = new URL(req.url ?? "", "http://localhost");
             if (!access.check(req, res, url.pathname)) {
                 return;
@@ -108,6 +332,493 @@ export function createKgmServer(params) {
             if (req.method === "GET" && url.pathname === "/v1/models/raw") {
                 const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
                 return sendJson(res, 200, buildRawModels({ configStore: params.configStore, modelManager, discovery }));
+            }
+            // 模型管理 API: 扫描/发现本地模型
+            if (req.method === "POST" && url.pathname === "/v1/kgm/models/discover") {
+                const payload = (await readJson(req));
+                const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
+                const models = await globalModelDiscovery.discoverAll(payload);
+                return sendJson(res, 200, { models, discoveredAt: new Date().toISOString() });
+            }
+            // 模型管理 API: 获取已发现的模型
+            if (req.method === "GET" && url.pathname === "/v1/kgm/models/discovered") {
+                const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
+                return sendJson(res, 200, { models: globalModelDiscovery.getDiscoveredModels() });
+            }
+            // 模型管理 API: 导入已发现的模型
+            if (req.method === "POST" && url.pathname.startsWith("/v1/kgm/models/discovered/")) {
+                const modelId = url.pathname.substring("/v1/kgm/models/discovered/".length);
+                const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
+                const discovered = globalModelDiscovery.getModel(modelId);
+                if (!discovered) {
+                    return sendJson(res, 404, kgmErrorBody("model_not_found", `Model not found: ${modelId}`, 404));
+                }
+                const payload = (await readJson(req));
+                const result = await modelManager.createModel({
+                    pull: {
+                        sourceType: discovered.source,
+                        localPath: discovered.path,
+                        modelName: discovered.id,
+                    },
+                    runtime: payload.runtime ? { runtime: payload.runtime } : undefined,
+                    autoStart: payload.autoStart ?? false,
+                });
+                return sendJson(res, 200, result);
+            }
+            // 模型管理 API: 上传本地模型
+            if (req.method === "POST" && url.pathname === "/v1/kgm/models/upload") {
+                const payload = (await readJson(req));
+                const result = await modelManager.createModel({
+                    pull: {
+                        sourceType: "local",
+                        localPath: payload.localPath,
+                        name: payload.name,
+                        modelName: payload.modelName,
+                    },
+                    runtime: payload.runtime ? { runtime: payload.runtime } : undefined,
+                    autoStart: payload.autoStart ?? false,
+                });
+                return sendJson(res, 200, result);
+            }
+            // 模型管理 API: 列出所有模型（详细）
+            if (req.method === "GET" && url.pathname === "/v1/kgm/models") {
+                return sendJson(res, 200, {
+                    artifacts: modelManager.listArtifacts(),
+                    runtimes: modelManager.listRuntimes(),
+                    models: modelManager.listModels(),
+                });
+            }
+            // 模型管理 API: 删除模型
+            if (req.method === "DELETE" && url.pathname.startsWith("/v1/kgm/models/")) {
+                const modelId = url.pathname.substring("/v1/kgm/models/".length);
+                const result = modelManager.deleteManagedEntity(modelId);
+                return sendJson(res, 200, { success: true, result });
+            }
+            // 模型管理 API: 标签管理 - 添加标签
+            if (req.method === "POST" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/add$/)) {
+                const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/add$/);
+                if (!match)
+                    return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
+                const modelId = match[1];
+                const payload = (await readJson(req));
+                modelManager.addTags(modelId, payload.tags);
+                return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
+            }
+            // 模型管理 API: 标签管理 - 移除标签
+            if (req.method === "POST" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/remove$/)) {
+                const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/remove$/);
+                if (!match)
+                    return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
+                const modelId = match[1];
+                const payload = (await readJson(req));
+                modelManager.removeTags(modelId, payload.tags);
+                return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
+            }
+            // 模型管理 API: 标签管理 - 设置标签
+            if (req.method === "PUT" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags$/)) {
+                const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags$/);
+                if (!match)
+                    return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
+                const modelId = match[1];
+                const payload = (await readJson(req));
+                modelManager.setTags(modelId, payload.tags);
+                return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/embeddings") {
+                const payload = (await readJson(req));
+                const inputs = Array.isArray(payload.input) ? payload.input : [payload.input];
+                const embeddings = await Promise.all(inputs.map((text) => params.embedder.embed(text)));
+                const results = embeddings.map((embedding, index) => ({
+                    object: "embedding",
+                    index,
+                    embedding: payload.encoding_format === "base64" ? Buffer.from(embedding).toString("base64") : embedding,
+                }));
+                return sendJson(res, 200, {
+                    object: "list",
+                    data: results,
+                    model: payload.model || params.configStore.get().embedding.model,
+                    usage: {
+                        prompt_tokens: inputs.reduce((acc, text) => acc + Math.ceil(text.length / 4), 0),
+                        total_tokens: inputs.reduce((acc, text) => acc + Math.ceil(text.length / 4), 0),
+                    },
+                });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/search") {
+                const payload = (await readJson(req));
+                const topK = Math.max(1, Math.min(payload.top_k ?? 10, 50));
+                const mode = payload.mode ?? "hybrid";
+                const results = [];
+                if (mode === "vector" || mode === "hybrid") {
+                    if (payload.userId) {
+                        const memOpts = memorySearchOptionsFromKgm({});
+                        const memResults = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, memOpts);
+                        results.push(...memResults.map((r) => ({
+                            id: r.id,
+                            type: "memory",
+                            title: r.text.substring(0, 50) + "...",
+                            snippet: r.text.substring(0, 200) + "...",
+                            score: r.score ?? 0.5,
+                        })));
+                    }
+                }
+                if (mode === "kg" || mode === "hybrid") {
+                    const namespace = payload.namespace || payload.userId;
+                    if (namespace) {
+                        try {
+                            const kgSubgraph = await params.graphStore.querySubgraph({
+                                query: payload.query,
+                                namespace,
+                                limit: topK,
+                            });
+                            results.push(...kgSubgraph.triples.map((r, idx) => ({
+                                id: r.id,
+                                type: "kg",
+                                title: `${r.subject} ${r.predicate} ${r.object}`,
+                                snippet: `${r.subject} ${r.predicate} ${r.object}`,
+                                score: 0.3 - (idx * 0.01),
+                            })));
+                        }
+                        catch {
+                            // Graph search not available
+                        }
+                    }
+                }
+                if (mode === "web" || mode === "hybrid") {
+                    const searchTool = params.toolRegistry.getDefinition("search_web");
+                    if (searchTool) {
+                        try {
+                            const webResult = await params.toolRegistry.execute("search_web", { query: payload.query, top_k: topK });
+                            if (webResult && webResult.results) {
+                                results.push(...webResult.results.map((r) => ({
+                                    id: r.url || `web_${results.length}`,
+                                    type: "web",
+                                    title: r.title || "Untitled",
+                                    snippet: r.snippet || "",
+                                    url: r.url,
+                                    score: 0.7,
+                                })));
+                            }
+                        }
+                        catch {
+                            // Web search not available
+                        }
+                    }
+                }
+                results.sort((a, b) => b.score - a.score);
+                return sendJson(res, 200, {
+                    query: payload.query,
+                    mode,
+                    top_k: topK,
+                    results: results.slice(0, topK),
+                    total: results.length,
+                });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/agents") {
+                return sendJson(res, 200, { agents: agentStore.list() });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/agents") {
+                const payload = (await readJson(req));
+                const agent = agentStore.create({
+                    name: payload.name,
+                    model: payload.model || params.configStore.get().llm.model,
+                    systemPrompt: payload.system_prompt || "",
+                    tools: payload.tools || [],
+                    memory: payload.memory?.enabled ?? true,
+                });
+                return sendJson(res, 201, { agent });
+            }
+            if (req.method === "GET" && url.pathname.startsWith("/v1/agents/")) {
+                const id = url.pathname.replace("/v1/agents/", "");
+                const agent = agentStore.get(id);
+                if (!agent) {
+                    return sendJson(res, 404, { error: "agent_not_found" });
+                }
+                return sendJson(res, 200, { agent });
+            }
+            if (req.method === "DELETE" && url.pathname.startsWith("/v1/agents/")) {
+                const id = url.pathname.replace("/v1/agents/", "");
+                const deleted = agentStore.delete(id);
+                return sendJson(res, 200, { deleted });
+            }
+            if (req.method === "POST" && url.pathname.match(/^\/v1\/agents\/[^/]+\/execute$/)) {
+                const match = url.pathname.match(/^\/v1\/agents\/([^/]+)\/execute$/);
+                if (!match) {
+                    return sendJson(res, 404, { error: "invalid_agent_path" });
+                }
+                const agentId = match[1];
+                const agent = agentStore.get(agentId);
+                if (!agent) {
+                    return sendJson(res, 404, { error: "agent_not_found" });
+                }
+                const payload = (await readJson(req));
+                if (payload.async) {
+                    const taskId = taskStore.create({
+                        type: "agent_execute",
+                        agentId,
+                        input: payload.input,
+                        sessionId: payload.session_id,
+                        status: "queued",
+                    });
+                    return sendJson(res, 202, { task_id: taskId, status: "queued" });
+                }
+                const kgmRequest = {
+                    userId: payload.session_id || "anonymous",
+                    input: payload.input,
+                    sessionId: payload.session_id,
+                    model: agent.model,
+                    metadata: { agentId, tools: agent.tools, mode: agent.systemPrompt ? "reasoning" : "chat" },
+                };
+                const response = await params.scheduler.run(kgmRequest);
+                return sendJson(res, 200, response);
+            }
+            if (req.method === "POST" && url.pathname === "/v1/tasks") {
+                const payload = (await readJson(req));
+                const taskId = taskStore.create({
+                    type: payload.type || "inference",
+                    input: payload.input,
+                    agentId: payload.agent_id,
+                    sessionId: payload.session_id,
+                    status: "queued",
+                });
+                return sendJson(res, 202, { task_id: taskId, status: "queued" });
+            }
+            if (req.method === "GET" && url.pathname.startsWith("/v1/tasks/")) {
+                const id = url.pathname.replace("/v1/tasks/", "");
+                const task = taskStore.get(id);
+                if (!task) {
+                    return sendJson(res, 404, { error: "task_not_found" });
+                }
+                return sendJson(res, 200, { task });
+            }
+            if (req.method === "POST" && url.pathname.match(/^\/v1\/tasks\/[^/]+\/cancel$/)) {
+                const match = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/cancel$/);
+                if (!match) {
+                    return sendJson(res, 404, { error: "invalid_task_path" });
+                }
+                const taskId = match[1];
+                const cancelled = taskStore.cancel(taskId);
+                return sendJson(res, 200, { cancelled, task_id: taskId });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/tasks") {
+                const status = url.searchParams.get("status");
+                let tasks = taskStore.list();
+                if (status) {
+                    tasks = tasks.filter((t) => t.status === status);
+                }
+                return sendJson(res, 200, { tasks });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/workflows") {
+                const state = url.searchParams.get("state");
+                let workflows = workflowStore.list();
+                if (state) {
+                    workflows = workflows.filter((w) => w.state === state);
+                }
+                return sendJson(res, 200, { workflows });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/workflows") {
+                const payload = (await readJson(req));
+                const workflow = workflowStore.create({
+                    name: payload.name,
+                    description: payload.description,
+                    nodes: payload.nodes,
+                    edges: payload.edges,
+                    state: payload.state || "draft",
+                });
+                return sendJson(res, 201, { workflow });
+            }
+            if (req.method === "GET" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
+                const id = url.pathname.replace("/v1/workflows/", "");
+                const workflow = workflowStore.get(id);
+                if (!workflow) {
+                    return sendJson(res, 404, { error: "workflow_not_found" });
+                }
+                return sendJson(res, 200, { workflow });
+            }
+            if (req.method === "PUT" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
+                const id = url.pathname.replace("/v1/workflows/", "");
+                const payload = (await readJson(req));
+                const updated = workflowStore.update(id, payload);
+                if (!updated) {
+                    return sendJson(res, 404, { error: "workflow_not_found" });
+                }
+                const workflow = workflowStore.get(id);
+                return sendJson(res, 200, { workflow });
+            }
+            if (req.method === "DELETE" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
+                const id = url.pathname.replace("/v1/workflows/", "");
+                const deleted = workflowStore.delete(id);
+                if (!deleted) {
+                    return sendJson(res, 404, { error: "workflow_not_found" });
+                }
+                return sendJson(res, 200, { deleted: true, workflow_id: id });
+            }
+            if (req.method === "POST" && url.pathname.match(/^\/v1\/workflows\/[^/]+\/execute$/)) {
+                const match = url.pathname.match(/^\/v1\/workflows\/([^/]+)\/execute$/);
+                if (!match) {
+                    return sendJson(res, 404, { error: "invalid_workflow_path" });
+                }
+                const workflowId = match[1];
+                const workflow = workflowStore.get(workflowId);
+                if (!workflow) {
+                    return sendJson(res, 404, { error: "workflow_not_found" });
+                }
+                const payload = (await readJson(req));
+                const execution = workflowExecutionStore.create({
+                    workflowId,
+                    input: payload.input,
+                    status: "queued",
+                });
+                return sendJson(res, 202, { execution });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/workflow-executions") {
+                const workflowId = url.searchParams.get("workflow_id");
+                let executions = workflowExecutionStore.list();
+                if (workflowId) {
+                    executions = executions.filter((e) => e.workflowId === workflowId);
+                }
+                return sendJson(res, 200, { executions });
+            }
+            if (req.method === "GET" && url.pathname.match(/^\/v1\/workflow-executions\/[^/]+$/)) {
+                const id = url.pathname.replace("/v1/workflow-executions/", "");
+                const execution = workflowExecutionStore.get(id);
+                if (!execution) {
+                    return sendJson(res, 404, { error: "execution_not_found" });
+                }
+                return sendJson(res, 200, { execution });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/evaluations") {
+                const type = url.searchParams.get("type");
+                const status = url.searchParams.get("status");
+                let evaluations = evaluationStore.list();
+                if (type) {
+                    evaluations = evaluations.filter((e) => e.type === type);
+                }
+                if (status) {
+                    evaluations = evaluations.filter((e) => e.status === status);
+                }
+                return sendJson(res, 200, { evaluations });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/evaluations") {
+                const payload = (await readJson(req));
+                const evaluation = evaluationStore.create({
+                    name: payload.name,
+                    type: payload.type,
+                    targetId: payload.target_id,
+                    benchmark: payload.benchmark,
+                    config: payload.config || {},
+                    status: "queued",
+                });
+                return sendJson(res, 201, { evaluation });
+            }
+            if (req.method === "GET" && url.pathname.match(/^\/v1\/evaluations\/[^/]+$/)) {
+                const id = url.pathname.replace("/v1/evaluations/", "");
+                const evaluation = evaluationStore.get(id);
+                if (!evaluation) {
+                    return sendJson(res, 404, { error: "evaluation_not_found" });
+                }
+                const runs = evaluationStore.getRuns(id);
+                return sendJson(res, 200, { evaluation, runs });
+            }
+            if (req.method === "POST" && url.pathname.match(/^\/v1\/evaluations\/[^/]+\/runs$/)) {
+                const match = url.pathname.match(/^\/v1\/evaluations\/([^/]+)\/runs$/);
+                if (!match) {
+                    return sendJson(res, 404, { error: "invalid_evaluation_path" });
+                }
+                const evaluationId = match[1];
+                const evaluation = evaluationStore.get(evaluationId);
+                if (!evaluation) {
+                    return sendJson(res, 404, { error: "evaluation_not_found" });
+                }
+                const payload = (await readJson(req));
+                const run = evaluationStore.addRun(evaluationId, payload);
+                return sendJson(res, 201, { run });
+            }
+            if (req.method === "DELETE" && url.pathname.match(/^\/v1\/evaluations\/[^/]+$/)) {
+                const id = url.pathname.replace("/v1/evaluations/", "");
+                const deleted = evaluationStore.delete(id);
+                if (!deleted) {
+                    return sendJson(res, 404, { error: "evaluation_not_found" });
+                }
+                return sendJson(res, 200, { deleted: true, evaluation_id: id });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/skills") {
+                const tools = params.toolRegistry.listDefinitions();
+                if (params.skillRuntime) {
+                    const skillRegistry = params.skillRuntime.getSkillRegistry();
+                    const skillNames = skillRegistry.listNames();
+                    const skills = skillNames.map(name => {
+                        const skill = skillRegistry.get(name);
+                        return skill || { name, description: "", steps: [] };
+                    });
+                    return sendJson(res, 200, { tools, skills });
+                }
+                return sendJson(res, 200, { tools, skills: [] });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/skills") {
+                const payload = (await readJson(req));
+                if (payload.type === "skill" && params.skillRuntime) {
+                    const skillRegistry = params.skillRuntime.getSkillRegistry();
+                    const skill = {
+                        name: payload.name,
+                        description: payload.description,
+                        steps: [],
+                    };
+                    skillRegistry.register(skill);
+                    return sendJson(res, 201, { skill });
+                }
+                else {
+                    const toolDef = {
+                        name: payload.name,
+                        kind: "tool",
+                        description: payload.description,
+                        inputSchema: payload.schema || {},
+                        outputSchema: {},
+                    };
+                    params.toolRegistry.register(toolDef, async () => ({ status: "not_implemented" }));
+                    return sendJson(res, 201, { tool: toolDef });
+                }
+            }
+            if (req.method === "GET" && url.pathname.match(/^\/v1\/models\/[^/]+$/)) {
+                const modelId = url.pathname.replace("/v1/models/", "");
+                const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+                const effectiveModels = buildEffectiveModels({ configStore: params.configStore, modelManager, discovery });
+                const model = effectiveModels.data.find((m) => m.id === modelId);
+                if (!model) {
+                    return sendJson(res, 404, { error: "model_not_found" });
+                }
+                return sendJson(res, 200, model);
+            }
+            if (req.method === "POST" && url.pathname === "/v1/models/pull") {
+                const payload = (await readJson(req));
+                const artifact = await modelManager.pull({ name: payload.model });
+                return sendJson(res, 200, { artifact });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/logs") {
+                const limit = parseNumber(url.searchParams.get("limit")) ?? 100;
+                const type = url.searchParams.get("type");
+                return sendJson(res, 200, {
+                    logs: [],
+                    limit,
+                    type,
+                    total: 0,
+                });
+            }
+            if (req.method === "GET" && url.pathname === "/v1/admin/config") {
+                return sendJson(res, 200, params.configStore.get());
+            }
+            if (req.method === "GET" && url.pathname === "/v1/admin/versions") {
+                return sendJson(res, 200, {
+                    version: process.env.npm_package_version || "0.2.1",
+                    nodeVersion: process.version,
+                });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/admin/reload") {
+                return sendJson(res, 200, { status: "ok", message: "Config reloaded" });
+            }
+            if (req.method === "DELETE" && url.pathname.startsWith("/v1/memory/")) {
+                const id = url.pathname.replace("/v1/memory/", "");
+                // MemoryStore doesn't support delete, just return ok
+                return sendJson(res, 200, { deleted: false });
             }
             if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
                 const payload = (await readJson(req));
@@ -314,6 +1025,7 @@ export function createKgmServer(params) {
             if (req.method === "POST" && url.pathname === "/v1/kgm/memory") {
                 const payload = (await readJson(req));
                 const embedding = await params.embedder.embed(payload.text);
+                const now = new Date().toISOString();
                 await params.memoryStore.add({
                     id: `mem_${Date.now()}`,
                     userId: payload.userId,
@@ -321,7 +1033,8 @@ export function createKgmServer(params) {
                     embedding,
                     embeddingVersion: params.configStore.get().embedding.version,
                     source: payload.source,
-                    createdAt: new Date().toISOString(),
+                    createdAt: now,
+                    lastAccessedAt: now,
                 });
                 return sendJson(res, 200, { status: "ok" });
             }
@@ -694,10 +1407,29 @@ export function createKgmServer(params) {
     logger.info('Server created successfully');
     return server;
 }
+// 默认请求体大小限制为 5MB，可通过环境变量 KGM_HTTP_MAX_BODY_SIZE_MB 配置
+const DEFAULT_MAX_BODY_SIZE = 5 * 1024 * 1024;
+const MAX_BODY_SIZE = (() => {
+    const envMb = process.env.KGM_HTTP_MAX_BODY_SIZE_MB;
+    if (envMb) {
+        const mb = Number(envMb);
+        if (!isNaN(mb) && mb > 0) {
+            return mb * 1024 * 1024;
+        }
+    }
+    return DEFAULT_MAX_BODY_SIZE;
+})();
 async function readJson(req) {
     const chunks = [];
+    let totalSize = 0;
     for await (const chunk of req) {
-        chunks.push(chunk);
+        const buffer = chunk;
+        totalSize += buffer.length;
+        // 检查是否超过大小限制
+        if (totalSize > MAX_BODY_SIZE) {
+            throw new KgmRequestValidationError("request_too_large", `Request body too large. Maximum size is ${Math.round(MAX_BODY_SIZE / (1024 * 1024))}MB`, 413);
+        }
+        chunks.push(buffer);
     }
     const raw = Buffer.concat(chunks).toString("utf8");
     if (!raw.trim()) {
@@ -711,6 +1443,10 @@ async function readJson(req) {
     }
 }
 function sendJson(res, status, body) {
+    if (res.headersSent) {
+        console.warn("Attempted to send JSON response after headers were already sent");
+        return;
+    }
     const payload = JSON.stringify(body);
     res.writeHead(status, {
         "content-type": "application/json",
@@ -719,6 +1455,10 @@ function sendJson(res, status, body) {
     res.end(payload);
 }
 function sendText(res, status, body, contentType = "text/plain; charset=utf-8") {
+    if (res.headersSent) {
+        console.warn("Attempted to send text response after headers were already sent");
+        return;
+    }
     res.writeHead(status, {
         "content-type": contentType,
         "content-length": Buffer.byteLength(body),
@@ -726,18 +1466,50 @@ function sendText(res, status, body, contentType = "text/plain; charset=utf-8") 
     res.end(body);
 }
 async function sendSse(res, events, options) {
+    if (res.headersSent) {
+        console.warn("Attempted to send SSE response after headers were already sent");
+        return;
+    }
     res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
     });
-    for await (const event of events) {
-        res.write(`data: ${event}\n\n`);
+    const abortController = new AbortController();
+    const timeoutMsValue = options?.timeoutMs ?? parseInt(process.env.KGM_STREAM_TIMEOUT_MS || "300000", 10); // 默认5分钟
+    const timeoutMs = isNaN(timeoutMsValue) ? 300000 : timeoutMsValue;
+    // 设置超时
+    const timeoutId = setTimeout(() => {
+        abortController.abort(new Error("Stream timeout"));
+    }, timeoutMs);
+    // 监听客户端断开连接
+    const onClose = () => {
+        abortController.abort(new Error("Client disconnected"));
+    };
+    res.on("close", onClose);
+    try {
+        for await (const event of events) {
+            if (abortController.signal.aborted) {
+                break;
+            }
+            res.write(`data: ${event}\n\n`);
+        }
+        if (options?.appendDone !== false && !abortController.signal.aborted) {
+            res.write("data: [DONE]\n\n");
+        }
     }
-    if (options?.appendDone !== false) {
-        res.write("data: [DONE]\n\n");
+    catch (error) {
+        if (!(error instanceof Error) || error.message !== "Client disconnected") {
+            console.error("SSE stream error:", error);
+        }
     }
-    res.end();
+    finally {
+        clearTimeout(timeoutId);
+        res.off("close", onClose);
+        if (!res.destroyed) {
+            res.end();
+        }
+    }
 }
 /** 接受 `x-api-key` 或 `Authorization: Bearer`（与 Anthropic SDK 对齐）；当前不强制校验，供网关或后续中间件使用。 */
 function readAnthropicApiKey(req) {

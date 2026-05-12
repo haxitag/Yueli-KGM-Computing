@@ -12,6 +12,7 @@ export type MemoryChunk = {
   embeddingVersion: string;
   source: string;
   createdAt: string;
+  lastAccessedAt: string;
 };
 
 export type MemorySearchOptions = {
@@ -38,13 +39,100 @@ export type MemoryStore = {
   ): Promise<Evidence[]>;
 };
 
+export type MemoryStoreConfig = {
+  maxChunksPerUser?: number;
+  maxTotalChunks?: number;
+  evictionPolicy?: "lru" | "fifo";
+};
+
 export class InMemoryStore implements MemoryStore {
   private store = new Map<string, MemoryChunk[]>();
+  private maxChunksPerUser: number;
+  private maxTotalChunks: number;
+  private evictionPolicy: "lru" | "fifo";
+
+  constructor(config?: MemoryStoreConfig) {
+    const parseEnvInt = (name: string, defaultValue: number): number => {
+      const value = process.env[name];
+      if (value) {
+        const parsed = parseInt(value, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          return parsed;
+        }
+      }
+      return defaultValue;
+    };
+
+    this.maxChunksPerUser = config?.maxChunksPerUser ?? parseEnvInt("KGM_MEMORY_MAX_CHUNKS_PER_USER", 1000);
+    this.maxTotalChunks = config?.maxTotalChunks ?? parseEnvInt("KGM_MEMORY_MAX_TOTAL_CHUNKS", 10000);
+    
+    const policy = config?.evictionPolicy ?? process.env.KGM_MEMORY_EVICTION_POLICY;
+    this.evictionPolicy = (policy === "fifo" || policy === "lru") ? policy : "lru";
+  }
+
+  private getTotalChunks(): number {
+    let total = 0;
+    this.store.forEach((list) => {
+      total += list.length;
+    });
+    return total;
+  }
+
+  private evictOldest(list: MemoryChunk[]): MemoryChunk[] {
+    if (this.evictionPolicy === "lru") {
+      return [...list].sort((a, b) => new Date(a.lastAccessedAt).getTime() - new Date(b.lastAccessedAt).getTime());
+    }
+    return [...list].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+
+  private enforceLimits(): void {
+    // 首先检查每个用户的限制
+    this.store.forEach((list, userId) => {
+      if (list.length > this.maxChunksPerUser) {
+        const sorted = this.evictOldest(list);
+        const trimmed = sorted.slice(-this.maxChunksPerUser);
+        this.store.set(userId, trimmed);
+      }
+    });
+
+    // 然后检查总体限制
+    let total = this.getTotalChunks();
+    if (total > this.maxTotalChunks) {
+      // 创建所有块的列表并按策略排序
+      const allChunks: { userId: string; chunk: MemoryChunk }[] = [];
+      this.store.forEach((list, userId) => {
+        list.forEach((chunk) => {
+          allChunks.push({ userId, chunk });
+        });
+      });
+
+      const sorted = allChunks.sort((a, b) => {
+        if (this.evictionPolicy === "lru") {
+          return new Date(a.chunk.lastAccessedAt).getTime() - new Date(b.chunk.lastAccessedAt).getTime();
+        }
+        return new Date(a.chunk.createdAt).getTime() - new Date(b.chunk.createdAt).getTime();
+      });
+
+      // 删除最旧的块直到总量达标
+      const toRemove = sorted.slice(0, total - this.maxTotalChunks);
+      const removeSet = new Set(toRemove.map((item) => `${item.userId}:${item.chunk.id}`));
+
+      this.store.forEach((list, userId) => {
+        const filtered = list.filter((chunk) => !removeSet.has(`${userId}:${chunk.id}`));
+        this.store.set(userId, filtered);
+      });
+    }
+  }
 
   async add(chunk: MemoryChunk): Promise<void> {
+    const now = new Date().toISOString();
+    const chunkWithAccessTime = { ...chunk, lastAccessedAt: now };
+    
     const list = this.store.get(chunk.userId) ?? [];
-    list.push(chunk);
+    list.push(chunkWithAccessTime);
     this.store.set(chunk.userId, list);
+    
+    this.enforceLimits();
   }
 
   async search(
@@ -54,7 +142,7 @@ export class InMemoryStore implements MemoryStore {
     topK: number,
     options?: MemorySearchOptions,
   ): Promise<Evidence[]> {
-    const list = this.store.get(userId) ?? [];
+    let list = this.store.get(userId) ?? [];
     if (list.length === 0) {
       return [];
     }
@@ -71,6 +159,13 @@ export class InMemoryStore implements MemoryStore {
 
     scored.sort((a, b) => b.score - a.score);
     const take = scored.slice(0, fetchN);
+    
+    // 更新访问时间
+    const now = new Date().toISOString();
+    take.forEach(({ item }) => {
+      item.lastAccessedAt = now;
+    });
+
     const texts = take.map((e) => e.item.text);
     const vec = take.map((e) => e.score);
     const blended =
@@ -104,6 +199,7 @@ export function buildMemoryChunk(params: {
   source: string;
   embeddingVersion?: string;
 }): MemoryChunk {
+  const now = new Date().toISOString();
   return {
     id: params.id,
     userId: params.userId,
@@ -111,7 +207,8 @@ export function buildMemoryChunk(params: {
     embedding: params.embedding,
     embeddingVersion: params.embeddingVersion ?? CANONICAL_EMBEDDING.version,
     source: params.source,
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    lastAccessedAt: now,
   };
 }
 
