@@ -1,4 +1,5 @@
-import type { LlmClient, CompletionOptions, CompletionResult } from "./client.js";
+import type { LlmClient, CompletionOptions, CompletionResult, CompletionStreamEvent } from "./client.js";
+import { LlmProviderApiError, stringifyLlmProviderErrorPayload } from "./providerApiError.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
 
@@ -54,7 +55,7 @@ export class ZhipuLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Zhipu API error: ${data.error.message} (${data.error.type})`);
+      throw new LlmProviderApiError("zhipu", data.error.message, { upstreamCode: data.error.type });
     }
 
     const choice = data.choices?.[0];
@@ -120,7 +121,7 @@ export class MinimaxLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Minimax API error: ${data.error.message}`);
+      throw new LlmProviderApiError("minimax", data.error.message);
     }
 
     // Minimax API响应格式可能有所不同
@@ -185,7 +186,7 @@ export class OpenRouterLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`OpenRouter API error: ${data.error.message}`);
+      throw new LlmProviderApiError("openrouter", data.error.message);
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -247,7 +248,7 @@ export class NvidiaLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`NVIDIA API error: ${data.error.message}`);
+      throw new LlmProviderApiError("nvidia", data.error.message);
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -309,7 +310,7 @@ export class DeepSeekLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`DeepSeek API error: ${data.error.message}`);
+      throw new LlmProviderApiError("deepseek", data.error.message);
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -369,13 +370,110 @@ export class OllamaLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Ollama API error: ${data.error}`);
+      throw new LlmProviderApiError("ollama", stringifyLlmProviderErrorPayload(data.error));
     }
 
     return { 
       text: data.message?.content ?? data.response ?? "", 
       raw: data 
     };
+  }
+
+  async *streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
+    const payload = {
+      model: options?.model ?? this.model,
+      messages: [
+        { role: "user", content: prompt },
+      ],
+      stream: true,
+      options: {
+        temperature: options?.temperature ?? 0.8,
+        num_predict: options?.maxTokens ?? 1024,
+        stop: options?.stop,
+        top_k: options?.topK,
+        top_p: options?.topP,
+        repeat_penalty: options?.repetitionPenalty,
+        seed: options?.seed,
+      },
+    };
+
+    const controller = new AbortController();
+    const timeoutId = this.timeoutMs ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
+
+    try {
+      yield { type: "started", model: options?.model ?? this.model };
+
+      const response = await fetch(joinUrl(this.baseUrl, "/chat"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        const detail = errorText.length > 8000 ? `${errorText.slice(0, 8000)}…` : errorText;
+        throw new LlmProviderApiError("ollama", detail || response.statusText, { httpStatus: response.status });
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new LlmProviderApiError("ollama", "No response body");
+      }
+
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let tokenIndex = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+
+          try {
+            const data = JSON.parse(trimmed) as {
+              message?: { content?: string };
+              done?: boolean;
+              error?: string;
+            };
+
+            if (data.error) {
+              throw new LlmProviderApiError("ollama", `Stream: ${stringifyLlmProviderErrorPayload(data.error)}`);
+            }
+
+            if (data.message?.content) {
+              yield {
+                type: "token",
+                text: data.message.content,
+                index: tokenIndex++,
+              };
+            }
+
+            if (data.done) {
+              yield {
+                type: "finished",
+                result: { text: "", raw: data },
+              };
+              return;
+            }
+          } catch (e) {
+            if (e instanceof LlmProviderApiError) {
+              throw e;
+            }
+            // 忽略解析错误的部分
+          }
+        }
+      }
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 }
 
@@ -431,7 +529,7 @@ export class VllmLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`vLLM API error: ${data.error.message}`);
+      throw new LlmProviderApiError("vllm", data.error.message);
     }
 
     const choice = data.choices?.[0];
@@ -497,7 +595,7 @@ export class SlangLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Slang API error: ${data.error.message}`);
+      throw new LlmProviderApiError("slang", data.error.message);
     }
 
     const choice = data.choices?.[0];
@@ -572,7 +670,9 @@ export class XiaomiLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Xiaomi API error: ${data.error.message}`);
+      throw new LlmProviderApiError("xiaomi", data.error.message, {
+        upstreamCode: typeof data.error.code === "string" ? data.error.code : undefined,
+      });
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -646,7 +746,9 @@ export class GeminiLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Gemini API error: ${data.error.message}`);
+      throw new LlmProviderApiError("gemini", data.error.message, {
+        upstreamCode: typeof data.error.code === "string" ? data.error.code : undefined,
+      });
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -708,11 +810,15 @@ export class GeminiLlmClient implements LlmClient {
 
     // 检查安全拦截
     if (data.promptFeedback?.blockReason) {
-      throw new Error(`Gemini content blocked: ${data.promptFeedback.blockReason}`);
+      throw new LlmProviderApiError("gemini", `Content blocked: ${data.promptFeedback.blockReason}`, {
+        upstreamCode: data.promptFeedback.blockReason,
+      });
     }
 
     if (data.error) {
-      throw new Error(`Gemini API error: ${data.error.message}`);
+      throw new LlmProviderApiError("gemini", data.error.message, {
+        upstreamCode: typeof data.error.code === "string" ? data.error.code : undefined,
+      });
     }
 
     // 提取文本内容
@@ -776,7 +882,9 @@ export class AnthropicLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Anthropic API error: ${data.error.message}`);
+      throw new LlmProviderApiError("anthropic", data.error.message, {
+        upstreamCode: typeof data.error.type === "string" ? data.error.type : undefined,
+      });
     }
 
     // 提取文本内容
@@ -840,7 +948,9 @@ export class AliyunLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Aliyun API error: ${data.error.message}`);
+      throw new LlmProviderApiError("aliyun", data.error.message, {
+        upstreamCode: typeof data.error.code === "string" ? data.error.code : undefined,
+      });
     }
 
     return {
@@ -896,7 +1006,9 @@ export class ModelScopeLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`ModelScope API error: ${data.error.message}`);
+      throw new LlmProviderApiError("modelscope", data.error.message, {
+        upstreamCode: typeof data.error.code === "string" ? data.error.code : undefined,
+      });
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -955,7 +1067,9 @@ export class MoonshotLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Moonshot API error: ${data.error.message}`);
+      throw new LlmProviderApiError("moonshot", data.error.message, {
+        upstreamCode: typeof data.error.code === "string" ? data.error.code : undefined,
+      });
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -1004,7 +1118,9 @@ export class MoonshotLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new Error(`Moonshot API error: ${data.error.message}`);
+      throw new LlmProviderApiError("moonshot", data.error.message, {
+        upstreamCode: typeof data.error.code === "string" ? data.error.code : undefined,
+      });
     }
 
     const content = data.choices?.[0]?.message?.content ?? "";
@@ -1015,3 +1131,5 @@ export class MoonshotLlmClient implements LlmClient {
     };
   }
 }
+
+export { LlmProviderApiError, stringifyLlmProviderErrorPayload } from "./providerApiError.js";

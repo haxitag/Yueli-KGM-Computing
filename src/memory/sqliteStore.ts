@@ -63,4 +63,10 @@ export class SqliteMetadataStore implements MetadataStore {
   async getMany(ids: string[]): Promise<MetadataRecord[]> {
     return this.getManyStmt(ids);
   }
+
+  async deleteById(id: string): Promise<boolean> {
+    const stmt = this.db.prepare("DELETE FROM memory_chunks WHERE id = ?");
+    const info = stmt.run(id);
+    return (info.changes ?? 0) > 0;
+  }
 }

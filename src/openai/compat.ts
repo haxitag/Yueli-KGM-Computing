@@ -925,14 +925,14 @@ const CONTENT_FIELDS = [
   "reasoning",
   "thinking",
   "thought",
+  "text",
+  "output_text",
 ];
 
 function extractProgressiveFinalContent(rawText: string): string {
-  const typeIndex = rawText.indexOf("\"type\"");
-  
-  // 尝试从所有可能的内容字段中提取
+  // 尝试从所有可能的内容字段中提取，不依赖 "type" 字段
   for (const field of CONTENT_FIELDS) {
-    const fieldIndex = rawText.indexOf(`"${field}"`, typeIndex);
+    const fieldIndex = rawText.indexOf(`"${field}"`);
     if (fieldIndex !== -1) {
       const colonIndex = rawText.indexOf(":", fieldIndex);
       if (colonIndex === -1) continue;
@@ -941,6 +941,44 @@ function extractProgressiveFinalContent(rawText: string): string {
       const content = decodeJsonStringPrefix(rawText.slice(openingQuoteIndex + 1));
       if (content) return content;
     }
+  }
+  
+  // 备选方案：尝试解析完整或部分 JSON
+  try {
+    // 先尝试匹配最大的可能 JSON 对象
+    let openBraceCount = 0;
+    let startIndex = -1;
+    for (let i = 0; i < rawText.length; i++) {
+      if (rawText[i] === "{") {
+        if (startIndex === -1) startIndex = i;
+        openBraceCount++;
+      } else if (rawText[i] === "}") {
+        openBraceCount--;
+        if (openBraceCount === 0 && startIndex !== -1) {
+          try {
+            const json = JSON.parse(rawText.slice(startIndex, i + 1));
+            // 从解析的 JSON 中查找内容
+            for (const field of [...CONTENT_FIELDS, "output_text", "text"]) {
+              if (typeof json[field] === "string" && json[field]) {
+                return json[field];
+              }
+            }
+            // 检查 choices 结构
+            if (json.choices?.[0]) {
+              const choice = json.choices[0];
+              if (choice.delta?.content) return choice.delta.content;
+              if (choice.message?.content) return choice.message.content;
+              if (choice.text) return choice.text;
+            }
+          } catch {
+            // 继续尝试
+          }
+          startIndex = -1;
+        }
+      }
+    }
+  } catch {
+    // 如果解析失败，继续返回空
   }
   
   return "";

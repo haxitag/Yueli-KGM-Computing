@@ -9,6 +9,8 @@ export type VectorQueryResult = {
 export type VectorStore = {
   upsert(params: { ids: string[]; embeddings: number[][]; metadatas?: Record<string, unknown>[] }): Promise<void>;
   query(params: { embedding: number[]; topK: number; where?: Record<string, unknown> }): Promise<VectorQueryResult>;
+  /** 按 id 从向量集合中删除；ids 为空则 no-op */
+  deleteByIds(ids: string[]): Promise<void>;
 };
 
 export class ChromaVectorStore implements VectorStore {
@@ -65,6 +67,15 @@ export class ChromaVectorStore implements VectorStore {
     return { ids, scores };
   }
 
+  async deleteByIds(ids: string[]): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+    const collectionId = await this.ensureCollection();
+    const url = joinUrl(this.baseUrl, `${this.apiPath}/collections/${collectionId}/delete`);
+    await chromaPostMaybeEmpty(url, { ids }, this.timeoutMs);
+  }
+
   private async ensureCollection(): Promise<string> {
     if (this.collectionId) {
       return this.collectionId;
@@ -90,5 +101,34 @@ export class ChromaVectorStore implements VectorStore {
     )) as { id?: string; name?: string };
     this.collectionId = created.id ?? created.name ?? this.collectionName;
     return this.collectionId;
+  }
+}
+
+async function chromaPostMaybeEmpty(url: string, body: unknown, timeoutMs?: number): Promise<void> {
+  if (typeof fetch !== "function") {
+    throw new Error("fetch is not available in this runtime");
+  }
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timeout = timeoutMs ? setTimeout(() => controller?.abort(), timeoutMs) : undefined;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: controller?.signal,
+  });
+  if (timeout) {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`http ${response.status}: ${text}`);
+  }
+  const raw = await response.text();
+  if (raw.trim()) {
+    try {
+      JSON.parse(raw) as unknown;
+    } catch {
+      // ignore non-json success bodies
+    }
   }
 }

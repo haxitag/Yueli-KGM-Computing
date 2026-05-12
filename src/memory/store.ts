@@ -37,6 +37,10 @@ export type MemoryStore = {
     topK: number,
     options?: MemorySearchOptions,
   ): Promise<Evidence[]>;
+  /**
+   * 按记忆块 id 删除（任意 userId 下首个匹配）。向量后端等未实现时返回 false。
+   */
+  deleteByChunkId(chunkId: string): Promise<boolean>;
 };
 
 export type MemoryStoreConfig = {
@@ -188,6 +192,18 @@ export class InMemoryStore implements MemoryStore {
     out = out.slice(0, cap);
     out = await applyMemoryRerank(query, out, embedder, options);
     return out.slice(0, topK);
+  }
+
+  async deleteByChunkId(chunkId: string): Promise<boolean> {
+    let removed = false;
+    this.store.forEach((list, userId) => {
+      const next = list.filter((c) => c.id !== chunkId);
+      if (next.length !== list.length) {
+        removed = true;
+        this.store.set(userId, next);
+      }
+    });
+    return removed;
   }
 }
 

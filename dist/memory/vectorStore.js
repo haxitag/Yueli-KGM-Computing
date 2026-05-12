@@ -37,6 +37,14 @@ export class ChromaVectorStore {
         });
         return { ids, scores };
     }
+    async deleteByIds(ids) {
+        if (ids.length === 0) {
+            return;
+        }
+        const collectionId = await this.ensureCollection();
+        const url = joinUrl(this.baseUrl, `${this.apiPath}/collections/${collectionId}/delete`);
+        await chromaPostMaybeEmpty(url, { ids }, this.timeoutMs);
+    }
     async ensureCollection() {
         if (this.collectionId) {
             return this.collectionId;
@@ -56,5 +64,34 @@ export class ChromaVectorStore {
         const created = (await postJson(createUrl, { name: this.collectionName, metadata: { created_by: "kgm" } }, { timeoutMs: this.timeoutMs }));
         this.collectionId = created.id ?? created.name ?? this.collectionName;
         return this.collectionId;
+    }
+}
+async function chromaPostMaybeEmpty(url, body, timeoutMs) {
+    if (typeof fetch !== "function") {
+        throw new Error("fetch is not available in this runtime");
+    }
+    const controller = timeoutMs ? new AbortController() : undefined;
+    const timeout = timeoutMs ? setTimeout(() => controller?.abort(), timeoutMs) : undefined;
+    const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller?.signal,
+    });
+    if (timeout) {
+        clearTimeout(timeout);
+    }
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`http ${response.status}: ${text}`);
+    }
+    const raw = await response.text();
+    if (raw.trim()) {
+        try {
+            JSON.parse(raw);
+        }
+        catch {
+            // ignore non-json success bodies
+        }
     }
 }

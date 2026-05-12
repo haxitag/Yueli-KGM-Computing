@@ -51,4 +51,9 @@ export class SqliteMetadataStore {
     async getMany(ids) {
         return this.getManyStmt(ids);
     }
+    async deleteById(id) {
+        const stmt = this.db.prepare("DELETE FROM memory_chunks WHERE id = ?");
+        const info = stmt.run(id);
+        return (info.changes ?? 0) > 0;
+    }
 }

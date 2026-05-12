@@ -10,6 +10,7 @@ import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
 import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
 import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
+import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson } from "./httpJsonHelpers.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import { playgroundRouter } from './playgroundApi.js';
 import { syncPlaygroundFromConfig } from '../playground/syncPlayground.js';
@@ -301,36 +302,6 @@ export function createCombinedServer(params, port = 3000) {
         console.log(`Playground UI available at http://localhost:${port}`);
     });
     return server;
-}
-async function readJson(req) {
-    if (req.body !== undefined) {
-        return req.body;
-    }
-    const chunks = [];
-    for await (const chunk of req) {
-        chunks.push(chunk);
-    }
-    const raw = Buffer.concat(chunks).toString("utf8");
-    if (!raw.trim()) {
-        return {};
-    }
-    try {
-        return JSON.parse(raw);
-    }
-    catch {
-        throw new KgmJsonParseError();
-    }
-}
-function sendJson(res, status, body) {
-    if (res.headersSent) {
-        return;
-    }
-    const payload = JSON.stringify(body);
-    res.writeHead(status, {
-        "content-type": "application/json",
-        "content-length": Buffer.byteLength(payload),
-    });
-    res.end(payload);
 }
 function parseNumber(value) {
     if (!value)

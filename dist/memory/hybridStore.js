@@ -67,4 +67,14 @@ export class HybridMemoryStore {
         withBlend = await applyMemoryRerank(query, withBlend, embedder, options);
         return withBlend.slice(0, topK);
     }
+    async deleteByChunkId(chunkId) {
+        const metaDeleted = await this.metadataStore.deleteById(chunkId);
+        try {
+            await this.vectorStore.deleteByIds([chunkId]);
+        }
+        catch {
+            // 元数据已删时仍尽量删向量；向量失败不阻断「已删 SQL 行」的语义
+        }
+        return metaDeleted;
+    }
 }

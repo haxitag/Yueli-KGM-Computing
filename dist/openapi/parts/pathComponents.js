@@ -32,6 +32,19 @@ export function buildOpenApiPathsV1() {
         "/health": {
             get: { summary: "健康检查", security: [], responses: { "200": j200("HealthOk"), "500": R.err5 } },
         },
+        "/v1/status": {
+            get: {
+                summary: "服务状态（/v1 前缀探测；含版本与常用入口指针）",
+                security: [],
+                responses: {
+                    "200": {
+                        description: "status ok",
+                        content: { "application/json": { schema: { $ref: "#/components/schemas/ServiceStatusV1" } } },
+                    },
+                    "500": R.err5,
+                },
+            },
+        },
         "/metrics": {
             get: {
                 summary: "Prometheus 文本",
@@ -126,14 +139,28 @@ export function buildOpenApiPathsV1() {
         },
         "/v1/kgm/memory": {
             post: {
-                summary: "写入记忆",
+                summary: "写入记忆（canonical）",
+                requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/MemoryWriteRequest" } } } },
+                responses: { "200": j200("MemoryWriteOk"), ...postWithBody() },
+            },
+        },
+        "/v1/memory/store": {
+            post: {
+                summary: "写入记忆（别名，同 POST /v1/kgm/memory）",
                 requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/MemoryWriteRequest" } } } },
                 responses: { "200": j200("MemoryWriteOk"), ...postWithBody() },
             },
         },
         "/v1/kgm/memory/search": {
             post: {
-                summary: "记忆检索",
+                summary: "记忆检索（canonical）",
+                requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/MemorySearch" } } } },
+                responses: { "200": j200("MemorySearchResult"), ...postWithBody() },
+            },
+        },
+        "/v1/memory/query": {
+            post: {
+                summary: "记忆检索（别名，同 POST /v1/kgm/memory/search）",
                 requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/MemorySearch" } } } },
                 responses: { "200": j200("MemorySearchResult"), ...postWithBody() },
             },

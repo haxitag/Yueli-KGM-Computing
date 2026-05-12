@@ -22,6 +22,28 @@ export const openApiSchemaComponents = {
         required: ["status"],
         properties: { status: { type: "string", const: "ok" } },
     },
+    ServiceStatusV1: {
+        type: "object",
+        required: ["status", "service", "timestamp", "version"],
+        properties: {
+            status: { type: "string", const: "ok" },
+            service: { type: "string", const: "yueli-kgm-computing" },
+            timestamp: { type: "string", format: "date-time" },
+            uptime_seconds: { type: "number" },
+            version: { type: "string" },
+            node: { type: "string" },
+            environment: { type: "string" },
+            endpoints: {
+                type: "object",
+                properties: {
+                    health: { type: "string" },
+                    metrics: { type: "string" },
+                    openapi: { type: "string" },
+                    runtime_status: { type: "string" },
+                },
+            },
+        },
+    },
     OpenApiJson: {
         type: "object",
         description: "OpenAPI 3.1 根文档自身",

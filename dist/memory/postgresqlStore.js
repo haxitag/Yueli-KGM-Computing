@@ -60,7 +60,14 @@ export class PostgresqlMetadataStore {
             }, "PostgreSQL connection established");
         }
         catch (error) {
-            logger.error({ error, config: this.config }, "Failed to connect to PostgreSQL");
+            const safeConfig = {
+                host: this.config.host,
+                port: this.config.port,
+                database: this.config.database,
+                username: this.config.username,
+                password: "***",
+            };
+            logger.error({ error, config: safeConfig }, "Failed to connect to PostgreSQL");
             throw new Error(`PostgreSQL connection failed: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
@@ -175,6 +182,16 @@ export class PostgresqlMetadataStore {
                 count: ids.length,
             }, 'Database query failed');
             throw error;
+        }
+        finally {
+            client.release();
+        }
+    }
+    async deleteById(id) {
+        const client = await this.pool.connect();
+        try {
+            const result = await client.query("DELETE FROM memory_chunks WHERE id = $1", [id]);
+            return (result.rowCount ?? 0) > 0;
         }
         finally {
             client.release();

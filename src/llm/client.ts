@@ -5,6 +5,13 @@ import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
 import { KgmStructuredError } from "../errors/structuredError.js";
 
+/**
+ * 进程内「上游 LLM」访问统一走 **HTTP + OpenAI Chat/Completions 形 JSON**：
+ * - **`HttpLlmClient`**：`baseUrl` + `path` + `mode`（与 **`ConfigurableLlmClient`** / **`KGM_LLM_*`** 一致），见 **`docs/deployment-and-api.md`**（Provider config）、**`docs/yueli-kgm-engine-vs-ollama-vllm-sglang.md`**、**`docs/runtime-layer.md`**。
+ * - **Anthropic `/v1/messages`**：在 **`src/anthropic/compat.ts`** 转为 OpenAI Chat 请求后再调用同一 **`LlmClient`**，不另设专用 HTTP 客户端类。
+ * - **Ollama**：仍用 **`OllamaLlmClient`**（非 OpenAI 路径）。
+ */
+
 export type CompletionOptions = {
   model?: string;
   requestId?: string;
@@ -86,6 +93,10 @@ export class HttpLlmClient implements LlmClient {
   private mode: "completions" | "chat";
   private timeoutMs?: number;
 
+  /**
+   * @param params.path - 相对 `baseUrl` 的路径，如 `/v1/chat/completions`；与 **`KGM_LLM_PATH`** / **`ConfigStore.llm.path`** 对齐。
+   * @param params.mode - `chat` 发 messages 体，`completions` 发 prompt 体。
+   */
   constructor(params: {
     baseUrl: string;
     model: string;
@@ -146,148 +157,47 @@ export class HttpLlmClient implements LlmClient {
     );
     return { text, raw: data };
   }
-}
-
-export class ConfigurableLlmClient implements LlmClient {
-  private store: ConfigStore;
-
-  constructor(store: ConfigStore) {
-    this.store = store;
-  }
-
-  async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
-    const config = this.store.get().llm;
-    if (config.provider === "openai" && !config.apiKey) {
-      throw new KgmStructuredError({
-        code: "LLM_API_KEY_MISSING",
-        message: "LLM provider is openai but apiKey is missing",
-        type: "kgm_configuration_error",
-        param: "KGM_LLM_API_KEY",
-        status: 500,
-        stage: "inference.llm_provider",
-        path: "llmProvider",
-        routeAttempted: true,
-        suggestedFix: "Set KGM_LLM_API_KEY, or point KGM_LLM_BASE_URL to an OpenAI-compatible local engine.",
-        affectedFeatures: ["chat", "completions", "responses"],
-      });
-    }
-    const client =
-      config.provider === "ollama"
-        ? new OllamaLlmClient({
-            baseUrl: config.baseUrl,
-            model: config.model,
-            timeoutMs: config.timeoutMs,
-          })
-        : new HttpLlmClient({
-            baseUrl: config.baseUrl,
-            model: config.model,
-            path: config.path,
-            apiKey: config.apiKey,
-            mode: config.mode,
-            timeoutMs: config.timeoutMs,
-          });
-    return client.complete(prompt, {
-      maxTokens: options?.maxTokens ?? config.maxTokens,
-      temperature: options?.temperature ?? config.temperature,
-      stop: options?.stop,
-      model: options?.model ?? config.model,
-    });
-  }
-}
-
-export class OpenAILlmClient implements LlmClient {
-  private baseUrl: string;
-  private apiKey: string;
-  private model: string;
-  private timeoutMs?: number;
-
-  constructor(params: {
-    apiKey: string;
-    model?: string;
-    baseUrl?: string;
-    timeoutMs?: number;
-  }) {
-    this.apiKey = params.apiKey;
-    this.model = params.model ?? "gpt-4o-mini";
-    this.baseUrl = params.baseUrl ?? "https://api.openai.com/v1";
-    this.timeoutMs = params.timeoutMs;
-  }
-
-  async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
-    const url = `${this.baseUrl}/chat/completions`;
-    
-    const payload = {
-      model: options?.model ?? this.model,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: options?.maxTokens ?? 1024,
-      temperature: options?.temperature ?? 0.7,
-      stop: options?.stop,
-      top_p: options?.topP ?? 1,
-      presence_penalty: 0,
-      frequency_penalty: 0,
-    };
-
-    const controller = this.timeoutMs ? new AbortController() : undefined;
-    const timeoutId = this.timeoutMs ? setTimeout(() => controller?.abort(), this.timeoutMs) : undefined;
-
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(payload),
-        signal: controller?.signal,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content ?? "";
-      
-      return {
-        text: content,
-        raw: data,
-      };
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
-  }
 
   async* streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
-    const url = `${this.baseUrl}/chat/completions`;
-    
-    const payload = {
-      model: options?.model ?? this.model,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: options?.maxTokens ?? 1024,
-      temperature: options?.temperature ?? 0.7,
-      stop: options?.stop,
-      top_p: options?.topP ?? 1,
-      stream: true,
-    };
+    const url = joinUrl(this.baseUrl, this.path);
+    const payload =
+      this.mode === "chat"
+        ? {
+            model: options?.model ?? this.model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: options?.maxTokens ?? 512,
+            temperature: options?.temperature ?? 0.2,
+            stop: options?.stop,
+            stream: true,
+          }
+        : {
+            model: options?.model ?? this.model,
+            prompt,
+            max_tokens: options?.maxTokens ?? 512,
+            temperature: options?.temperature ?? 0.2,
+            stop: options?.stop,
+            stream: true,
+          };
 
-    const controller = this.timeoutMs ? new AbortController() : undefined;
-    const timeoutId = this.timeoutMs ? setTimeout(() => controller?.abort(), this.timeoutMs) : undefined;
+    const controller = new AbortController();
+    const timeoutId = this.timeoutMs ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
 
     try {
+      yield { type: "started", model: options?.model ?? this.model };
+
       const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.apiKey}`,
+          ...buildAuthHeaders(this.apiKey),
         },
         body: JSON.stringify(payload),
-        signal: controller?.signal,
+        signal: controller.signal,
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+        throw new Error(`HTTP error: ${response.status} - ${errorText}`);
       }
 
       const reader = response.body?.getReader();
@@ -297,25 +207,48 @@ export class OpenAILlmClient implements LlmClient {
 
       const decoder = new TextDecoder("utf-8");
       let tokenIndex = 0;
-
-      yield { type: "started", model: options?.model ?? this.model };
+      let buffer = "";
+      const contentFields = ["content", "reasoning_content", "reasoning", "thinking", "thought", "text", "output_text"];
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n").filter(line => line.trim() !== "");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const dataStr = line.slice(6);
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          if (trimmed.startsWith("data: ")) {
+            const dataStr = trimmed.slice(6);
             if (dataStr === "[DONE]") {
-              return;
+              break;
             }
             try {
               const data = JSON.parse(dataStr);
-              const content = data.choices?.[0]?.delta?.content;
+              let content = "";
+              
+              // 尝试从多种可能的字段中提取内容
+              if (data.choices?.[0]) {
+                const choice = data.choices[0];
+                if (choice.delta) {
+                  content = choice.delta.content || choice.delta.reasoning_content || choice.delta.text || "";
+                } else {
+                  content = choice.text || "";
+                }
+              }
+              // 也尝试直接从根级字段提取
+              if (!content) {
+                for (const field of contentFields) {
+                  if (typeof data[field] === "string") {
+                    content = data[field];
+                    break;
+                  }
+                }
+              }
+              
               if (content) {
                 yield {
                   type: "token",
@@ -331,6 +264,78 @@ export class OpenAILlmClient implements LlmClient {
       }
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
+    }
+  }
+}
+
+export class ConfigurableLlmClient implements LlmClient {
+  private store: ConfigStore;
+
+  constructor(store: ConfigStore) {
+    this.store = store;
+  }
+
+  private createClient(): LlmClient {
+    const config = this.store.get().llm;
+    if (config.provider === "openai" && !config.apiKey) {
+      throw new KgmStructuredError({
+        code: "LLM_API_KEY_MISSING",
+        message: "LLM provider is openai but apiKey is missing",
+        type: "kgm_configuration_error",
+        param: "KGM_LLM_API_KEY",
+        status: 500,
+        stage: "inference.llm_provider",
+        path: "llmProvider",
+        routeAttempted: true,
+        suggestedFix: "Set KGM_LLM_API_KEY, or point KGM_LLM_BASE_URL to an OpenAI-compatible local engine.",
+        affectedFeatures: ["chat", "completions", "responses"],
+      });
+    }
+    return config.provider === "ollama"
+      ? new OllamaLlmClient({
+          baseUrl: config.baseUrl,
+          model: config.model,
+          timeoutMs: config.timeoutMs,
+        })
+      : new HttpLlmClient({
+          baseUrl: config.baseUrl,
+          model: config.model,
+          path: config.path,
+          apiKey: config.apiKey,
+          mode: config.mode,
+          timeoutMs: config.timeoutMs,
+        });
+  }
+
+  async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
+    const config = this.store.get().llm;
+    const client = this.createClient();
+    return client.complete(prompt, {
+      maxTokens: options?.maxTokens ?? config.maxTokens,
+      temperature: options?.temperature ?? config.temperature,
+      stop: options?.stop,
+      model: options?.model ?? config.model,
+    });
+  }
+
+  async* streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
+    const config = this.store.get().llm;
+    const client = this.createClient();
+    if (client.streamComplete) {
+      yield* client.streamComplete(prompt, {
+        maxTokens: options?.maxTokens ?? config.maxTokens,
+        temperature: options?.temperature ?? config.temperature,
+        stop: options?.stop,
+        model: options?.model ?? config.model,
+      });
+    } else {
+      // Fallback to non-streaming if stream isn't supported
+      yield { type: "started", model: options?.model ?? config.model };
+      const result = await this.complete(prompt, options);
+      if (result.text) {
+        yield { type: "token", text: result.text, index: 0 };
+      }
+      yield { type: "finished", result };
     }
   }
 }

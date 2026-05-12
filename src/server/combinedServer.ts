@@ -3,7 +3,6 @@ import http from 'node:http';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import type { ServerResponse } from 'node:http';
 import { DEFAULT_SCHEMA_IDS } from '../core/config.js';
 import type { KgmRequest, KgmRetrievalOptions } from '../core/types.js';
 import type { ConfigStore, KgmConfigPatch } from '../core/configStore.js';
@@ -22,6 +21,7 @@ import type { GraphStore, GraphRule } from "../graph/store.js";
 import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
 import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
 import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
+import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson } from "./httpJsonHelpers.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import type { Embedder } from '../embedding/canonical.js';
 import { playgroundRouter } from './playgroundApi.js';
@@ -395,37 +395,6 @@ export function createCombinedServer(params: {
   });
 
   return server;
-}
-
-async function readJson(req: http.IncomingMessage & { body?: unknown }): Promise<unknown> {
-  if (req.body !== undefined) {
-    return req.body;
-  }
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
-  }
-  const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw.trim()) {
-    return {};
-  }
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new KgmJsonParseError();
-  }
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  if (res.headersSent) {
-    return;
-  }
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    "content-type": "application/json",
-    "content-length": Buffer.byteLength(payload),
-  });
-  res.end(payload);
 }
 
 function parseNumber(value: string | null): number | undefined {

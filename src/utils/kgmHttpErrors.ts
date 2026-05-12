@@ -2,6 +2,20 @@
  * 结构化 API 错误：HTTP 层可区分 4xx/5xx 与可机读 code，便于监控与排障。
  */
 
+/** 请求体验证失败（可机读 code + HTTP status），供 HTTP 层与 JSON 解析共用。 */
+export class KgmRequestValidationError extends Error {
+  readonly code: string;
+  readonly status: number;
+  override readonly name = "KgmRequestValidationError";
+
+  constructor(code: string, message: string, status = 400) {
+    super(message);
+    Object.setPrototypeOf(this, new.target.prototype);
+    this.code = code;
+    this.status = status;
+  }
+}
+
 export class KgmJsonParseError extends Error {
   readonly code = "invalid_json" as const;
   readonly status = 400;

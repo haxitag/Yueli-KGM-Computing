@@ -118,6 +118,17 @@ export class InMemoryStore {
         out = await applyMemoryRerank(query, out, embedder, options);
         return out.slice(0, topK);
     }
+    async deleteByChunkId(chunkId) {
+        let removed = false;
+        this.store.forEach((list, userId) => {
+            const next = list.filter((c) => c.id !== chunkId);
+            if (next.length !== list.length) {
+                removed = true;
+                this.store.set(userId, next);
+            }
+        });
+        return removed;
+    }
 }
 export function buildMemoryChunk(params) {
     const now = new Date().toISOString();

@@ -1109,6 +1109,11 @@ export class ManagedModelManager {
     buildSpawnConfig(runtime) {
         const artifact = runtime.artifactId ? this.requireArtifact(runtime.artifactId) : undefined;
         const modelRef = artifact?.localPath ?? artifact?.metadata.repoId?.toString() ?? artifact?.sourceRef ?? runtime.upstreamModel;
+        const config = this.buildSpawnConfigInternal(runtime, modelRef, artifact);
+        this.validateSpawnConfig(config);
+        return config;
+    }
+    buildSpawnConfigInternal(runtime, modelRef, artifact) {
         switch (runtime.runtime) {
             case "llama.cpp":
                 if (!artifact?.localPath) {
@@ -1132,7 +1137,7 @@ export class ManagedModelManager {
                     args: runtime.args ??
                         [
                             "serve",
-                            modelRef,
+                            modelRef || "",
                             "--host",
                             runtime.host,
                             "--port",
@@ -1148,7 +1153,7 @@ export class ManagedModelManager {
                             "-m",
                             "sglang.launch_server",
                             "--model-path",
-                            modelRef,
+                            modelRef || "",
                             "--host",
                             runtime.host,
                             "--port",
@@ -1182,6 +1187,33 @@ export class ManagedModelManager {
                 throw new Error("native_runtime_is_single_process_and_does_not_spawn_external_workers");
             default:
                 throw new Error(`unsupported_runtime:${runtime.runtime}`);
+        }
+    }
+    validateSpawnConfig(config) {
+        const dangerousPatterns = [
+            /[;&|`$<>]/, // 命令分隔符和重定向
+            /\$\(/, // 命令替换
+            /\b(cat|rm|cp|mv|chmod|chown|curl|wget|nc|netcat)\b/i, // 危险命令
+            /\/etc\/|\/bin\/|\/usr\/|\/home\//i, // 敏感路径
+        ];
+        if (!config.command || config.command.trim().length === 0) {
+            throw new Error("spawn_config_requires_command");
+        }
+        if (dangerousPatterns.some(pattern => pattern.test(config.command))) {
+            throw new Error(`unsafe_command_detected: ${config.command}`);
+        }
+        for (const arg of config.args) {
+            if (dangerousPatterns.some(pattern => pattern.test(arg))) {
+                throw new Error(`unsafe_argument_detected: ${arg}`);
+            }
+        }
+        if (config.command.includes('..')) {
+            throw new Error("command_path_traversal_detected");
+        }
+        for (const arg of config.args) {
+            if (arg.includes('..')) {
+                throw new Error(`argument_path_traversal_detected: ${arg}`);
+            }
         }
     }
     createRuntimeClient(runtime) {

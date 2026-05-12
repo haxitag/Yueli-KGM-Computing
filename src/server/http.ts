@@ -42,7 +42,8 @@ import {
   parseRoutingUpdatePayload,
 } from "../routing/routingService.js";
 import { createHttpAccessConfigFromEnv, HttpRequestAccess } from "./httpAccess.js";
-import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
+import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
+import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText } from "./httpJsonHelpers.js";
 import { getOptimizer } from "../optimization/optimizer.js";
 import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import type { KgmRetrievalOptions } from "../core/types.js";
@@ -58,8 +59,9 @@ import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
 import { handleRuntimeRoute } from "./routes/runtime.js";
 import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
 import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
+import { appendHttpAccessLog, snapshotHttpAccessLog } from "./httpRequestRing.js";
 
-export function createKgmServer(params: {
+export type KgmServerParams = {
   scheduler: Scheduler;
   contextBuilder: ContextBuilder;
   llmClient: LlmClient;
@@ -75,7 +77,11 @@ export function createKgmServer(params: {
   skillRuntime?: SkillRuntime;
   artifactStore?: ArtifactStore;
   sessionStore?: SessionStore;
-}): http.Server {
+};
+
+export function createKgmRequestListener(
+  params: KgmServerParams,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   // Validate environment variables on startup
   const env = validateEnv();
   logger.info({ env: { NODE_ENV: env.NODE_ENV, PORT: env.PORT } }, 'Environment validated');
@@ -258,14 +264,94 @@ export function createKgmServer(params: {
       return false;
     },
     cancel(id) {
-      if (this.tasks[id] && this.tasks[id].status === "queued") {
-        this.tasks[id].status = "cancelled";
-        this.tasks[id].completedAt = new Date().toISOString();
+      const t = this.tasks[id];
+      if (!t) {
+        return false;
+      }
+      if (t.status === "queued" || t.status === "running") {
+        t.status = "cancelled";
+        t.completedAt = new Date().toISOString();
         return true;
       }
       return false;
     },
   };
+
+  const taskPollMsRaw = Number.parseInt(process.env.KGM_TASK_POLL_MS ?? "750", 10);
+  const taskPollMs = Number.isFinite(taskPollMsRaw) && taskPollMsRaw >= 200 ? taskPollMsRaw : 750;
+  const taskPollHandle = setInterval(() => {
+    const queued = Object.values(taskStore.tasks).filter((t) => t.status === "queued");
+    const q = queued[0];
+    if (!q) {
+      return;
+    }
+    taskStore.update(q.id, { status: "running", startedAt: new Date().toISOString(), progress: 1 });
+    void (async () => {
+      try {
+        const cur = taskStore.get(q.id);
+        if (!cur || cur.status === "cancelled") {
+          return;
+        }
+        if (cur.type === "agent_execute" && cur.agentId) {
+          const ag = agentStore.get(cur.agentId);
+          if (!ag) {
+            taskStore.update(q.id, {
+              status: "failed",
+              error: "agent_not_found",
+              completedAt: new Date().toISOString(),
+            });
+            return;
+          }
+          const kgmRequest: KgmRequest = {
+            userId: cur.sessionId || "anonymous",
+            input: cur.input,
+            sessionId: cur.sessionId,
+            model: ag.model,
+            metadata: { agentId: ag.id, tools: ag.tools, mode: ag.systemPrompt ? "reasoning" : "chat" },
+          };
+          const response = await params.scheduler.run(kgmRequest);
+          const fin = taskStore.get(q.id);
+          if (!fin || fin.status === "cancelled") {
+            return;
+          }
+          taskStore.update(q.id, {
+            status: "completed",
+            result: response,
+            progress: 100,
+            completedAt: new Date().toISOString(),
+          });
+        } else {
+          const kgmRequest: KgmRequest = {
+            userId: cur.sessionId || "anonymous",
+            input: cur.input,
+            sessionId: cur.sessionId,
+          };
+          const response = await params.scheduler.run(kgmRequest);
+          const fin = taskStore.get(q.id);
+          if (!fin || fin.status === "cancelled") {
+            return;
+          }
+          taskStore.update(q.id, {
+            status: "completed",
+            result: response,
+            progress: 100,
+            completedAt: new Date().toISOString(),
+          });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const fin = taskStore.get(q.id);
+        if (fin && fin.status !== "cancelled") {
+          taskStore.update(q.id, {
+            status: "failed",
+            error: msg,
+            completedAt: new Date().toISOString(),
+          });
+        }
+      }
+    })();
+  }, taskPollMs);
+  taskPollHandle.unref();
 
   const workflowStore: {
     workflows: Record<string, Workflow>;
@@ -415,45 +501,64 @@ export function createKgmServer(params: {
     },
   };
 
-  // CORS配置
-  const corsOrigins = process.env.KGM_CORS_ORIGINS ? process.env.KGM_CORS_ORIGINS.split(",") : ["*"];
+  // CORS配置 - 生产环境不应使用 * 通配符
+  const corsOrigins = process.env.KGM_CORS_ORIGINS ? process.env.KGM_CORS_ORIGINS.split(",") : [];
   const corsMethods = process.env.KGM_CORS_METHODS || "GET,POST,PUT,DELETE,OPTIONS,PATCH";
   const corsHeaders = process.env.KGM_CORS_HEADERS || "Content-Type,Authorization,X-API-Key,X-KGM-Error";
   const corsMaxAge = process.env.KGM_CORS_MAX_AGE || "86400"; // 24小时
   const hasWildcardOrigin = corsOrigins.includes("*");
 
-  function handleCors(req: IncomingMessage, res: ServerResponse): boolean {
-    const origin = req.headers.origin;
-    
-    // 设置CORS头部
-    if (origin) {
-      const allowedOrigin = hasWildcardOrigin ? "*" : 
-        corsOrigins.includes(origin) ? origin : corsOrigins[0];
-      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
-    } else if (hasWildcardOrigin) {
-      res.setHeader("Access-Control-Allow-Origin", "*");
+  // 安全响应头配置
+  const securityHeaders = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": process.env.KGM_X_FRAME_OPTIONS || "DENY",
+    "X-XSS-Protection": "1; mode=block",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": process.env.KGM_CSP || "default-src 'self'",
+    "Permissions-Policy": process.env.KGM_PERMISSIONS_POLICY || "geolocation=(), microphone=(), camera=()",
+  };
+
+  function applySecurityHeaders(res: ServerResponse): void {
+    for (const [header, value] of Object.entries(securityHeaders)) {
+      res.setHeader(header, value);
     }
-    
+  }
+
+  function handleCors(req: IncomingMessage, res: ServerResponse): boolean {
+    applySecurityHeaders(res);
+
+    const origin = req.headers.origin;
+
+    // 设置CORS头部
+    if (hasWildcardOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    } else if (origin && corsOrigins.length > 0) {
+      const allowedOrigin = corsOrigins.includes(origin) ? origin : corsOrigins[0];
+      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+      res.setHeader("Vary", "Origin");
+    }
+
     res.setHeader("Access-Control-Allow-Methods", corsMethods);
     res.setHeader("Access-Control-Allow-Headers", corsHeaders);
     res.setHeader("Access-Control-Max-Age", corsMaxAge);
-    
+
     // 只有在不是通配符源时才允许携带凭证
-    if (!hasWildcardOrigin) {
+    if (!hasWildcardOrigin && corsOrigins.length > 0) {
       res.setHeader("Access-Control-Allow-Credentials", "true");
     }
-    
+
     // 处理OPTIONS预检请求
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
       return true;
     }
-    
+
     return false;
   }
 
-  const server = http.createServer(async (req, res) => {
+  return async (req, res) => {
     try {
       // 处理CORS
       if (handleCors(req, res)) {
@@ -464,6 +569,11 @@ export function createKgmServer(params: {
       if (!access.check(req, res, url.pathname)) {
         return;
       }
+      appendHttpAccessLog({
+        ts: new Date().toISOString(),
+        method: req.method ?? "?",
+        pathname: url.pathname,
+      });
       if (req.method === "GET" && url.pathname === "/health") {
         const health = {
           status: "ok",
@@ -481,6 +591,25 @@ export function createKgmServer(params: {
           },
         };
         return sendJson(res, 200, health);
+      }
+
+      /** OpenAI-adjacent / 文稿常用路径：与 `/health` 互补，便于负载均衡与控制台探测统一走 `/v1/*`。 */
+      if (req.method === "GET" && url.pathname === "/v1/status") {
+        return sendJson(res, 200, {
+          status: "ok",
+          service: "yueli-kgm-computing",
+          timestamp: new Date().toISOString(),
+          uptime_seconds: process.uptime(),
+          version: process.env.npm_package_version || "0.2.0",
+          node: process.version,
+          environment: env.NODE_ENV,
+          endpoints: {
+            health: "/health",
+            metrics: "/metrics",
+            openapi: "/openapi.json",
+            runtime_status: "/v1/runtime/status",
+          },
+        });
       }
 
       if (req.method === "GET" && url.pathname === "/metrics") {
@@ -647,7 +776,7 @@ export function createKgmServer(params: {
         return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
       }
 
-      if (req.method === "POST" && url.pathname === "/v1/embeddings") {
+      if (req.method === "POST" && (url.pathname === "/v1/embeddings" || url.pathname === "/v1/embed")) {
         const payload = (await readJson(req)) as {
           model?: string;
           input: string | string[];
@@ -690,6 +819,27 @@ export function createKgmServer(params: {
           url?: string;
           score: number;
         }> = [];
+
+        if (mode === "lexical") {
+          if (payload.userId) {
+            const memResults = await params.memoryStore.search(
+              payload.userId,
+              payload.query,
+              params.embedder,
+              topK,
+              { lexicalWeight: 0.95, overFetch: 5 },
+            );
+            results.push(
+              ...memResults.map((r) => ({
+                id: r.id,
+                type: "memory",
+                title: r.text.substring(0, 50) + "...",
+                snippet: r.text.substring(0, 200) + "...",
+                score: r.score ?? 0.5,
+              })),
+            );
+          }
+        }
 
         if (mode === "vector" || mode === "hybrid") {
           if (payload.userId) {
@@ -1128,11 +1278,13 @@ export function createKgmServer(params: {
       if (req.method === "GET" && url.pathname === "/v1/logs") {
         const limit = parseNumber(url.searchParams.get("limit")) ?? 100;
         const type = url.searchParams.get("type");
+        const logs = snapshotHttpAccessLog(limit);
         return sendJson(res, 200, {
-          logs: [],
+          logs,
           limit,
           type,
-          total: 0,
+          total: logs.length,
+          note: "Recent HTTP paths after auth (ring buffer); not full application audit logs.",
         });
       }
 
@@ -1148,13 +1300,28 @@ export function createKgmServer(params: {
       }
 
       if (req.method === "POST" && url.pathname === "/v1/admin/reload") {
-        return sendJson(res, 200, { status: "ok", message: "Config reloaded" });
+        const reloaded = params.configStore.reloadFromDisk();
+        if (reloaded && params.skillRuntime) {
+          syncPlaygroundFromConfig({
+            skillRegistry: params.skillRuntime.getSkillRegistry(),
+            toolRegistry: params.toolRegistry,
+            configStore: params.configStore,
+          });
+        }
+        return sendJson(res, 200, {
+          status: "ok",
+          reloaded: Boolean(reloaded),
+          message: reloaded ? "Config reloaded from disk" : "No persistPath or config file to reload",
+        });
       }
 
       if (req.method === "DELETE" && url.pathname.startsWith("/v1/memory/")) {
         const id = url.pathname.replace("/v1/memory/", "");
-        // MemoryStore doesn't support delete, just return ok
-        return sendJson(res, 200, { deleted: false });
+        const deleted = await params.memoryStore.deleteByChunkId(id);
+        if (!deleted) {
+          return sendJson(res, 404, { error: "memory_not_found", deleted: false });
+        }
+        return sendJson(res, 200, { deleted: true, id });
       }
 
       if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
@@ -1381,7 +1548,13 @@ export function createKgmServer(params: {
         return sendJson(res, 200, record);
       }
 
-      if (req.method === "POST" && url.pathname === "/v1/kgm/memory") {
+      /**
+       * 记忆写入：canonical `POST /v1/kgm/memory`，别名 `POST /v1/memory/store`（与常见 API 文稿对齐，语义完全相同）。
+       */
+      if (
+        req.method === "POST" &&
+        (url.pathname === "/v1/kgm/memory" || url.pathname === "/v1/memory/store")
+      ) {
         const payload = (await readJson(req)) as {
           userId: string;
           text: string;
@@ -1402,7 +1575,13 @@ export function createKgmServer(params: {
         return sendJson(res, 200, { status: "ok" });
       }
 
-      if (req.method === "POST" && url.pathname === "/v1/kgm/memory/search") {
+      /**
+       * 记忆检索：canonical `POST /v1/kgm/memory/search`，别名 `POST /v1/memory/query`。
+       */
+      if (
+        req.method === "POST" &&
+        (url.pathname === "/v1/kgm/memory/search" || url.pathname === "/v1/memory/query")
+      ) {
         const payload = (await readJson(req)) as KgmRetrievalOptions & { userId: string; query: string; topK?: number };
         const topK = Math.max(1, Math.min(payload.topK ?? 5, 50));
         const memOpts = memorySearchOptionsFromKgm({
@@ -1897,82 +2076,14 @@ export function createKgmServer(params: {
         );
       }
     }
-  });
+  };
+}
 
-  // Setup graceful shutdown
+export function createKgmServer(params: KgmServerParams): http.Server {
+  const server = http.createServer(createKgmRequestListener(params));
   setupGracefulShutdown(server);
-
-  logger.info('Server created successfully');
+  logger.info("Server created successfully");
   return server;
-}
-
-// 默认请求体大小限制为 5MB，可通过环境变量 KGM_HTTP_MAX_BODY_SIZE_MB 配置
-const DEFAULT_MAX_BODY_SIZE = 5 * 1024 * 1024; 
-const MAX_BODY_SIZE = (() => {
-  const envMb = process.env.KGM_HTTP_MAX_BODY_SIZE_MB;
-  if (envMb) {
-    const mb = Number(envMb);
-    if (!isNaN(mb) && mb > 0) {
-      return mb * 1024 * 1024;
-    }
-  }
-  return DEFAULT_MAX_BODY_SIZE;
-})();
-
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let totalSize = 0;
-  
-  for await (const chunk of req) {
-    const buffer = chunk as Buffer;
-    totalSize += buffer.length;
-    
-    // 检查是否超过大小限制
-    if (totalSize > MAX_BODY_SIZE) {
-      throw new KgmRequestValidationError(
-        "request_too_large",
-        `Request body too large. Maximum size is ${Math.round(MAX_BODY_SIZE / (1024 * 1024))}MB`,
-        413
-      );
-    }
-    
-    chunks.push(buffer);
-  }
-  
-  const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw.trim()) {
-    return {};
-  }
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new KgmJsonParseError();
-  }
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  if (res.headersSent) {
-    console.warn("Attempted to send JSON response after headers were already sent");
-    return;
-  }
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    "content-type": "application/json",
-    "content-length": Buffer.byteLength(payload),
-  });
-  res.end(payload);
-}
-
-function sendText(res: ServerResponse, status: number, body: string, contentType = "text/plain; charset=utf-8"): void {
-  if (res.headersSent) {
-    console.warn("Attempted to send text response after headers were already sent");
-    return;
-  }
-  res.writeHead(status, {
-    "content-type": contentType,
-    "content-length": Buffer.byteLength(body),
-  });
-  res.end(body);
 }
 
 async function sendSse(
@@ -2067,18 +2178,6 @@ function parseNumber(value: string | null): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isNaN(parsed) ? undefined : parsed;
-}
-
-class KgmRequestValidationError extends Error {
-  readonly code: string;
-  readonly status: number;
-
-  constructor(code: string, message: string, status = 400) {
-    super(message);
-    this.name = "KgmRequestValidationError";
-    this.code = code;
-    this.status = status;
-  }
 }
 
 function validateKceComputePayload(payload: unknown): KceComputeRequest {

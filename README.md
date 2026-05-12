@@ -2,6 +2,50 @@
 
 `@haxitag/yueli-kgm-computing` — 阅粒 **KGM**（Knowledge Graph & Model runtime）：自托管的 **OpenAI / Anthropic 兼容网关与编排层**，内建 **进程内 Native 推理** 与 **受管模型控制面**；支持 `kgm` 扩展（工具、图谱信号、检索、观测等）。
 
+---
+
+## 🚀 0.2.4 版本更新
+
+### VMLX 最佳实践借鉴
+
+**1. 自适应混合精度量化**
+- 新增 `AdaptiveQuantizationManager`，根据模型层重要性动态选择量化精度
+- 支持 fp16、int8、nf4、JANG 2-bit 自适应策略
+- 关键层保持高精度，非关键层使用低精度，平衡性能与质量
+
+**2. 分层缓存架构增强**
+- 新增 `LayeredCacheManager`，实现 L1（内存）+ L2（SSD）两级缓存
+- L1 快速缓存用于高频访问，L2 持久化缓存用于冷启动恢复
+- 智能驱逐策略（LRU），自动管理缓存大小
+
+**3. Prompt Lookup Decoding**
+- 新增 `PromptLookupDecoder`，无需 Draft Model 即可实现结构化输出加速
+- n-gram 匹配索引，加速重复模式的解码过程
+
+**4. 分布式推理增强**
+- 新增 `DistributedClusterManager`，支持多节点自动发现
+- 能力评分选举协调者，支持 Pipeline Parallel 分布式推理
+- Bonjour/mDNS 自动发现局域网节点
+
+**5. 多模态生态整合**
+- 新增 `IntegratedMultimodalEngine`，统一多模态服务接口
+- 支持图像生成、图像编辑、TTS、STT、视觉嵌入等能力
+- 灵活的服务注册机制，支持外部服务集成
+
+### 关键改进
+- **LLM 流式支持完善**: 为 `HttpLlmClient`、`OllamaLlmClient` 和 `ConfigurableLlmClient` 完整实现 `streamComplete` 接口
+- **返回解析增强**: `extractProgressiveFinalContent` 移除对 `"type"` 字段依赖，支持更多内容字段格式（`content`, `reasoning_content`, `text`, `output_text` 等）
+- **安全加固**: 完善 CORS 配置，避免通配符源与凭据同时设置的安全问题
+- **流式稳定性**: 为所有 SSE 相关函数添加 `headersSent` 检查，防止重复头部发送
+
+### 生产级就绪
+- 新增 `PRODUCTION_READINESS_REPORT.md` 生产级部署指南
+- 新增 `docs/VMLX与YueliKGM对比分析.md` VMLX 对比分析文档
+- 完整的端到端测试场景覆盖
+- 详细的风险分析和优化建议
+
+---
+
 - **环境**：Node **20.x**（与 `package.json` 的 `engines` 一致）
 - **官方文档**（能力说明、部署、API、Playground 等）：[阅粒知识计算引擎 — HaxiTAG](https://www.haxitag.com/read/yueli-knowledge-computation-engine-system)
 - **使用指南**（企业场景、落地与 Q&A 等）：[Yueli KGM Engine 使用指南](https://www.haxitag.com/articles/yueli-kgm-engine-enterprise-ai-qa-solution)

@@ -493,55 +493,75 @@ export class MonitoringDashboard {
           </div>
           
           <script>
+            function escapeHtml(str) {
+              if (!str) return '';
+              return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+            }
+
             async function loadMetrics() {
               try {
                 const response = await fetch('/api/monitoring/dashboard');
                 const data = await response.json();
-                
-                // Update health status
+
+                // Update health status - use textContent for security
                 const healthDiv = document.getElementById('health-status');
-                healthDiv.innerHTML = \`Status: <span class="health-\${data.health.status}">\${data.health.status.toUpperCase()}</span>\`;
-                document.getElementById('health-score').textContent = \`Score: \${data.health.score}\`;
-                
-                // Update issues
+                healthDiv.textContent = `Status: ${(data.health.status || '').toUpperCase()}`;
+                healthDiv.className = `health-${data.health.status || 'unknown'}`;
+                document.getElementById('health-score').textContent = `Score: ${data.health.score ?? 'N/A'}`;
+
+                // Update issues - use safe DOM manipulation
                 const issuesDiv = document.getElementById('health-issues');
-                if (data.health.issues.length > 0) {
-                  issuesDiv.innerHTML = \`<strong>Issues:</strong><ul>\${data.health.issues.map(i => \`<li>\${i}</li>\`).join('')}</ul>\`;
+                if (data.health.issues && data.health.issues.length > 0) {
+                  const ul = document.createElement('ul');
+                  data.health.issues.forEach(issue => {
+                    const li = document.createElement('li');
+                    li.textContent = issue;
+                    ul.appendChild(li);
+                  });
+                  issuesDiv.replaceChildren(ul);
                 } else {
-                  issuesDiv.innerHTML = '';
+                  issuesDiv.textContent = '';
                 }
-                
+
                 // Update system resources
-                document.getElementById('cpu-usage').textContent = \`\${(data.system.cpu.usage).toFixed(2)} ms\`;
-                document.getElementById('memory-usage').textContent = \`\${(data.system.memory.used / 1024 / 1024).toFixed(2)} MB\`;
-                document.getElementById('error-rate').textContent = \`\${(data.application.errors.total * 100).toFixed(2)}%\`;
-                
+                document.getElementById('cpu-usage').textContent = `${(data.system.cpu.usage ?? 0).toFixed(2)} ms`;
+                document.getElementById('memory-usage').textContent = `${((data.system.memory.used ?? 0) / 1024 / 1024).toFixed(2)} MB`;
+                document.getElementById('error-rate').textContent = `${((data.application.errors.total ?? 0) * 100).toFixed(2)}%`;
+
                 // Update business metrics
-                document.getElementById('active-users').textContent = data.business.activeUsers;
-                document.getElementById('conversion-rate').textContent = \`\${(data.business.conversionRate * 100).toFixed(2)}%\`;
-                document.getElementById('revenue').textContent = \`$\${data.business.revenue}\`;
-                
+                document.getElementById('active-users').textContent = data.business.activeUsers ?? 0;
+                document.getElementById('conversion-rate').textContent = `${((data.business.conversionRate ?? 0) * 100).toFixed(2)}%`;
+                document.getElementById('revenue').textContent = `$${data.business.revenue ?? 0}`;
+
               } catch (error) {
                 console.error('Failed to load metrics:', error);
               }
             }
-            
+
             async function loadErrors() {
               try {
                 const response = await fetch('/api/monitoring/errors');
                 const data = await response.json();
-                
+
                 const errorList = document.getElementById('error-list');
                 if (data.aggregations && data.aggregations.length > 0) {
-                  const html = '<ul>' + data.aggregations.slice(0, 5).map(error => \`
-                    <li>
-                      <strong>\${error.sample?.error || error.groupId}:</strong> 
-                      \${error.count} times
-                    </li>
-                  \`).join('') + '</ul>';
-                  errorList.innerHTML = html;
+                  const ul = document.createElement('ul');
+                  data.aggregations.slice(0, 5).forEach(error => {
+                    const li = document.createElement('li');
+                    const strong = document.createElement('strong');
+                    strong.textContent = error.sample?.error || error.groupId || 'Unknown error';
+                    li.appendChild(strong);
+                    li.appendChild(document.createTextNode(`: ${error.count || 0} times`));
+                    ul.appendChild(li);
+                  });
+                  errorList.replaceChildren(ul);
                 } else {
-                  errorList.innerHTML = 'No errors found';
+                  errorList.textContent = 'No errors found';
                 }
               } catch (error) {
                 console.error('Failed to load errors:', error);
@@ -569,8 +589,16 @@ export class MonitoringDashboard {
       return (req: Request, res: Response, next: any) => next();
     }
     
-    const username = this.config.auth.username || 'admin';
-    const password = this.config.auth.password || 'admin';
+    const username = this.config.auth.username;
+    const password = this.config.auth.password;
+    
+    if (!username || !password) {
+      console.warn('⚠️ 监控仪表板认证已启用但未配置用户名/密码，将拒绝所有访问');
+      return (req: Request, res: Response) => {
+        res.setHeader('WWW-Authenticate', 'Basic realm="Monitoring Dashboard"');
+        return res.status(401).send('Authentication required but credentials not configured');
+      };
+    }
     
     return (req: Request, res: Response, next: any) => {
       const authHeader = req.headers.authorization;

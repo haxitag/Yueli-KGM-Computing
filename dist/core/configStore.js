@@ -369,6 +369,21 @@ export class ConfigStore {
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(this.persistPath, JSON.stringify(this.config, null, 2));
     }
+    /**
+     * 从 `persistPath` 对应文件重新加载配置（与构造时磁盘加载语义一致：defaultConfig + 文件 patch）。
+     * 无持久路径或文件不存在时返回 `undefined` 且不修改内存配置。
+     */
+    reloadFromDisk() {
+        if (!this.persistPath) {
+            return undefined;
+        }
+        const diskPatch = readConfigFile(this.persistPath);
+        if (diskPatch === undefined) {
+            return undefined;
+        }
+        this.config = mergeConfig(defaultConfig, diskPatch);
+        return this.config;
+    }
 }
 function mergeConfig(base, patch) {
     return {
