@@ -91,7 +91,7 @@ export function getNativeCoreBindingStatus(): NativeCoreBindingStatus {
 export async function loadNativeCoreBinding(): Promise<NativeCoreBindingModule> {
   const status = getNativeCoreBindingStatus();
   if (!status.available || !status.libraryPath) {
-    throw new Error(`native_core_binding_unavailable:${status.reason ?? "binding_not_configured"}`);
+    throw new Error(`Yueli KGM Runtime core binding unavailable:${status.reason ?? "binding_not_configured"}`);
   }
   const cached = bindingModuleCache.get(status.libraryPath);
   if (cached) {

@@ -75,7 +75,7 @@ function loadFromFile(filePath) {
             return loadDetectedLocalModelLayout(path.dirname(filePath), detectedLayout);
         }
     }
-    throw new Error(`native_model_format_unsupported:${filePath}`);
+    throw new Error(`Yueli KGM Runtime model format unsupported:${filePath}`);
 }
 function loadFromOllamaModel(resolved) {
     const blobPath = digestToBlobPath(resolved.storeRoot, resolved.modelLayer.digest);
@@ -106,7 +106,7 @@ function loadFromOllamaModel(resolved) {
 function loadJsonCheckpoint(filePath) {
     const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (raw.format !== "kgm-transformer-checkpoint") {
-        throw new Error(`invalid_native_checkpoint_format:${filePath}`);
+        throw new Error(`Yueli KGM Runtime invalid checkpoint format:${filePath}`);
     }
     const tensors = {};
     for (const [name, tensor] of Object.entries(raw.tensors)) {
@@ -582,7 +582,7 @@ function loadFromDetectedFormat(filePath, format) {
         case "kgm-json":
             return loadJsonCheckpoint(filePath);
         default:
-            throw new Error(`native_model_format_unsupported:${filePath}`);
+            throw new Error(`Yueli KGM Runtime model format unsupported:${filePath}`);
     }
 }
 function resolveOllamaModel(modelPath, options) {

@@ -543,16 +543,16 @@ export class VllmLlmClient implements LlmClient {
 }
 
 /**
- * Slang推理引擎客户端
+ * SGLang 推理引擎客户端（OpenAI 兼容端点）
  */
-export class SlangLlmClient implements LlmClient {
+export class SglangLlmClient implements LlmClient {
   private baseUrl: string;
   private model: string;
   private apiKey?: string;
   private timeoutMs?: number;
 
   constructor(params: {
-    baseUrl: string; // Slang服务的完整URL
+    baseUrl: string;
     model: string;
     apiKey?: string;
     timeoutMs?: number;
@@ -564,7 +564,7 @@ export class SlangLlmClient implements LlmClient {
   }
 
   async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
-    // Slang通常使用与OpenAI兼容的API
+    // SGLang 通常使用与 OpenAI 兼容的 API
     const payload = {
       model: this.model,
       prompt,
@@ -595,7 +595,7 @@ export class SlangLlmClient implements LlmClient {
     };
 
     if (data.error) {
-      throw new LlmProviderApiError("slang", data.error.message);
+      throw new LlmProviderApiError("sglang", data.error.message);
     }
 
     const choice = data.choices?.[0];

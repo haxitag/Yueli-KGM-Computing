@@ -43,8 +43,8 @@ async function main() {
     console.log(`Ollama config from env: ${!!ollamaConfig}`);
     const vllmConfig = LlmProviderFactory.createConfigFromEnv('vllm');
     console.log(`vLLM config from env: ${!!vllmConfig}`);
-    const slangConfig = LlmProviderFactory.createConfigFromEnv('slang');
-    console.log(`Slang config from env: ${!!slangConfig}`);
+    const sglangConfig = LlmProviderFactory.createConfigFromEnv('sglang');
+    console.log(`SGLang config from env: ${!!sglangConfig}`);
     console.log("\n=== Provider Factory Test Completed ===");
 }
 main().catch((error) => {

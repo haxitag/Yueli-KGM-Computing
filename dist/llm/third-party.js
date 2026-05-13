@@ -382,9 +382,9 @@ export class VllmLlmClient {
     }
 }
 /**
- * Slang推理引擎客户端
+ * SGLang 推理引擎客户端（OpenAI 兼容端点）
  */
-export class SlangLlmClient {
+export class SglangLlmClient {
     baseUrl;
     model;
     apiKey;
@@ -396,7 +396,7 @@ export class SlangLlmClient {
         this.timeoutMs = params.timeoutMs;
     }
     async complete(prompt, options) {
-        // Slang通常使用与OpenAI兼容的API
+        // SGLang 通常使用与 OpenAI 兼容的 API
         const payload = {
             model: this.model,
             prompt,
@@ -415,7 +415,7 @@ export class SlangLlmClient {
         const endpoint = this.determineEndpoint();
         const data = (await postJson(joinUrl(this.baseUrl, endpoint), payload, { headers, timeoutMs: this.timeoutMs }));
         if (data.error) {
-            throw new LlmProviderApiError("slang", data.error.message);
+            throw new LlmProviderApiError("sglang", data.error.message);
         }
         const choice = data.choices?.[0];
         const text = choice?.text ?? choice?.message?.content ?? "";

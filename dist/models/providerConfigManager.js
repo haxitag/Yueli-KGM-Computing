@@ -234,12 +234,12 @@ ${this.config.providerRoutingRules.map(r => `- ${r.name}: ${r.condition} -> ${r.
                         provider.baseUrl = process.env.VLLM_BASE_URL;
                     }
                     break;
-                case 'slang':
+                case 'sglang':
                     if (!provider.apiKey) {
-                        provider.apiKey = process.env.SLANG_API_KEY || undefined;
+                        provider.apiKey = process.env.SGLANG_API_KEY || undefined;
                     }
                     if (!provider.baseUrl) {
-                        provider.baseUrl = process.env.SLANG_BASE_URL;
+                        provider.baseUrl = process.env.SGLANG_BASE_URL;
                     }
                     break;
                 case 'openai':

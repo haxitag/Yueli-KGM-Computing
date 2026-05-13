@@ -52,7 +52,7 @@
       "extraParams": {}
     },
     {
-      "type": "slang",
+      "type": "sglang",
       "baseUrl": "http://localhost:7860/v1",
       "model": "default-model",
       "apiKey": null,

@@ -122,7 +122,7 @@ export function createNativeServingBackend(
   if (preference === "native-core") {
     const nativeCore = getNativeCoreBindingStatus();
     if (!nativeCore.available) {
-      throw new Error(`native_core_backend_unavailable:${nativeCore.reason ?? "binding_not_configured"}`);
+      throw new Error(`Yueli KGM Runtime core backend unavailable:${nativeCore.reason ?? "binding_not_configured"}`);
     }
     return new NativeCoreServingBackend(modelPath, loaded, options);
   }
@@ -166,7 +166,7 @@ class NativeGpuServingBackend implements NativeServingBackend {
     if (this.simDelegate) {
       return this.simDelegate.complete(_prompt, _options);
     }
-    throw new Error("native_gpu_backend_not_implemented");
+    throw new Error("Yueli KGM Runtime GPU backend not implemented");
   }
 
   async *streamComplete(_prompt: string, _options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
@@ -174,7 +174,7 @@ class NativeGpuServingBackend implements NativeServingBackend {
       yield* this.simDelegate.streamComplete(_prompt, _options);
       return;
     }
-    throw new Error("native_gpu_backend_not_implemented");
+    throw new Error("Yueli KGM Runtime GPU backend not implemented");
   }
 
   metadata(): LoadedNativeModel["metadata"] {
@@ -253,7 +253,7 @@ class NativeCoreServingBackend implements NativeServingBackend {
       }
 
       if (!handle.complete) {
-        throw new Error("native_core_binding_missing_completion_methods");
+        throw new Error("Yueli KGM Runtime core binding missing completion methods");
       }
 
       yield {
@@ -318,12 +318,12 @@ class NativeCoreServingBackend implements NativeServingBackend {
       options: serializeBackendOptions(this.options),
     });
     if (!handle || handle.backend !== "native-core") {
-      throw new Error("native_core_binding_invalid_backend_handle");
+      throw new Error("Yueli KGM Runtime core binding invalid backend handle");
     }
     if (handle.isExecutable) {
       const executable = await handle.isExecutable();
       if (!executable) {
-        throw new Error(`native_core_backend_not_executable:${this.loaded.metadata.format}`);
+        throw new Error(`Yueli KGM Runtime core backend not executable:${this.loaded.metadata.format}`);
       }
     }
     const metrics = handle.schedulerMetrics ? await handle.schedulerMetrics() : undefined;
@@ -335,7 +335,7 @@ class NativeCoreServingBackend implements NativeServingBackend {
 
   private normalizeStreamEvent(event: CompletionStreamEvent): CompletionStreamEvent {
     if (!event || typeof event !== "object" || typeof event.type !== "string") {
-      throw new Error("native_core_binding_invalid_stream_event");
+      throw new Error("Yueli KGM Runtime core binding invalid stream event");
     }
     if (event.type === "started") {
       return {
@@ -357,7 +357,7 @@ class NativeCoreServingBackend implements NativeServingBackend {
         result: this.normalizeCompletionResult(event.result),
       };
     }
-    throw new Error(`native_core_binding_unknown_stream_event:${String((event as { type?: unknown }).type)}`);
+    throw new Error(`Yueli KGM Runtime core binding unknown stream event:${String((event as { type?: unknown }).type)}`);
   }
 
   private normalizeCompletionResult(result: CompletionResult): CompletionResult {
@@ -461,7 +461,7 @@ class JsReferenceNativeServingBackend implements NativeServingBackend {
 
   async *streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
     if (!this.loaded.executableModel || !this.loaded.tokenizer) {
-      throw new Error(`native_model_not_executable:${this.loaded.metadata.format}`);
+      throw new Error(`Yueli KGM Runtime model not executable:${this.loaded.metadata.format}`);
     }
 
     const request = this.enqueueRequest(prompt, options);
@@ -601,7 +601,7 @@ class JsReferenceNativeServingBackend implements NativeServingBackend {
 
   private prepareRequestState(request: ScheduledRequest): ScheduledRequestState {
     if (!this.loaded.executableModel || !this.loaded.tokenizer) {
-      throw new Error(`native_model_not_executable:${this.loaded.metadata.format}`);
+      throw new Error(`Yueli KGM Runtime model not executable:${this.loaded.metadata.format}`);
     }
 
     const tokenizer = this.loaded.tokenizer;

@@ -4,45 +4,59 @@
 
 ---
 
-## 🚀 0.2.4 版本更新
+## 🚀 0.2.5 版本更新
 
-### VMLX 最佳实践借鉴
+### Yueli KGM Runtime 品牌统一
 
-**1. 自适应混合精度量化**
-- 新增 `AdaptiveQuantizationManager`，根据模型层重要性动态选择量化精度
-- 支持 fp16、int8、nf4、JANG 2-bit 自适应策略
-- 关键层保持高精度，非关键层使用低精度，平衡性能与质量
+**1. 用户体验优化**
+- 统一品牌标识：将所有用户可见的错误消息、日志输出从 `native_runtime_*` 格式更新为 `Yueli KGM Runtime` 品牌标识
+- 更新 `src/models/modelManager.ts`、`src/native/backend.ts`、`src/native/loaders.ts`、`src/native/bindings.ts` 等核心模块的错误消息
+- 保持 API 兼容性：类名（`NativeRuntimeEngine`）、类型名、配置值（`runtime: 'native'`）、环境变量（`KGM_NATIVE_*`）保持不变
 
-**2. 分层缓存架构增强**
-- 新增 `LayeredCacheManager`，实现 L1（内存）+ L2（SSD）两级缓存
-- L1 快速缓存用于高频访问，L2 持久化缓存用于冷启动恢复
-- 智能驱逐策略（LRU），自动管理缓存大小
+**2. 文档体系完善**
+- 新增 `docs/新开发者的Yueli-KGM-Computing使用指南.md`：深入浅出的新开发者入门指南
+- 涵盖项目概述、快速开始、核心组件使用、本地推理引擎、进程内集成、环境变量配置、实用代码片段、调试与观测、生产部署建议、常见问题等
+- 代码示例为主，帮助新开发者快速上手
 
-**3. Prompt Lookup Decoding**
-- 新增 `PromptLookupDecoder`，无需 Draft Model 即可实现结构化输出加速
-- n-gram 匹配索引，加速重复模式的解码过程
-
-**4. 分布式推理增强**
-- 新增 `DistributedClusterManager`，支持多节点自动发现
-- 能力评分选举协调者，支持 Pipeline Parallel 分布式推理
-- Bonjour/mDNS 自动发现局域网节点
-
-**5. 多模态生态整合**
-- 新增 `IntegratedMultimodalEngine`，统一多模态服务接口
-- 支持图像生成、图像编辑、TTS、STT、视觉嵌入等能力
-- 灵活的服务注册机制，支持外部服务集成
+**3. 生产级发布准备**
+- 完善的错误处理和日志输出体系
+- 统一的用户可见消息格式
+- 增强的开发者体验
 
 ### 关键改进
-- **LLM 流式支持完善**: 为 `HttpLlmClient`、`OllamaLlmClient` 和 `ConfigurableLlmClient` 完整实现 `streamComplete` 接口
-- **返回解析增强**: `extractProgressiveFinalContent` 移除对 `"type"` 字段依赖，支持更多内容字段格式（`content`, `reasoning_content`, `text`, `output_text` 等）
-- **安全加固**: 完善 CORS 配置，避免通配符源与凭据同时设置的安全问题
-- **流式稳定性**: 为所有 SSE 相关函数添加 `headersSent` 检查，防止重复头部发送
+- **品牌一致性**: 统一的 `Yueli KGM Runtime` 品牌标识贯穿所有用户可见文本
+- **文档增强**: 新增面向新开发者的完整使用指南
+- **向后兼容**: 所有公共 API、类型定义、环境变量保持兼容
+- **构建验证**: 完整的 TypeScript 编译和类型诊断通过
 
-### 生产级就绪
-- 新增 `PRODUCTION_READINESS_REPORT.md` 生产级部署指南
-- 新增 `docs/VMLX与YueliKGM对比分析.md` VMLX 对比分析文档
-- 完整的端到端测试场景覆盖
-- 详细的风险分析和优化建议
+### 核心能力概览
+
+| 能力类别 | 支持内容 |
+|---------|---------|
+| **多厂商支持** | 30+ 主流 LLM 提供商（OpenAI、Anthropic、智谱、阿里云、百度千帆等） |
+| **本地推理引擎** | Ollama、vLLM、SGLang、LM Studio |
+| **原生推理** | Yueli KGM Runtime（进程内张量计算），支持 kgm-json、GGUF、safetensors |
+| **统一 API** | OpenAI Chat/Completions、Anthropic Messages 兼容 |
+| **智能路由** | 多 API Key 轮询、自动故障转移 |
+| **知识图谱** | 图检索、社区发现、规则推理 |
+| **多模态** | 图像嵌入、视觉检索 |
+
+### 快速入门
+
+```typescript
+// 创建 Yueli KGM Runtime 推理引擎
+import { NativeRuntimeEngine } from '@haxitag/yueli-kgm-computing';
+
+const engine = new NativeRuntimeEngine('./models/my-model.kgm.json', {
+promptCacheLimit: 8,
+sessionCacheLimit: 64,
+schedulerMaxBatchSize: 8,
+kvCacheMode: 'paged',
+});
+
+const result = await engine.complete('Hello, Yueli KGM!');
+console.log(result.text);
+```
 
 ---
 
@@ -488,9 +502,18 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明 0.2.3
+## 版本说明 0.2.5
 
 ### ✅ 新增功能
+
+**品牌统一与用户体验**
+- 统一品牌标识：将所有用户可见的错误消息、日志输出更新为 `Yueli KGM Runtime` 品牌标识
+- 更新核心模块：`src/models/modelManager.ts`、`src/native/backend.ts`、`src/native/loaders.ts`、`src/native/bindings.ts`
+- 保持 API 兼容性：类名、类型名、配置值、环境变量保持不变
+
+**文档体系完善**
+- 新增 `docs/新开发者的Yueli-KGM-Computing使用指南.md`：深入浅出的新开发者入门指南
+- 涵盖项目概述、快速开始、核心组件使用、本地推理引擎、进程内集成、环境变量配置、实用代码片段、调试与观测、生产部署建议、常见问题等
 
 **模型管理增强**
 - 模型扫描发现：`POST /v1/models/discover` 扫描宿主机可用模型
@@ -502,23 +525,16 @@ npm run dev:enhanced
 - 流式请求超时控制（默认 5 分钟），可通过 `KGM_STREAM_TIMEOUT_MS` 配置
 - 客户端断开连接检测与资源清理
 - **安全增强**: 添加 `headersSent` 检查，防止重复发送响应头
-- **安全增强**: 完善 `enhancedStart.ts` 中 `sendSse` 和 `relayUpstreamSse` 函数的超时、取消和错误处理
 
 **内存存储优化**
 - LRU/FIFO 驱逐策略
 - 用户级和全局级容量限制
 - 环境变量：`KGM_MEMORY_MAX_CHUNKS_PER_USER`、`KGM_MEMORY_MAX_TOTAL_CHUNKS`、`KGM_MEMORY_EVICTION_POLICY`
-- **修复**: 环境变量解析 NaN 处理，无效值自动回退到默认值
 
 **请求安全加固**
 - 请求体大小限制（默认 5MB），可通过 `KGM_HTTP_MAX_BODY_SIZE_MB` 配置
 - 完整 CORS 配置支持（`KGM_CORS_ORIGINS`、`KGM_CORS_METHODS`、`KGM_CORS_HEADERS`）
-- **修复**: CORS 安全漏洞，通配符模式下不再设置 `Access-Control-Allow-Credentials`
 - 敏感信息日志脱敏
-
-**Intent 解析鲁棒性**
-- 多种解析策略：直接解析、JSON 查找、函数调用模式匹配
-- 推理模式支持：`content`、`reasoning_content`、`reasoning`、`thinking`、`thought` 字段
 
 ### 🔒 安全修复
 
@@ -527,7 +543,6 @@ npm run dev:enhanced
 | CORS 安全漏洞 | 严重 | 通配符源模式下错误设置 `Access-Control-Allow-Credentials: true` |
 | sendSse 头部检查缺失 | 高 | 缺少 `headersSent` 检查，可能导致运行时错误 |
 | 环境变量解析错误 | 中 | `parseInt` 结果未验证 NaN |
-| enhancedStart.ts 流式安全 | 高 | `sendSse` 和 `relayUpstreamSse` 缺少超时和取消机制 |
 
 ### 📦 本地 GPU 推理支持
 
@@ -559,3 +574,9 @@ npm run test:native-gpu-models
   - MiniMax: 400K 上下文、KV 压缩
   - MiMo: 端侧量化、推荐 batch size
   - vMLX (Apple MLX): 统一内存、Metal 加速、前缀缓存、连续批处理
+
+---
+
+**官方资源**
+- **官方主页**: [https://haxitag.com/page/kgm](https://haxitag.com/page/kgm)
+- **社区平台**: [https://haxitag.com/community/yuelikgm](https://haxitag.com/community/yuelikgm)

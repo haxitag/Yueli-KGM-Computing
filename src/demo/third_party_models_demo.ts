@@ -7,7 +7,7 @@ import {
   DeepSeekLlmClient,
   OllamaLlmClient,
   VllmLlmClient,
-  SlangLlmClient
+  SglangLlmClient
 } from "../index.js";
 
 async function main(): Promise<void> {
@@ -121,26 +121,26 @@ async function main(): Promise<void> {
     console.error("   vLLM test failed:", error);
   }
 
-  // 示例8: 使用工厂创建Slang客户端
-  console.log("\n8. Testing Slang model:");
+  // 示例8: 使用工厂创建 SGLang 客户端
+  console.log("\n8. Testing SGLang model:");
   try {
-    const slangConfig = LlmProviderFactory.createConfigFromEnv('slang');
-    if (slangConfig) {
-      const slangClient = LlmProviderFactory.createClient(slangConfig);
-      const slangResult = await slangClient.complete("你好，请介绍一下自己", { maxTokens: 100 });
-      console.log(`   Slang response: ${slangResult.text.substring(0, 100)}...`);
+    const sglangConfig = LlmProviderFactory.createConfigFromEnv('sglang');
+    if (sglangConfig) {
+      const sglangClient = LlmProviderFactory.createClient(sglangConfig);
+      const sglangResult = await sglangClient.complete("你好，请介绍一下自己", { maxTokens: 100 });
+      console.log(`   SGLang response: ${sglangResult.text.substring(0, 100)}...`);
     } else {
-      console.log("   Slang base URL not found in environment, skipping test");
+      console.log("   SGLang base URL not found in environment, skipping test");
     }
   } catch (error) {
-    console.error("   Slang test failed:", error);
+    console.error("   SGLang test failed:", error);
   }
 
   // 示例9: 直接使用客户端类（不通过工厂）
   console.log("\n9. Testing direct client instantiation:");
   try {
     // 注意：这只是一个示例，实际使用时需要真实的API密钥和配置
-    console.log("   Clients available: ZhipuLlmClient, MinimaxLlmClient, OpenRouterLlmClient, NvidiaLlmClient, DeepSeekLlmClient, OllamaLlmClient, VllmLlmClient, SlangLlmClient");
+    console.log("   Clients available: ZhipuLlmClient, MinimaxLlmClient, OpenRouterLlmClient, NvidiaLlmClient, DeepSeekLlmClient, OllamaLlmClient, VllmLlmClient, SglangLlmClient");
   } catch (error) {
     console.error("   Direct client test failed:", error);
   }

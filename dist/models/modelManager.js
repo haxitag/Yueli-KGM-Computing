@@ -533,7 +533,7 @@ export class ManagedModelManager {
             const artifact = next.artifactId ? this.requireArtifact(next.artifactId) : undefined;
             const modelPath = artifact?.localPath;
             if (!modelPath) {
-                throw new Error("native_runtime_requires_local_model_artifact");
+                throw new Error("Yueli KGM Runtime requires local model artifact");
             }
             const engine = new NativeRuntimeEngine(modelPath, {
                 modelRef: resolveNativeModelRef(artifact, next),
@@ -559,13 +559,13 @@ export class ManagedModelManager {
                 .filter((note) => note !== "Executable GGUF tensors loaded into the CPU reference backend.")
                 .filter((note) => note !== "Safetensors header parsed successfully.")
                 .filter((note) => note !== "Sharded safetensors index parsed successfully.")
-                .map((note) => `Native diagnostics: ${note}`);
-            const retainedNotes = next.notes.filter((note) => !note.startsWith("Native model format:") &&
-                !note.startsWith("Native execution backend:") &&
-                !note.startsWith("Native serving backend:") &&
-                !note.startsWith("Native backend hints:") &&
-                !note.startsWith("Native core binding:") &&
-                !note.startsWith("Native diagnostics:"));
+                .map((note) => `Yueli KGM Runtime diagnostics: ${note}`);
+            const retainedNotes = next.notes.filter((note) => !note.startsWith("Yueli KGM Runtime model format:") &&
+                !note.startsWith("Yueli KGM Runtime execution backend:") &&
+                !note.startsWith("Yueli KGM Runtime serving backend:") &&
+                !note.startsWith("Yueli KGM Runtime backend hints:") &&
+                !note.startsWith("Yueli KGM Runtime core binding:") &&
+                !note.startsWith("Yueli KGM Runtime diagnostics:"));
             this.nativeRuntimes.set(id, engine);
             this.ensureRuntimeState(next);
             this.patchRuntime(id, {
@@ -573,13 +573,13 @@ export class ManagedModelManager {
                 healthStatus: engine.isExecutable() ? "healthy" : "degraded",
                 notes: [
                     ...retainedNotes,
-                    `Native model format: ${nativeMetadata.format}`,
-                    `Native execution backend: ${engine.executionBackend() ?? "none"}`,
-                    `Native serving backend: ${engine.servingBackend()}`,
-                    `Native backend hints: ${manifest.backendHints.join(", ")}`,
+                    `Yueli KGM Runtime model format: ${nativeMetadata.format}`,
+                    `Yueli KGM Runtime execution backend: ${engine.executionBackend() ?? "none"}`,
+                    `Yueli KGM Runtime serving backend: ${engine.servingBackend()}`,
+                    `Yueli KGM Runtime backend hints: ${manifest.backendHints.join(", ")}`,
                     nativeCore.configured
-                        ? `Native core binding: ${nativeCore.available ? "available" : `unavailable (${nativeCore.reason ?? "unknown"})`}`
-                        : "Native core binding: not configured",
+                        ? `Yueli KGM Runtime core binding: ${nativeCore.available ? "available" : `unavailable (${nativeCore.reason ?? "unknown"})`}`
+                        : "Yueli KGM Runtime core binding: not configured",
                     ...nativeDiagnostics,
                 ],
                 metadata: {
@@ -748,7 +748,7 @@ export class ManagedModelManager {
             if (runtime.runtime === "native") {
                 const engine = this.nativeRuntimes.get(runtime.id);
                 if (!engine) {
-                    throw new Error(`native_runtime_not_started:${runtime.id}`);
+                    throw new Error(`Yueli KGM Runtime not started:${runtime.id}`);
                 }
                 for await (const event of engine.streamComplete(prompt, {
                     ...options,
@@ -878,7 +878,7 @@ export class ManagedModelManager {
                 if (runtime.runtime === "native") {
                     const engine = this.nativeRuntimes.get(runtime.id);
                     if (!engine) {
-                        throw new Error(`native_runtime_not_started:${runtime.id}`);
+                        throw new Error(`Yueli KGM Runtime not started:${runtime.id}`);
                     }
                     const result = await engine.complete(prompt, {
                         ...options,
@@ -1184,7 +1184,7 @@ export class ManagedModelManager {
                     args: runtime.args ?? ["serve"],
                 };
             case "native":
-                throw new Error("native_runtime_is_single_process_and_does_not_spawn_external_workers");
+                throw new Error("Yueli KGM Runtime is single process and does not spawn external workers");
             default:
                 throw new Error(`unsupported_runtime:${runtime.runtime}`);
         }

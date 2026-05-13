@@ -13,7 +13,7 @@ export function createNativeServingBackend(modelPath, options) {
     if (preference === "native-core") {
         const nativeCore = getNativeCoreBindingStatus();
         if (!nativeCore.available) {
-            throw new Error(`native_core_backend_unavailable:${nativeCore.reason ?? "binding_not_configured"}`);
+            throw new Error(`Yueli KGM Runtime core backend unavailable:${nativeCore.reason ?? "binding_not_configured"}`);
         }
         return new NativeCoreServingBackend(modelPath, loaded, options);
     }
@@ -53,14 +53,14 @@ class NativeGpuServingBackend {
         if (this.simDelegate) {
             return this.simDelegate.complete(_prompt, _options);
         }
-        throw new Error("native_gpu_backend_not_implemented");
+        throw new Error("Yueli KGM Runtime GPU backend not implemented");
     }
     async *streamComplete(_prompt, _options) {
         if (this.simDelegate) {
             yield* this.simDelegate.streamComplete(_prompt, _options);
             return;
         }
-        throw new Error("native_gpu_backend_not_implemented");
+        throw new Error("Yueli KGM Runtime GPU backend not implemented");
     }
     metadata() {
         return this.loaded.metadata;
@@ -129,7 +129,7 @@ class NativeCoreServingBackend {
                 return;
             }
             if (!handle.complete) {
-                throw new Error("native_core_binding_missing_completion_methods");
+                throw new Error("Yueli KGM Runtime core binding missing completion methods");
             }
             yield {
                 type: "started",
@@ -189,12 +189,12 @@ class NativeCoreServingBackend {
             options: serializeBackendOptions(this.options),
         });
         if (!handle || handle.backend !== "native-core") {
-            throw new Error("native_core_binding_invalid_backend_handle");
+            throw new Error("Yueli KGM Runtime core binding invalid backend handle");
         }
         if (handle.isExecutable) {
             const executable = await handle.isExecutable();
             if (!executable) {
-                throw new Error(`native_core_backend_not_executable:${this.loaded.metadata.format}`);
+                throw new Error(`Yueli KGM Runtime core backend not executable:${this.loaded.metadata.format}`);
             }
         }
         const metrics = handle.schedulerMetrics ? await handle.schedulerMetrics() : undefined;
@@ -205,7 +205,7 @@ class NativeCoreServingBackend {
     }
     normalizeStreamEvent(event) {
         if (!event || typeof event !== "object" || typeof event.type !== "string") {
-            throw new Error("native_core_binding_invalid_stream_event");
+            throw new Error("Yueli KGM Runtime core binding invalid stream event");
         }
         if (event.type === "started") {
             return {
@@ -227,7 +227,7 @@ class NativeCoreServingBackend {
                 result: this.normalizeCompletionResult(event.result),
             };
         }
-        throw new Error(`native_core_binding_unknown_stream_event:${String(event.type)}`);
+        throw new Error(`Yueli KGM Runtime core binding unknown stream event:${String(event.type)}`);
     }
     normalizeCompletionResult(result) {
         const normalized = {
@@ -324,7 +324,7 @@ class JsReferenceNativeServingBackend {
     }
     async *streamComplete(prompt, options) {
         if (!this.loaded.executableModel || !this.loaded.tokenizer) {
-            throw new Error(`native_model_not_executable:${this.loaded.metadata.format}`);
+            throw new Error(`Yueli KGM Runtime model not executable:${this.loaded.metadata.format}`);
         }
         const request = this.enqueueRequest(prompt, options);
         try {
@@ -451,7 +451,7 @@ class JsReferenceNativeServingBackend {
     }
     prepareRequestState(request) {
         if (!this.loaded.executableModel || !this.loaded.tokenizer) {
-            throw new Error(`native_model_not_executable:${this.loaded.metadata.format}`);
+            throw new Error(`Yueli KGM Runtime model not executable:${this.loaded.metadata.format}`);
         }
         const tokenizer = this.loaded.tokenizer;
         const queueWaitMs = Date.now() - request.enqueuedAt;

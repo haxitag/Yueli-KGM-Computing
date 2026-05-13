@@ -1,5 +1,19 @@
 // KGM-Computing Playground 前端脚本 - 信任委托与代理API
 
+/**
+ * 本机推理：浏览器凭证统一主键为 `apiKeys.localhost`（及 localhost_2/3）。
+ * 服务模式为这些类型时，Bearer 优先读 localhost，再回退到各引擎独立旧键（兼容老配置）。
+ */
+const LOCALHOST_BEARER_PROVIDERS = new Set([
+    'ollama',
+    'vllm',
+    'sglang',
+    'koboldcpp',
+    'text_generation_webui',
+    'lmstudio',
+    'vmlx',
+]);
+
 class KGMTrustProxyPlayground {
     constructor() {
         this.initializeElements();
@@ -370,6 +384,7 @@ class KGMTrustProxyPlayground {
 
     renderModelModal({ title, includeGenerationControls }) {
         const isNative = this.currentConfig.provider === 'yueli-native';
+        const sel = (v) => (this.currentConfig.provider === v ? 'selected' : '');
         this.modalTitle.textContent = title;
         this.modalBody.innerHTML = `
             <div class="config-form">
@@ -387,26 +402,50 @@ class KGMTrustProxyPlayground {
                     <label for="modal-provider-select">服务模式:</label>
                     <select id="modal-provider-select">
                         <option value="">自动选择 Provider</option>
-                        <option value="yueli-native" ${isNative ? 'selected' : ''}>Yueli-KGM 本地推理</option>
-                        <option value="openai" ${this.currentConfig.provider === 'openai' ? 'selected' : ''}>OpenAI</option>
-                        <option value="zhipu" ${this.currentConfig.provider === 'zhipu' ? 'selected' : ''}>智谱AI</option>
-                        <option value="minimax" ${this.currentConfig.provider === 'minimax' ? 'selected' : ''}>Minimax</option>
-                        <option value="openrouter" ${this.currentConfig.provider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
-                        <option value="nvidia" ${this.currentConfig.provider === 'nvidia' ? 'selected' : ''}>NVIDIA</option>
-                        <option value="deepseek" ${this.currentConfig.provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
-                        <option value="xiaomi" ${this.currentConfig.provider === 'xiaomi' ? 'selected' : ''}>小米 MiMo</option>
-                        <option value="gemini" ${this.currentConfig.provider === 'gemini' ? 'selected' : ''}>Google Gemini</option>
-                        <option value="anthropic" ${this.currentConfig.provider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
-                        <option value="aliyun" ${this.currentConfig.provider === 'aliyun' ? 'selected' : ''}>阿里云百炼</option>
-                        <option value="modelscope" ${this.currentConfig.provider === 'modelscope' ? 'selected' : ''}>ModelScope</option>
-                        <option value="ollama" ${this.currentConfig.provider === 'ollama' ? 'selected' : ''}>Ollama</option>
-                        <option value="vllm" ${this.currentConfig.provider === 'vllm' ? 'selected' : ''}>vLLM</option>
-                        <option value="sglang" ${this.currentConfig.provider === 'sglang' ? 'selected' : ''}>SGLang</option>
-                        <option value="custom" ${this.currentConfig.provider === 'custom' ? 'selected' : ''}>自定义（OpenAI 兼容）</option>
+                        <optgroup label="云端 · 专用适配">
+                            <option value="openai" ${sel('openai')}>OpenAI</option>
+                            <option value="zhipu" ${sel('zhipu')}>智谱 AI</option>
+                            <option value="minimax" ${sel('minimax')}>Minimax</option>
+                            <option value="openrouter" ${sel('openrouter')}>OpenRouter</option>
+                            <option value="nvidia" ${sel('nvidia')}>NVIDIA NIM</option>
+                            <option value="deepseek" ${sel('deepseek')}>DeepSeek</option>
+                            <option value="xiaomi" ${sel('xiaomi')}>小米 MiMo</option>
+                            <option value="gemini" ${sel('gemini')}>Google Gemini</option>
+                            <option value="anthropic" ${sel('anthropic')}>Anthropic Claude</option>
+                            <option value="aliyun" ${sel('aliyun')}>阿里云（专用适配）</option>
+                            <option value="modelscope" ${sel('modelscope')}>ModelScope</option>
+                            <option value="moonshot" ${sel('moonshot')}>Moonshot 月之暗面</option>
+                        </optgroup>
+                        <optgroup label="国内 · OpenAI 兼容">
+                            <option value="aliyun_bailian" ${sel('aliyun_bailian')}>阿里百炼（兼容模式）</option>
+                            <option value="baidu_qianfan" ${sel('baidu_qianfan')}>百度千帆</option>
+                            <option value="volcengine_ark" ${sel('volcengine_ark')}>火山方舟</option>
+                        </optgroup>
+                        <optgroup label="国际 · OpenAI 兼容">
+                            <option value="groq" ${sel('groq')}>Groq</option>
+                            <option value="together" ${sel('together')}>Together AI</option>
+                            <option value="fireworks" ${sel('fireworks')}>Fireworks</option>
+                            <option value="perplexity" ${sel('perplexity')}>Perplexity</option>
+                            <option value="mistral" ${sel('mistral')}>Mistral</option>
+                            <option value="huggingface" ${sel('huggingface')}>Hugging Face（OpenAI 兼容入口）</option>
+                            <option value="azure_openai" ${sel('azure_openai')}>Azure OpenAI</option>
+                            <option value="aws_bedrock" ${sel('aws_bedrock')}>AWS Bedrock（经 OpenAI 网关）</option>
+                        </optgroup>
+                        <optgroup label="本地 (localhost) · 本机推理">
+                            <option value="yueli-native" ${isNative ? 'selected' : ''}>Yueli-KGM 本地</option>
+                            <option value="ollama" ${sel('ollama')}>Ollama</option>
+                            <option value="vllm" ${sel('vllm')}>vLLM</option>
+                            <option value="sglang" ${sel('sglang')}>SGLang</option>
+                            <option value="lmstudio" ${sel('lmstudio')}>LM Studio</option>
+                            <option value="vmlx" ${sel('vmlx')}>vMLX / MLX 本地服务</option>
+                            <option value="koboldcpp" ${sel('koboldcpp')}>KoboldCpp</option>
+                            <option value="text_generation_webui" ${sel('text_generation_webui')}>Text Gen WebUI (oobabooga)</option>
+                        </optgroup>
+                        <option value="custom" ${sel('custom')}>自定义（OpenAI 兼容）</option>
                     </select>
                 </div>
                 <div class="form-group" id="modal-provider-help" ${isNative ? 'style="display:none;"' : ''}>
-                    <span class="helper-text">第三方 Provider 模式下，请填写要透传给 <code>/v1/*</code> 的模型名。</span>
+                    <span class="helper-text">第三方模式下请填写要透传给 <code>/v1/*</code> 的模型名。<code>aws_bedrock</code> / <code>azure_openai</code> / <code>huggingface</code> 需在服务端配置 OpenAI 兼容根 URL（见 <code>docs/deployment-and-api.md</code>）。</span>
                 </div>
                 <div class="form-group">
                     <label for="modal-model-name">模型名 / Runtime 名称:</label>
@@ -959,8 +998,8 @@ class KGMTrustProxyPlayground {
 
         const sections = [
             {
-                title: '云端 API 服务商',
-                desc: '对接 OpenAI 兼容商业 API 时使用。保存于本机浏览器 localStorage。',
+                title: '云端 · 专用适配',
+                desc: '对接各厂商原生或专用 HTTP 客户端。保存于本机浏览器 localStorage。',
                 fields: [
                     { key: 'openai', label: 'OpenAI', placeholder: 'sk-...', hint: 'platform.openai.com', multiKey: true },
                     { key: 'zhipu', label: '智谱 AI', placeholder: 'API Key', hint: 'open.bigmodel.cn', multiKey: true },
@@ -971,22 +1010,50 @@ class KGMTrustProxyPlayground {
                     { key: 'xiaomi', label: '小米 MiMo', placeholder: 'API Key', hint: 'api.xiaomi.ai', multiKey: true },
                     { key: 'gemini', label: 'Google Gemini', placeholder: 'API Key', hint: 'ai.google.dev', multiKey: true },
                     { key: 'anthropic', label: 'Anthropic Claude', placeholder: 'sk-ant-...', hint: 'console.anthropic.com', multiKey: true },
-                    { key: 'aliyun', label: '阿里云百炼', placeholder: 'Bearer Token', hint: 'bailian.console.aliyun.com', multiKey: true },
+                    { key: 'aliyun', label: '阿里云（专用适配）', placeholder: 'Bearer Token', hint: '与 aliyun_bailian 区分', multiKey: true },
                     { key: 'modelscope', label: 'ModelScope', placeholder: 'Token', hint: 'modelscope.cn', multiKey: true },
+                    { key: 'moonshot', label: 'Moonshot 月之暗面', placeholder: 'sk-...', hint: 'platform.moonshot.cn', multiKey: true },
                 ],
             },
             {
-                title: '本地与自托管推理引擎',
-                desc: 'Ollama / vLLM / SGLang 等通常无需 Key；若前面挂了鉴权网关或托管实例启用了 Bearer，请填写。',
+                title: '国内 · OpenAI 兼容',
+                desc: 'DashScope / 千帆 / 方舟等 OpenAI 形端点。',
                 fields: [
-                    { key: 'ollama', label: 'Ollama', placeholder: '通常留空', hint: 'localhost:11434' },
-                    { key: 'vllm', label: 'vLLM', placeholder: '可选 Bearer', hint: 'localhost:8000/v1' },
-                    { key: 'slang', label: 'SGLang', placeholder: '可选 Bearer', hint: 'OpenAI 兼容端口，如 7860/v1' },
+                    { key: 'aliyun_bailian', label: '阿里百炼（兼容）', placeholder: 'DASHSCOPE_API_KEY', hint: 'dashscope.aliyuncs.com/compatible-mode/v1', multiKey: true },
+                    { key: 'baidu_qianfan', label: '百度千帆', placeholder: 'API Key', hint: 'qianfan.baidubce.com/v2', multiKey: true },
+                    { key: 'volcengine_ark', label: '火山方舟', placeholder: 'ARK API Key', hint: 'ark.cn-beijing.volces.com/api/v3', multiKey: true },
+                ],
+            },
+            {
+                title: '国际 · OpenAI 兼容',
+                desc: '多数为云端 API；Bedrock 需经自建 OpenAI 形网关。',
+                fields: [
+                    { key: 'groq', label: 'Groq', placeholder: 'gsk_...', hint: 'api.groq.com', multiKey: true },
+                    { key: 'together', label: 'Together AI', placeholder: 'API Key', hint: 'api.together.xyz', multiKey: true },
+                    { key: 'fireworks', label: 'Fireworks', placeholder: 'API Key', hint: 'api.fireworks.ai', multiKey: true },
+                    { key: 'perplexity', label: 'Perplexity', placeholder: 'pplx-...', hint: 'api.perplexity.ai', multiKey: true },
+                    { key: 'mistral', label: 'Mistral', placeholder: 'API Key', hint: 'api.mistral.ai', multiKey: true },
+                    { key: 'huggingface', label: 'Hugging Face（OpenAI 兼容入口）', placeholder: 'HF_TOKEN', hint: '自建或 Router 的 /v1 根 URL', multiKey: true },
+                    { key: 'azure_openai', label: 'Azure OpenAI', placeholder: 'API Key', hint: 'resource.openai.azure.com', multiKey: true },
+                    { key: 'aws_bedrock', label: 'AWS Bedrock（经网关）', placeholder: '网关 Bearer（可选）', hint: 'BEDROCK_OPENAI_COMPAT_BASE_URL', multiKey: true },
+                ],
+            },
+            {
+                title: '本地 (localhost)',
+                desc: '本机 Ollama、vLLM、SGLang、Yueli-KGM 本地、vMLX/MLX、LM Studio、KoboldCpp、Text Gen WebUI 等若前有鉴权或统一网关，请填「本地统一 Bearer」主键 localhost；仍兼容旧版 per-engine 键。',
+                fields: [
+                    {
+                        key: 'localhost',
+                        label: '本地统一 Bearer（localhost）',
+                        placeholder: '可选；127.0.0.1 前置网关或本地服务鉴权',
+                        hint: '适用于：Yueli-KGM 本地、Ollama、vLLM、SGLang、LM Studio、vMLX/MLX 本地 OpenAI 端口、KoboldCpp、Text Gen WebUI',
+                        multiKey: true,
+                    },
                 ],
             },
             {
                 title: '其它',
-                desc: 'Minimax 需与 Group ID 同配；自定义上游用于 OpenAI 兼容但非上述厂商的 Token。',
+                desc: 'Minimax 需与 Group ID 同配；自定义上游用于非上述厂商的 Token。',
                 fields: [
                     { key: 'custom', label: '自定义 OpenAI 兼容', placeholder: 'Bearer Token', hint: '服务模式选「自定义」时使用' },
                     {
@@ -1003,8 +1070,9 @@ class KGMTrustProxyPlayground {
         let bodyHtml = `
             <div class="config-form api-keys-modal">
                 <p class="api-keys-intro">
-                    凭证仅保存在本机浏览器。在下方选择「服务模式」并发起推理时，若已填写对应 Key，请求将附带
-                    <code>Authorization: Bearer …</code>（便于覆盖服务端默认上游鉴权；本地引擎无鉴权可留空）。
+                    凭证仅保存在本机浏览器。<strong>本机推理</strong>请优先在「本地 (localhost)」分组填写统一主键
+                    <code>localhost</code>（及备用 <code>localhost_2</code> / <code>localhost_3</code>）；选择对应服务模式时请求将附带
+                    <code>Authorization: Bearer …</code>（仍兼容各引擎独立旧键）。云端厂商使用各自分区字段。
                 </p>
         `;
 
@@ -1062,35 +1130,18 @@ class KGMTrustProxyPlayground {
         this.modalBody.innerHTML = bodyHtml;
 
         const saveBtn = document.getElementById('save-api-keys');
-        // 支持多密钥：主 key + 备用 key_2 + 备用 key_3
-        const keyIds = [
-            'openai', 'openai_2', 'openai_3',
-            'zhipu', 'zhipu_2', 'zhipu_3',
-            'minimax', 'minimax_2', 'minimax_3',
-            'openrouter', 'openrouter_2', 'openrouter_3',
-            'nvidia', 'nvidia_2', 'nvidia_3',
-            'deepseek', 'deepseek_2', 'deepseek_3',
-            'xiaomi', 'xiaomi_2', 'xiaomi_3',
-            'gemini', 'gemini_2', 'gemini_3',
-            'anthropic', 'anthropic_2', 'anthropic_3',
-            'aliyun', 'aliyun_2', 'aliyun_3',
-            'modelscope', 'modelscope_2', 'modelscope_3',
-            'ollama', 'vllm', 'slang', 'custom',
-            'minimaxGroupId',
-        ];
         saveBtn.addEventListener('click', () => {
             this.currentConfig.apiKeys = this.currentConfig.apiKeys || {};
-            for (const id of keyIds) {
-                const el = document.getElementById(`api-key-${id}`);
-                if (el) {
-                    const value = el.value.trim();
-                    if (value) {
-                        this.currentConfig.apiKeys[id] = value;
-                    } else {
-                        delete this.currentConfig.apiKeys[id];
-                    }
+            const root = this.modalBody.querySelector('.api-keys-modal') || this.modalBody;
+            root.querySelectorAll('input[id^="api-key-"]').forEach((el) => {
+                const id = el.id.slice('api-key-'.length);
+                const value = el.value.trim();
+                if (value) {
+                    this.currentConfig.apiKeys[id] = value;
+                } else {
+                    delete this.currentConfig.apiKeys[id];
                 }
-            }
+            });
             this.saveConfigToLocalStorage();
             this.hideModal();
             this.showToast('API Keys 已保存', 'success');
@@ -1099,26 +1150,28 @@ class KGMTrustProxyPlayground {
         this.showModal();
     }
 
-    /** 当前服务模式对应的 Bearer；与 LlmProviderFactory / 路由 provider 名称对齐 */
+    /** 当前服务模式对应的 Bearer；本机推理优先 apiKeys.localhost，与 LlmProviderFactory 类型对齐 */
     getApiKeyForProvider(provider) {
         const keys = this.currentConfig.apiKeys || {};
-        if (!provider || provider === 'yueli-native') {
+        if (!provider) {
             return '';
         }
-        const map = {
-            openai: keys.openai,
-            zhipu: keys.zhipu,
-            minimax: keys.minimax,
-            openrouter: keys.openrouter,
-            nvidia: keys.nvidia,
-            deepseek: keys.deepseek,
-            ollama: keys.ollama,
-            vllm: keys.vllm,
-            sglang: keys.slang || keys.sglang,
-            custom: keys.custom,
+        const pick = (base) => {
+            for (const id of [base, `${base}_2`, `${base}_3`]) {
+                const v = keys[id];
+                if (typeof v === 'string' && v.trim()) {
+                    return v.trim();
+                }
+            }
+            return '';
         };
-        const raw = map[provider];
-        return typeof raw === 'string' ? raw.trim() : '';
+        if (provider === 'yueli-native') {
+            return pick('localhost');
+        }
+        if (LOCALHOST_BEARER_PROVIDERS.has(provider)) {
+            return pick('localhost') || pick(provider);
+        }
+        return pick(provider);
     }
 
     buildPlaygroundAuthHeaders() {
@@ -1890,6 +1943,12 @@ class KGMTrustProxyPlayground {
         if (!normalized.apiKeys || typeof normalized.apiKeys !== 'object') {
             normalized.apiKeys = {};
         }
+        if (normalized.provider === 'slang') {
+            normalized.provider = 'sglang';
+        }
+        if (normalized.provider === 'litellm') {
+            normalized.provider = '';
+        }
         return normalized;
     }
 
@@ -2586,7 +2645,39 @@ class KGMTrustProxyPlayground {
     }
 }
 
-const PROVIDER_ALIASES = ['openai', 'zhipu', 'minimax', 'openrouter', 'nvidia', 'deepseek', 'ollama', 'vllm', 'sglang', 'custom'];
+const PROVIDER_ALIASES = [
+    'aliyun',
+    'aliyun_bailian',
+    'anthropic',
+    'aws_bedrock',
+    'azure_openai',
+    'baidu_qianfan',
+    'custom',
+    'deepseek',
+    'fireworks',
+    'gemini',
+    'groq',
+    'huggingface',
+    'koboldcpp',
+    'lmstudio',
+    'minimax',
+    'mistral',
+    'modelscope',
+    'moonshot',
+    'nvidia',
+    'ollama',
+    'openai',
+    'openrouter',
+    'perplexity',
+    'sglang',
+    'text_generation_webui',
+    'together',
+    'volcengine_ark',
+    'vllm',
+    'vmlx',
+    'xiaomi',
+    'zhipu',
+];
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', () => {

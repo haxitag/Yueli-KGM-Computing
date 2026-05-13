@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": false,
   "license": "MIT",
   "description": "Yueli KGM: OpenAI/Anthropic-compatible gateway, native engine, Playground; docs on haxitag.com",
