@@ -176,7 +176,8 @@ export type AutoRoutingEvaluationConfigPatch = Partial<AutoRoutingEvaluationConf
   verifier?: AutoRoutingEvaluatorConfigPatch;
 };
 
-export type AutoRoutingConfigPatch = Partial<AutoRoutingConfig> & {
+/** `evaluation` 单独 deep-patch；不可与 `Partial<AutoRoutingConfig>` 直接相交，否则 TS 会要求写满 judge/verifier。 */
+export type AutoRoutingConfigPatch = Omit<Partial<AutoRoutingConfig>, "evaluation"> & {
   thresholds?: Partial<AutoRoutingConfig["thresholds"]>;
   weights?: Partial<AutoRoutingConfig["weights"]>;
   pricing?: {

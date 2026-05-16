@@ -19,6 +19,9 @@ export function createNativeServingBackend(modelPath, options) {
     }
     return new JsReferenceNativeServingBackend(modelPath, loaded, options);
 }
+/** Stable prefix for integration tests; trailing text explains remediation. */
+const NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG = "native_gpu_backend_not_implemented: accelerated inference path is not shipped in this build; " +
+    "set KGM_NATIVE_GPU_SIMULATED=1 to delegate to js-reference for simulation, or choose servingBackend js-reference / native-core.";
 class NativeGpuServingBackend {
     kind = "native-gpu";
     modelPath;
@@ -53,14 +56,14 @@ class NativeGpuServingBackend {
         if (this.simDelegate) {
             return this.simDelegate.complete(_prompt, _options);
         }
-        throw new Error("native_gpu_backend_not_implemented");
+        throw new Error(NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG);
     }
     async *streamComplete(_prompt, _options) {
         if (this.simDelegate) {
             yield* this.simDelegate.streamComplete(_prompt, _options);
             return;
         }
-        throw new Error("native_gpu_backend_not_implemented");
+        throw new Error(NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG);
     }
     metadata() {
         return this.loaded.metadata;

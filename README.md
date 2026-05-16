@@ -8,11 +8,33 @@
 > npm install @haxitag/yueli-kgm-computing@latest
 > ```
 
+**快速入口**：[官网](https://haxitag.com/page/kgm) · [社区主题](https://haxitag.com/community/yuelikgm) · [npm 包](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing) · [GitHub](https://github.com/haxitag/Yueli-KGM-Computing)
+
 ---
 
-## 🚀 0.2.6 版本更新
+## 文档与社区（HaxiTAG）
 
-### Yueli KGM Runtime 品牌统一
+完整文档在 [阅粒知识计算引擎社区](https://haxitag.com/community/yuelikgm) 发布（需邮箱验证访问正文）；npm 包仅含 `README` 与运行时代码。
+
+| 主题 | 链接 |
+|------|------|
+| **Yueli-KGM-Computing 新开发者使用指南** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw) |
+| **Yueli KGM Computing 开源组件说明** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-es923485r01d) |
+| **Yueli 推理引擎优化 — 性能优化配置使用指南** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-k9gyjbpkyq8t) |
+| **后端 Rust / Go / Python / C++ 集成阅粒知识计算引擎** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-7ipzi1bv7gho) |
+| **haxitag/yueli-kgm-computing 集成具体操作实践** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-2muqnfrly7jc) |
+| **官网与产品页** | [haxitag.com/page/kgm](https://haxitag.com/page/kgm) |
+| **npm 包** | [@haxitag/yueli-kgm-computing](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing) |
+| **GitHub 开源仓库** | [haxitag/Yueli-KGM-Computing](https://github.com/haxitag/Yueli-KGM-Computing) |
+
+---
+
+## 🚀 0.2.7 版本更新
+
+### 本版要点
+- **Critical E2E**：补充 `/v1/chat/completions` 与 `/v1/responses` 的 SSE 流式覆盖（含 `tool_calls`、`response.output_item.added` 等）；记录「同步路径 `502`」与「流式先返回 SSE `200` 后上游失败截断」的差异（见 `tests/e2e/critical-review-matrix.e2e.test.ts` 与部署文档）。
+
+### 0.2.6 起延续：Yueli KGM Runtime 品牌统一
 
 **1. 用户体验优化**
 - 统一品牌标识：将所有用户可见的错误消息、日志输出从 `native_runtime_*` 格式更新为 `Yueli KGM Runtime` 品牌标识
@@ -20,8 +42,7 @@
 - 保持 API 兼容性：类名（`NativeRuntimeEngine`）、类型名、配置值（`runtime: 'native'`）、环境变量（`KGM_NATIVE_*`）保持不变
 
 **2. 文档体系完善**
-- 新增 `docs/新开发者的Yueli-KGM-Computing使用指南.md`：深入浅出的新开发者入门指南
-- 涵盖项目概述、快速开始、核心组件使用、本地推理引擎、进程内集成、环境变量配置、实用代码片段、调试与观测、生产部署建议、常见问题等
+- [新开发者使用指南](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw)（社区）：项目概述、快速开始、核心组件、本地推理、进程内集成、环境变量、调试与生产部署
 - 代码示例为主，帮助新开发者快速上手
 
 **3. 生产级发布准备**
@@ -67,9 +88,11 @@ console.log(result.text);
 ---
 
 - **环境**：Node **20.x**（与 `package.json` 的 `engines` 一致）
-- **官方文档**（能力说明、部署、API、Playground 等）：[阅粒知识计算引擎 — HaxiTAG](https://www.haxitag.com/read/yueli-knowledge-computation-engine-system)
-- **使用指南**（企业场景、落地与 Q&A 等）：[Yueli KGM Engine 使用指南](https://www.haxitag.com/articles/yueli-kgm-engine-enterprise-ai-qa-solution)
-- **npm 包内容**：`dist/`（运行时代码）+ `playground/`（Web Playground 静态资源）+ 本 `README`；**不**再内置仓库中的大量 `docs/*.md`，以减小包体；完整文档以官网为准
+- **官网**：[Yueli KGM Computing 产品页](https://haxitag.com/page/kgm)
+- **社区文档**：[阅粒知识计算引擎主题](https://haxitag.com/community/yuelikgm)（含[新开发者指南](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw)、[开源组件说明](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-es923485r01d)、[集成实践](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-2muqnfrly7jc)等）
+- **npm**：[@haxitag/yueli-kgm-computing](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing)
+- **GitHub**：[haxitag/Yueli-KGM-Computing](https://github.com/haxitag/Yueli-KGM-Computing)
+- **npm 包内容**：`dist/`（运行时代码）+ `playground/`（Web Playground 静态资源）+ 本 `README`；**不**再内置仓库中的大量 `docs/*.md`，以减小包体；完整文档以社区与官网为准
 - **生产加固（可选）**：`KGM_HTTP_API_KEY`（`Authorization: Bearer` 或 `X-API-Key`）；`KGM_HTTP_AUTH_EXEMPT` 逗号路径前缀，默认只豁免 `/health`（若开启 API Key 且需本机 Playground，可加入 `/api` 等前缀）；`KGM_HTTP_RATE_LIMIT_MAX` + `KGM_HTTP_RATE_LIMIT_WINDOW_MS`（`MAX=0` 表示不限流）
 - **OpenAPI 3.1**：`GET /openapi.json`（主规范同 `src/openapi/kgmOpenApiV1Spec.ts`）
 - **Runtime 观测层**：`GET /v1/runtime/status`、`/topology`、`/discovery`、`/diagnostics`，以及 `POST /v1/runtime/route/explain`，用于应用端启动体检、模型发现、路由预检与失败解释
@@ -664,7 +687,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.2.6
+npm install @haxitag/yueli-kgm-computing@0.2.7
 ```
 
 ### 开源仓库同步（维护者）
@@ -690,7 +713,11 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明 0.2.6
+## 版本说明（当前 npm：`0.2.7`）
+
+**0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明（见上文「本版要点」）。
+
+**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.2.7** 一致。
 
 ### ✅ 新增功能
 
@@ -700,8 +727,7 @@ npm run dev:enhanced
 - 保持 API 兼容性：类名、类型名、配置值、环境变量保持不变
 
 **文档体系完善**
-- 新增 `docs/新开发者的Yueli-KGM-Computing使用指南.md`：深入浅出的新开发者入门指南
-- 涵盖项目概述、快速开始、核心组件使用、本地推理引擎、进程内集成、环境变量配置、实用代码片段、调试与观测、生产部署建议、常见问题等
+- [新开发者使用指南](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw)（社区）：项目概述、快速开始、核心组件、本地推理、进程内集成、环境变量、调试与生产部署
 
 **模型管理增强**
 - 模型扫描发现：`POST /v1/models/discover` 扫描宿主机可用模型
@@ -766,5 +792,13 @@ npm run test:native-gpu-models
 ---
 
 **官方资源**
-- **官方主页**: [https://haxitag.com/page/kgm](https://haxitag.com/page/kgm)
-- **社区平台**: [https://haxitag.com/community/yuelikgm](https://haxitag.com/community/yuelikgm)
+
+- **官网**: [Yueli KGM Computing](https://haxitag.com/page/kgm)
+- **社区**: [阅粒知识计算引擎主题](https://haxitag.com/community/yuelikgm)
+- **npm**: [@haxitag/yueli-kgm-computing](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing)
+- **GitHub**: [haxitag/Yueli-KGM-Computing](https://github.com/haxitag/Yueli-KGM-Computing)
+- **新开发者使用指南**: [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw)
+- **开源组件说明**: [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-es923485r01d)
+- **推理引擎优化（性能配置）**: [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-k9gyjbpkyq8t)
+- **Rust / Go / Python / C++ 集成**: [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-7ipzi1bv7gho)
+- **集成具体操作实践**: [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-2muqnfrly7jc)
