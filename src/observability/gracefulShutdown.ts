@@ -8,6 +8,8 @@ class GracefulShutdown {
   private shutdownHandlers: ShutdownHandler[] = [];
   private isShuttingDown = false;
   private server?: http.Server;
+  /** E2E / 多实例反复 `createKgmServer` 时不重复注册 process 监听，避免 MaxListenersExceededWarning。 */
+  private processHooksRegistered = false;
 
   register(handler: ShutdownHandler): void {
     this.shutdownHandlers.push(handler);
@@ -63,8 +65,13 @@ class GracefulShutdown {
   }
 
   setup(): void {
+    if (this.processHooksRegistered) {
+      return;
+    }
+    this.processHooksRegistered = true;
+
     const signals = ['SIGTERM', 'SIGINT', 'SIGUSR2'];
-    
+
     signals.forEach((signal) => {
       process.on(signal as NodeJS.Signals, () => {
         this.shutdown(signal);

@@ -22,6 +22,7 @@ import type { ManagedModelManager } from "../models/modelManager.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
 import { annotateOpenAiModels } from "../models/modelTypeAnnotator.js";
+import { maybeNormalizeCompatOutput } from "../output/gfmNormalize.js";
 
 type OpenAiToolCall = {
   id?: string;
@@ -374,6 +375,8 @@ type CompatibilityParams = {
   outputSchema: Record<string, unknown>;
   responseStore: OpenAiResponseStore;
   skillRuntime?: SkillRuntime;
+  /** 来自 HTTP 的请求头，用于 X-KGM-Output-Normalize 等 */
+  requestHeaders?: Record<string, string | string[] | undefined>;
 };
 
 type ExecuteParams = CompatibilityParams & {
@@ -595,6 +598,13 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     finalText = "max_rounds_reached";
   }
 
+  finalText = maybeNormalizeCompatOutput(
+    finalText,
+    kgm,
+    params.metadata,
+    params.requestHeaders,
+  );
+
   const responseId = `resp_${requestId}`;
   const completionId = `chatcmpl_${requestId}`;
   params.responseStore.save({
@@ -692,7 +702,14 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
     }
   }
 
-  const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore);
+  const finalized = finalizeDirectStream(
+    direct,
+    rawOutput,
+    streamedContent,
+    finalResult,
+    params.responseStore,
+    { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders },
+  );
   finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
   if (finalized.finalText.length > streamedContent.length) {
     const trailing = finalized.finalText.slice(streamedContent.length);
@@ -775,7 +792,14 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
     }
   }
 
-  const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore);
+  const finalized = finalizeDirectStream(
+    direct,
+    rawOutput,
+    streamedContent,
+    finalResult,
+    params.responseStore,
+    { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders },
+  );
   finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
   if (finalized.finalText.length > streamedContent.length) {
     const trailing = finalized.finalText.slice(streamedContent.length);
@@ -871,10 +895,21 @@ function finalizeDirectStream(
   streamedContent: string,
   finalResult?: CompletionResult,
   responseStore?: OpenAiResponseStore,
+  normalizeContext?: {
+    kgm?: KgmExtensions;
+    metadata?: Record<string, unknown>;
+    requestHeaders?: Record<string, string | string[] | undefined>;
+  },
 ): CompatibilityRun {
   const rawText = finalResult?.text ?? rawOutput;
   const intent = parseIntent(rawText);
-  const finalText = intent.type === "final" ? intent.content : streamedContent || rawText;
+  let finalText = intent.type === "final" ? intent.content : streamedContent || rawText;
+  finalText = maybeNormalizeCompatOutput(
+    finalText,
+    normalizeContext?.kgm ?? setup.kgm,
+    normalizeContext?.metadata ?? setup.metadata,
+    normalizeContext?.requestHeaders,
+  );
   const conversation = [...setup.conversation, { role: "assistant" as const, content: finalText }];
   const routingTrace = extractAutoRoutingTrace(finalResult?.raw);
   const structured = extractStructuredCompletion(finalResult?.raw, undefined);

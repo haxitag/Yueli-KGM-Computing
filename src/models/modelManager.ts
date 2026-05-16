@@ -793,19 +793,19 @@ export class ManagedModelManager {
       }
       const engine = new NativeRuntimeEngine(modelPath, {
         modelRef: resolveNativeModelRef(artifact, next),
-        promptCacheLimit: parseNumber(process.env.KGM_NATIVE_PROMPT_CACHE_SIZE) ?? 8,
-        sessionCacheLimit: parseNumber(process.env.KGM_NATIVE_SESSION_CACHE_SIZE) ?? 64,
-        schedulerMaxBatchSize: parseNumber(process.env.KGM_NATIVE_SCHEDULER_MAX_BATCH_SIZE) ?? 8,
-        schedulerMaxPrefillsPerTick: parseNumber(process.env.KGM_NATIVE_SCHEDULER_MAX_PREFILLS_PER_TICK) ?? 1,
+        promptCacheLimit: parseValidatedNumber(process.env.KGM_NATIVE_PROMPT_CACHE_SIZE, 8, 1, 1024, "KGM_NATIVE_PROMPT_CACHE_SIZE"),
+        sessionCacheLimit: parseValidatedNumber(process.env.KGM_NATIVE_SESSION_CACHE_SIZE, 64, 1, 10000, "KGM_NATIVE_SESSION_CACHE_SIZE"),
+        schedulerMaxBatchSize: parseValidatedNumber(process.env.KGM_NATIVE_SCHEDULER_MAX_BATCH_SIZE, 8, 1, 64, "KGM_NATIVE_SCHEDULER_MAX_BATCH_SIZE"),
+        schedulerMaxPrefillsPerTick: parseValidatedNumber(process.env.KGM_NATIVE_SCHEDULER_MAX_PREFILLS_PER_TICK, 1, 1, 16, "KGM_NATIVE_SCHEDULER_MAX_PREFILLS_PER_TICK"),
         kvCacheMode: process.env.KGM_NATIVE_KV_CACHE_MODE === "dense" ? "dense" : "paged",
-        kvPageSize: parseNumber(process.env.KGM_NATIVE_KV_PAGE_SIZE) ?? 16,
-        cachedKvPageBudget: parseNumber(process.env.KGM_NATIVE_CACHED_KV_PAGE_BUDGET) ?? 256,
+        kvPageSize: parseValidatedNumber(process.env.KGM_NATIVE_KV_PAGE_SIZE, 16, 1, 256, "KGM_NATIVE_KV_PAGE_SIZE"),
+        cachedKvPageBudget: parseValidatedNumber(process.env.KGM_NATIVE_CACHED_KV_PAGE_BUDGET, 256, 1, 4096, "KGM_NATIVE_CACHED_KV_PAGE_BUDGET"),
         servingBackend: process.env.KGM_NATIVE_SERVING_BACKEND === "native-core"
           ? "native-core"
           : process.env.KGM_NATIVE_SERVING_BACKEND === "js-reference"
             ? "js-reference"
             : "auto",
-        seed: parseNumber(process.env.KGM_NATIVE_RUNTIME_SEED) ?? 1,
+        seed: parseValidatedNumber(process.env.KGM_NATIVE_RUNTIME_SEED, 1, 0, Number.MAX_SAFE_INTEGER, "KGM_NATIVE_RUNTIME_SEED"),
       });
       const manifest = engine.manifest();
       const nativeMetadata = engine.metadata();
@@ -2338,6 +2338,35 @@ function parseNumber(value?: string): number | undefined {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * 解析并验证数值型环境变量
+ * @param value - 环境变量值
+ * @param defaultValue - 默认值
+ * @param min - 最小值（包含）
+ * @param max - 最大值（包含）
+ * @param paramName - 参数名称（用于日志）
+ * @returns 验证后的数值
+ */
+function parseValidatedNumber(
+  value: string | undefined,
+  defaultValue: number,
+  min: number,
+  max: number,
+  paramName: string,
+): number {
+  const parsed = parseNumber(value);
+  if (parsed === undefined) {
+    return defaultValue;
+  }
+  if (parsed < min || parsed > max || !Number.isInteger(parsed)) {
+    console.warn(
+      `[Yueli KGM Runtime] Invalid ${paramName}: ${value}. Using default ${defaultValue} (valid range: ${min}-${max}, integer).`,
+    );
+    return defaultValue;
+  }
+  return parsed;
 }
 
 function delay(ms: number): Promise<void> {

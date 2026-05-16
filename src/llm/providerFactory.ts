@@ -344,7 +344,8 @@ export class LlmProviderFactory {
       case 'together':
         return this.createOpenAiCompatHttp(config, {
           routerKey: 'together',
-          defaultBaseUrl: process.env.TOGETHER_BASE_URL || 'https://api.together.xyz/v1',
+          // Together 官方 OpenAI 兼容层已统一为 api.together.ai（旧 xyz 域名仍可由 env 覆盖）
+          defaultBaseUrl: process.env.TOGETHER_BASE_URL || 'https://api.together.ai/v1',
         });
 
       case 'fireworks':

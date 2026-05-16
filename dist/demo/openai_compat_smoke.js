@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { HashEmbedder } from "../embedding/canonical.js";
 import { createKgmServer, createRuntimeWithStorage } from "../index.js";
+import { SmokeCompatibilityLlmClient } from "./smokeLlmClient.js";
 async function main() {
-    const runtime = await createRuntimeWithStorage({});
+    const llmUrl = (process.env.KGM_LLM_BASE_URL ?? "").trim();
+    const embeddingKey = (process.env.KGM_EMBEDDING_API_KEY ?? "").trim();
+    /** 未配置上游 LLM 时使用离线客户端（CI / `npm run smoke:openai-compat`）；要对真实 OpenAI 跑 smoke 请设置 `KGM_LLM_BASE_URL`。 */
+    const offlineLlm = process.env.KGM_SMOKE_OFFLINE === "1" || !llmUrl;
+    /** 未配置 embedding 密钥时避免 OpenAI embedding 在 graph+RAG 路径上报错；要对真实 embedding 跑 smoke 请设置 `KGM_EMBEDDING_API_KEY`。 */
+    const useHashEmbed = process.env.KGM_SMOKE_OFFLINE === "1" || !embeddingKey || offlineLlm;
+    const runtime = await createRuntimeWithStorage({
+        ...(useHashEmbed ? { embedder: new HashEmbedder() } : {}),
+        ...(offlineLlm ? { llmClient: new SmokeCompatibilityLlmClient() } : {}),
+    });
     const smokeModel = process.env.KGM_LLM_MODEL ?? "gpt-4o-mini";
     const server = createKgmServer({
         scheduler: runtime.scheduler,

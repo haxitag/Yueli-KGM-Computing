@@ -4,6 +4,7 @@ import { syncPlaygroundFromConfig } from "../playground/syncPlayground.js";
 import { createAnthropicMessagesResponse, streamAnthropicMessagesJsonLines, } from "../anthropic/compat.js";
 import { buildOpenAiModelList, createOpenAiChatCompletion, createOpenAiResponse, streamOpenAiChatCompletion, streamOpenAiResponse, } from "../openai/compat.js";
 import { maybeProxyNativeOpenAiStream } from "../openai/passthrough.js";
+import { normalizeIncomingHttpHeaders } from "../output/gfmNormalize.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { SandboxConfigurationError } from "../sandbox/manager.js";
 import { ManagedModelManager } from "../models/modelManager.js";
@@ -973,6 +974,7 @@ export function createKgmRequestListener(params) {
             }
             if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
                 const payload = (await readJson(req));
+                const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
                 if (payload.stream) {
                     const proxied = await maybeProxyNativeOpenAiStream({
                         configStore: params.configStore,
@@ -993,6 +995,7 @@ export function createKgmRequestListener(params) {
                         outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
                         responseStore,
                         skillRuntime: params.skillRuntime,
+                        requestHeaders,
                     });
                     return sendSse(res, events);
                 }
@@ -1005,11 +1008,13 @@ export function createKgmRequestListener(params) {
                     outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
                     responseStore,
                     skillRuntime: params.skillRuntime,
+                    requestHeaders,
                 });
                 return sendJson(res, 200, response);
             }
             if (req.method === "POST" && url.pathname === "/v1/responses") {
                 const payload = (await readJson(req));
+                const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
                 if (payload.stream) {
                     const proxied = await maybeProxyNativeOpenAiStream({
                         configStore: params.configStore,
@@ -1030,6 +1035,7 @@ export function createKgmRequestListener(params) {
                         outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
                         responseStore,
                         skillRuntime: params.skillRuntime,
+                        requestHeaders,
                     });
                     return sendSse(res, events);
                 }
@@ -1042,6 +1048,7 @@ export function createKgmRequestListener(params) {
                     outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
                     responseStore,
                     skillRuntime: params.skillRuntime,
+                    requestHeaders,
                 });
                 return sendJson(res, 200, response);
             }

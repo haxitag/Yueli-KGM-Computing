@@ -7,6 +7,7 @@ import { generateId } from "../utils/id.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
 import { annotateOpenAiModels } from "../models/modelTypeAnnotator.js";
+import { maybeNormalizeCompatOutput } from "../output/gfmNormalize.js";
 export function buildOpenAiModelList(configStore, modelManager) {
     const llm = configStore.get().llm;
     const data = modelManager?.listOpenAiModels(llm.model, llm.provider) ?? [
@@ -393,6 +394,7 @@ async function executeCompatibilityRun(params) {
     if (!finalText && finishReason === "stop") {
         finalText = "max_rounds_reached";
     }
+    finalText = maybeNormalizeCompatOutput(finalText, kgm, params.metadata, params.requestHeaders);
     const responseId = `resp_${requestId}`;
     const completionId = `chatcmpl_${requestId}`;
     params.responseStore.save({
@@ -485,7 +487,7 @@ async function* streamChatCompletionChunks(params) {
             finalResult = event.result;
         }
     }
-    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore);
+    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders });
     finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
     if (finalized.finalText.length > streamedContent.length) {
         const trailing = finalized.finalText.slice(streamedContent.length);
@@ -564,7 +566,7 @@ async function* streamResponsesChunks(params) {
             finalResult = event.result;
         }
     }
-    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore);
+    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders });
     finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
     if (finalized.finalText.length > streamedContent.length) {
         const trailing = finalized.finalText.slice(streamedContent.length);
@@ -648,10 +650,11 @@ async function prepareDirectStream(params) {
         conversation: [...params.messages],
     };
 }
-function finalizeDirectStream(setup, rawOutput, streamedContent, finalResult, responseStore) {
+function finalizeDirectStream(setup, rawOutput, streamedContent, finalResult, responseStore, normalizeContext) {
     const rawText = finalResult?.text ?? rawOutput;
     const intent = parseIntent(rawText);
-    const finalText = intent.type === "final" ? intent.content : streamedContent || rawText;
+    let finalText = intent.type === "final" ? intent.content : streamedContent || rawText;
+    finalText = maybeNormalizeCompatOutput(finalText, normalizeContext?.kgm ?? setup.kgm, normalizeContext?.metadata ?? setup.metadata, normalizeContext?.requestHeaders);
     const conversation = [...setup.conversation, { role: "assistant", content: finalText }];
     const routingTrace = extractAutoRoutingTrace(finalResult?.raw);
     const structured = extractStructuredCompletion(finalResult?.raw, undefined);

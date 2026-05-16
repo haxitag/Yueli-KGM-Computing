@@ -53,14 +53,14 @@ class NativeGpuServingBackend {
         if (this.simDelegate) {
             return this.simDelegate.complete(_prompt, _options);
         }
-        throw new Error("Yueli KGM Runtime GPU backend not implemented");
+        throw new Error("native_gpu_backend_not_implemented");
     }
     async *streamComplete(_prompt, _options) {
         if (this.simDelegate) {
             yield* this.simDelegate.streamComplete(_prompt, _options);
             return;
         }
-        throw new Error("Yueli KGM Runtime GPU backend not implemented");
+        throw new Error("native_gpu_backend_not_implemented");
     }
     metadata() {
         return this.loaded.metadata;

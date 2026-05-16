@@ -54,3 +54,7 @@ temp/
 *.key
 credentials.json
 secrets.json
+
+# Local planning (planning-with-files / Cursor hooks): do not commit session plans
+/.planning/
+/task_plan.md

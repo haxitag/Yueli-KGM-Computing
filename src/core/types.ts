@@ -141,7 +141,17 @@ export type KgmYcbHints = {
   skip?: boolean;
 };
 
-export type KgmExtensions = {
+/** Copilot / Playground 可通过 metadata 或 HTTP 头开启输出 gfm-lite 归一化 */
+export type KgmOutputExtensions = {
+  extensions?: {
+    output?: {
+      /** 默认关闭；`gfm-lite` 仅做 ATX 空格、围栏、列表空行等技术修复 */
+      normalize?: "gfm-lite";
+    };
+  };
+};
+
+export type KgmExtensions = KgmOutputExtensions & {
   retrieval?: KgmRetrievalOptions;
   graph?: KgmGraphOptions;
   ops?: KgmOpsMetadata;

@@ -129,6 +129,11 @@ export function createNativeServingBackend(
   return new JsReferenceNativeServingBackend(modelPath, loaded, options);
 }
 
+/** Stable prefix for integration tests; trailing text explains remediation. */
+const NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG =
+  "native_gpu_backend_not_implemented: accelerated inference path is not shipped in this build; " +
+  "set KGM_NATIVE_GPU_SIMULATED=1 to delegate to js-reference for simulation, or choose servingBackend js-reference / native-core.";
+
 class NativeGpuServingBackend implements NativeServingBackend {
   readonly kind = "native-gpu" as const;
   readonly modelPath: string;
@@ -166,7 +171,7 @@ class NativeGpuServingBackend implements NativeServingBackend {
     if (this.simDelegate) {
       return this.simDelegate.complete(_prompt, _options);
     }
-    throw new Error("Yueli KGM Runtime GPU backend not implemented");
+    throw new Error(NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG);
   }
 
   async *streamComplete(_prompt: string, _options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
@@ -174,7 +179,7 @@ class NativeGpuServingBackend implements NativeServingBackend {
       yield* this.simDelegate.streamComplete(_prompt, _options);
       return;
     }
-    throw new Error("Yueli KGM Runtime GPU backend not implemented");
+    throw new Error(NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG);
   }
 
   metadata(): LoadedNativeModel["metadata"] {

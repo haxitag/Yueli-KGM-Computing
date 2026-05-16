@@ -23,6 +23,7 @@ import {
   type OpenAiResponsesRequest,
 } from "../openai/compat.js";
 import { maybeProxyNativeOpenAiStream } from "../openai/passthrough.js";
+import { normalizeIncomingHttpHeaders } from "../output/gfmNormalize.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { SandboxConfigurationError, SandboxManager } from "../sandbox/manager.js";
 import { SchemaRegistry } from "../schema/registry.js";
@@ -1326,6 +1327,9 @@ export function createKgmRequestListener(
 
       if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
         const payload = (await readJson(req)) as OpenAiChatCompletionRequest;
+        const requestHeaders = normalizeIncomingHttpHeaders(
+          req.headers as Record<string, string | string[] | undefined>,
+        );
         if (payload.stream) {
           const proxied = await maybeProxyNativeOpenAiStream({
             configStore: params.configStore,
@@ -1346,6 +1350,7 @@ export function createKgmRequestListener(
             outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
             responseStore,
             skillRuntime: params.skillRuntime,
+            requestHeaders,
           });
           return sendSse(res, events);
         }
@@ -1358,12 +1363,16 @@ export function createKgmRequestListener(
           outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
           responseStore,
           skillRuntime: params.skillRuntime,
+          requestHeaders,
         });
         return sendJson(res, 200, response);
       }
 
       if (req.method === "POST" && url.pathname === "/v1/responses") {
         const payload = (await readJson(req)) as OpenAiResponsesRequest;
+        const requestHeaders = normalizeIncomingHttpHeaders(
+          req.headers as Record<string, string | string[] | undefined>,
+        );
         if (payload.stream) {
           const proxied = await maybeProxyNativeOpenAiStream({
             configStore: params.configStore,
@@ -1384,6 +1393,7 @@ export function createKgmRequestListener(
             outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
             responseStore,
             skillRuntime: params.skillRuntime,
+            requestHeaders,
           });
           return sendSse(res, events);
         }
@@ -1396,6 +1406,7 @@ export function createKgmRequestListener(
           outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
           responseStore,
           skillRuntime: params.skillRuntime,
+          requestHeaders,
         });
         return sendJson(res, 200, response);
       }

@@ -137,6 +137,13 @@ export class HttpLlmClient {
                         }
                         try {
                             const data = JSON.parse(dataStr);
+                            // 检查错误响应
+                            if (data.error) {
+                                const errorMessage = typeof data.error === "string"
+                                    ? data.error
+                                    : data.error.message || JSON.stringify(data.error);
+                                throw new Error(`Upstream error: ${errorMessage}`);
+                            }
                             let content = "";
                             // 尝试从多种可能的字段中提取内容
                             if (data.choices?.[0]) {
@@ -165,8 +172,14 @@ export class HttpLlmClient {
                                 };
                             }
                         }
-                        catch {
-                            // Ignore JSON parse errors for incomplete chunks
+                        catch (error) {
+                            // 只忽略 JSON 解析错误（不完整的块），其他错误需要抛出
+                            if (error instanceof SyntaxError) {
+                                // JSON 解析错误，可能是数据块不完整，继续等待更多数据
+                                continue;
+                            }
+                            // 重新抛出非 JSON 解析错误（如上游错误）
+                            throw error;
                         }
                     }
                 }

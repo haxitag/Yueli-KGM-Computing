@@ -20,6 +20,7 @@ import {
   type AutoRoutingVerificationSource,
 } from "../routing/autoRoutingAuditStore.js";
 import { LlmProviderFactory, type ProviderConfig } from "./providerFactory.js";
+import { configuredLlmRouteSegment } from "../runtime/topologyResolver.js";
 import { streamCompletion } from "./client.js";
 import type { CompletionOptions, CompletionResult, CompletionStreamEvent, LlmClient } from "./client.js";
 import { createPricingService, type PricingService } from "./pricingService.js";
@@ -352,12 +353,14 @@ export class AutoRoutingLlmClient implements LlmClient {
   ): Promise<RoutingCandidate[]> {
     const config = this.configStore.get();
     const autoRouting = config.autoRouting;
+    const defaultRouteSeg = configuredLlmRouteSegment(config.llm.provider);
+    const defaultRouteKey = `default:${defaultRouteSeg}:${config.llm.model}`;
     const promptTokens = estimateTokens(prompt);
     const expectedOutputTokens = Math.max(64, Math.min(options?.maxTokens ?? config.llm.maxTokens, 512));
     const maxCost = options?.routing?.maxCostPerRequest ?? autoRouting.thresholds.maxCostPerRequest;
     const candidates: RoutingCandidate[] = [];
     const defaultCost = await this.resolveEstimatedCost({
-      routeKey: `default:${config.llm.provider}:${config.llm.model}`,
+      routeKey: defaultRouteKey,
       source: "default",
       model: config.llm.model,
       provider: config.llm.provider,
@@ -365,8 +368,8 @@ export class AutoRoutingLlmClient implements LlmClient {
     
     const defaultCandidate = this.scoreCandidate(
       {
-        routeKey: `default:${config.llm.provider}:${config.llm.model}`,
-        label: `${config.llm.provider}:${config.llm.model}`,
+        routeKey: defaultRouteKey,
+        label: `${defaultRouteSeg}:${config.llm.model}`,
         source: "default",
         model: config.llm.model,
         provider: config.llm.provider,
@@ -550,15 +553,18 @@ export class AutoRoutingLlmClient implements LlmClient {
     if (!target.model && !target.provider) {
       return undefined;
     }
-    const config = this.configStore.get().llm;
+    const llm = this.configStore.get().llm;
     const fallback = candidates.find((item) => item.source === "default");
+    const effProvider = target.provider ?? fallback?.provider ?? llm.provider;
+    const effModel = target.model ?? fallback?.model ?? llm.model;
+    const routeSeg = target.provider != null ? effProvider : configuredLlmRouteSegment(llm.provider);
     return {
       ...(fallback ?? {
-        routeKey: `default:${config.provider}:${config.model}`,
-        label: `${config.provider}:${config.model}`,
+        routeKey: `default:${configuredLlmRouteSegment(llm.provider)}:${llm.model}`,
+        label: `${configuredLlmRouteSegment(llm.provider)}:${llm.model}`,
         source: "default" as const,
-        model: config.model,
-        provider: config.provider,
+        model: llm.model,
+        provider: llm.provider,
         estimatedCost: 0,
         latencyMs: this.configStore.get().autoRouting.thresholds.targetLatencyMs,
         successRate: 0.7,
@@ -568,10 +574,10 @@ export class AutoRoutingLlmClient implements LlmClient {
         score: 0.5,
       }),
       source: "default",
-      routeKey: `default:${target.provider ?? fallback?.provider ?? config.provider}:${target.model ?? fallback?.model ?? config.model}`,
-      label: `${target.provider ?? fallback?.provider ?? config.provider}:${target.model ?? fallback?.model ?? config.model}`,
-      provider: target.provider ?? fallback?.provider ?? config.provider,
-      model: target.model ?? fallback?.model ?? config.model,
+      routeKey: `default:${routeSeg}:${effModel}`,
+      label: `${routeSeg}:${effModel}`,
+      provider: effProvider,
+      model: effModel,
       runtimeId: undefined,
     };
   }
@@ -960,12 +966,15 @@ export class AutoRoutingLlmClient implements LlmClient {
 
     if (target.model || target.provider) {
       const llm = this.configStore.get().llm;
+      const effProvider = target.provider ?? llm.provider;
+      const effModel = target.model ?? llm.model;
+      const routeSeg = target.provider != null ? effProvider : configuredLlmRouteSegment(llm.provider);
       return {
-        routeKey: `default:${target.provider ?? llm.provider}:${target.model ?? llm.model}`,
-        label: `${target.provider ?? llm.provider}:${target.model ?? llm.model}`,
+        routeKey: `default:${routeSeg}:${effModel}`,
+        label: `${routeSeg}:${effModel}`,
         source: "default",
-        model: target.model ?? llm.model,
-        provider: target.provider ?? llm.provider,
+        model: effModel,
+        provider: effProvider,
       };
     }
 

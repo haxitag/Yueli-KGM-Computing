@@ -1,7 +1,18 @@
 import type { ConfigStore } from "../core/configStore.js";
 import type { ManagedModelManager } from "../models/modelManager.js";
-import type { DiscoveryResult, DiscoveredEngine } from "./discoveryService.js";
+import type { DiscoveryResult, DiscoveredEngine, InferenceEngineType } from "./discoveryService.js";
 import { inferModelCapabilities } from "./discoveryService.js";
+
+/**
+ * 与 `providerFromConfig` / 拓扑 `routeKey` 中段一致：
+ * - `llm.provider === "ollama"` → 原生 Ollama HTTP（`/api/...`）；
+ * - `openai` / `custom` 且走 ConfigurableLlmClient 的 Http 分支时 → `openai-compat`（含本机 Ollama `/v1` OpenAI 兼容层）。
+ *
+ * 注意：不要与 `llm.provider` 配置字段混用——后者仍须为 `openai` 才能对 `/v1` 走 HttpLlmClient。
+ */
+export function configuredLlmRouteSegment(llmProvider: string): InferenceEngineType {
+  return llmProvider === "ollama" ? "ollama" : "openai-compat";
+}
 
 export type RuntimeTopology = {
   paths: {
@@ -74,7 +85,7 @@ export function resolveRuntimeTopology(params: {
 }
 
 function providerFromConfig(provider: string, baseUrl: string, model: string): DiscoveredEngine {
-  const type = provider === "ollama" ? "ollama" : "openai-compat";
+  const type = configuredLlmRouteSegment(provider);
   return {
     id: `${provider || "configured"}-configured`,
     type,

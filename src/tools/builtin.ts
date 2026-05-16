@@ -89,6 +89,16 @@ type SearchCandidate = {
 };
 
 async function searchWeb(query: string, topK: number): Promise<SearchResult[]> {
+  if (process.env.KGM_SMOKE_STUB_NETWORK_TOOLS === "1") {
+    return [
+      {
+        title: "offline_stub",
+        snippet: `stub results for: ${query}`,
+        url: "https://example.invalid/offline-stub",
+        markdown: `# Offline stub\n\nQuery: ${query}`,
+      },
+    ];
+  }
   const encodedQuery = encodeURIComponent(query);
   const url = `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`;
   

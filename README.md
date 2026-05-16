@@ -2,9 +2,15 @@
 
 `@haxitag/yueli-kgm-computing` — 阅粒 **KGM**（Knowledge Graph & Model runtime）：自托管的 **OpenAI / Anthropic 兼容网关与编排层**，内建 **进程内 Native 推理** 与 **受管模型控制面**；支持 `kgm` 扩展（工具、图谱信号、检索、观测等）。
 
+> **NPM 安装**: [![npm version](https://badge.fury.io/js/@haxitag%2Fyueli-kgm-computing.svg)](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing)
+> 
+> ```bash
+> npm install @haxitag/yueli-kgm-computing@latest
+> ```
+
 ---
 
-## 🚀 0.2.5 版本更新
+## 🚀 0.2.6 版本更新
 
 ### Yueli KGM Runtime 品牌统一
 
@@ -202,9 +208,64 @@ server.listen(process.env.PORT || 3000);
 
 ---
 
+## 架构概述
+
+### 核心技术栈
+
+| 分类 | 技术 | 版本/说明 |
+|------|------|-----------|
+| **运行环境** | Node.js | 20.x |
+| **核心语言** | TypeScript | 5.x |
+| **原生集成** | C++ (Node.js Addon) | CUDA 推理后端 |
+| **进程管理** | Rust | 推理核心进程管理 |
+| **数据库** | SQLite / PostgreSQL | 配置与状态存储 |
+| **向量存储** | Chroma | 嵌入向量检索 |
+
+### 关键模块
+
+| 模块 | 文件路径 | 功能 |
+|------|----------|------|
+| **Scheduler (FSM)** | `src/scheduler/fsm.ts` | 核心调度器，处理多轮对话、工具执行 |
+| **KCE** | `src/kce/engine.ts` | 知识计算引擎，DAG 执行框架 |
+| **DAG Scheduler** | `src/tools/dagScheduler.ts` | 独立 DAG 编排器 |
+| **Rust 集成** | `src/native/rustIntegration.ts` | Rust 推理核心进程管理 |
+| **C++ Addon** | `native-core/` | CUDA/native 推理后端 |
+
+### 跨语言集成架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              @haxitag/yueli-kgm-computing (NPM Package)        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │ Rust 推理   │  │ Golang 推理 │  │ Python 推理 │           │
+│  │ (STDIO IPC) │  │ (gRPC/IPC)  │  │ (HTTP API)  │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+│                                                                 │
+│  ┌─────────────┐                                                │
+│  │ C++ Addon   │                                                │
+│  │ (CUDA/原生) │                                                │
+│  └─────────────┘                                                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 集成方式对比
+
+| 技术栈 | 集成方式 | 复杂度 | 适用场景 |
+|--------|----------|--------|----------|
+| **Node.js** | 直接 import NPM 包 | 无 | 单体应用、自建网关 |
+| **Rust** | 子进程 + STDIO JSON | 低 | 高性能推理引擎 |
+| **Golang** | gRPC/HTTP 或子进程 | 中 | 微服务架构 |
+| **Python** | HTTP API (OpenAI 兼容) | 低-中 | 现有 AI 生态集成 |
+| **C++** | Node.js Addon | 高 | 极致性能要求 |
+
+---
+
 ## 跨语言集成指南
 
-KGM 作为 NPM 包，可与 Rust、Golang、Python、Node.js 等技术栈灵活集成。以下是常见集成方案：
+KGM 作为 NPM 包，可与 Rust、Golang、Python、Node.js、C++ 等技术栈灵活集成。以下是常见集成方案：
 
 ### Node.js 直接集成（推荐）
 
@@ -309,6 +370,107 @@ export class RustEngineClient {
       this.process.stdout?.on('data', handler);
       this.process.stderr?.on('data', (d) => reject(d.toString()));
     });
+  }
+}
+```
+
+### C++ 集成（Node.js Addon）
+
+适用于需要极致性能的场景，通过 Node.js C++ Addon 直接调用 CUDA 推理：
+
+```cpp
+// native-core/src/inference.cpp
+#include <napi.h>
+#include <cuda_runtime.h>
+#include "model_loader.h"
+#include "inference_engine.h"
+
+class InferenceEngineWrapper : public Napi::ObjectWrap<InferenceEngineWrapper> {
+private:
+    std::unique_ptr<InferenceEngine> engine;
+
+public:
+    static Napi::Object Init(Napi::Env env, Napi::Object exports) {
+        Napi::Function func = DefineClass(env, "InferenceEngine", {
+            InstanceMethod("loadModel", &InferenceEngineWrapper::LoadModel),
+            InstanceMethod("complete", &InferenceEngineWrapper::Complete),
+            InstanceMethod("stream", &InferenceEngineWrapper::Stream),
+            InstanceMethod("release", &InferenceEngineWrapper::Release),
+        });
+        exports.Set("InferenceEngine", func);
+        return exports;
+    }
+
+    Napi::Value LoadModel(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        std::string modelPath = info[0].As<Napi::String>();
+        
+        engine = std::make_unique<InferenceEngine>();
+        engine->Load(modelPath);
+        
+        return Napi::Boolean::New(env, true);
+    }
+
+    Napi::Value Complete(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        std::string prompt = info[0].As<Napi::String>();
+        
+        std::string result = engine->Complete(prompt);
+        return Napi::String::New(env, result);
+    }
+
+    Napi::Value Stream(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        std::string prompt = info[0].As<Napi::String>();
+        Napi::Function callback = info[1].As<Napi::Function>();
+        
+        engine->Stream(prompt, [callback](const std::string& token) {
+            callback.Call({Napi::String::New(callback.Env(), token)});
+        });
+        
+        return env.Undefined();
+    }
+
+    Napi::Value Release(const Napi::CallbackInfo& info) {
+        engine->Release();
+        engine.reset();
+        return Napi::Boolean::New(info.Env(), true);
+    }
+};
+
+NODE_API_MODULE(yueli_native, InferenceEngineWrapper::Init)
+```
+
+```typescript
+// src/integrations/cppEngine.ts
+import { InferenceEngine } from '../native/bindings';
+
+export class CppInferenceClient {
+  private engine: InferenceEngine;
+
+  constructor() {
+    this.engine = new InferenceEngine();
+  }
+
+  async loadModel(modelPath: string): Promise<void> {
+    this.engine.loadModel(modelPath);
+  }
+
+  async complete(prompt: string): Promise<string> {
+    return this.engine.complete(prompt);
+  }
+
+  async* stream(prompt: string): AsyncGenerator<string> {
+    return new Promise((resolve) => {
+      this.engine.stream(prompt, (token: string) => {
+        yield token;
+      });
+      resolve();
+    });
+  }
+
+  release(): void {
+    this.engine.release();
   }
 }
 ```
@@ -491,6 +653,32 @@ export class PythonOrchestratorBridge {
 
 ---
 
+## 版本更新流程
+
+### 开发环境更新
+```bash
+# 更新到最新版本
+npm install @haxitag/yueli-kgm-computing@latest
+
+# 查看当前版本
+npm list @haxitag/yueli-kgm-computing
+
+# 升级到指定版本
+npm install @haxitag/yueli-kgm-computing@0.2.6
+```
+
+### 开源仓库同步（维护者）
+```bash
+# 确保本地开发分支最新
+git checkout main
+git pull origin main
+
+# 运行同步脚本（自动清理敏感文件并推送到公开仓库）
+bash scripts/sync-to-public.sh
+```
+
+---
+
 ## 从源码开发本仓库
 
 ```bash
@@ -502,7 +690,7 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明 0.2.5
+## 版本说明 0.2.6
 
 ### ✅ 新增功能
 
