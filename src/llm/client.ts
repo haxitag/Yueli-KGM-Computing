@@ -29,7 +29,11 @@ export type CompletionOptions = {
   taskType?: string;
   taskName?: string;
   routing?: RoutingHints;
+  /** Ollama /v1/chat：默认 false，与 Copilot KGMAdapter 对齐 */
+  think?: boolean;
 };
+
+export type StreamTokenChannel = "content" | "reasoning";
 
 export type CompletionResult = {
   text: string;
@@ -46,6 +50,8 @@ export type CompletionStreamEvent =
       text: string;
       index: number;
       tokenId?: number;
+      /** 默认 content；reasoning 映射到 SSE delta.reasoning_content */
+      channel?: StreamTokenChannel;
     }
   | {
       type: "finished";
@@ -237,33 +243,61 @@ export class HttpLlmClient implements LlmClient {
                 throw new Error(`Upstream error: ${errorMessage}`);
               }
               
-              let content = "";
-              
-              // 尝试从多种可能的字段中提取内容
               if (data.choices?.[0]) {
                 const choice = data.choices[0];
-                if (choice.delta) {
-                  content = choice.delta.content || choice.delta.reasoning_content || choice.delta.text || "";
-                } else {
-                  content = choice.text || "";
-                }
-              }
-              // 也尝试直接从根级字段提取
-              if (!content) {
-                for (const field of contentFields) {
-                  if (typeof data[field] === "string") {
-                    content = data[field];
-                    break;
+                const delta = choice.delta as Record<string, unknown> | undefined;
+                if (delta) {
+                  const content =
+                    typeof delta.content === "string" && delta.content.length > 0
+                      ? delta.content
+                      : typeof delta.text === "string"
+                        ? delta.text
+                        : "";
+                  if (content) {
+                    yield {
+                      type: "token",
+                      text: content,
+                      index: tokenIndex++,
+                      channel: "content",
+                    };
                   }
+                  let reasoning = "";
+                  for (const key of ["reasoning_content", "reasoning", "thinking", "thought"]) {
+                    const v = delta[key];
+                    if (typeof v === "string" && v.length > 0) {
+                      reasoning += v;
+                    }
+                  }
+                  if (reasoning) {
+                    yield {
+                      type: "token",
+                      text: reasoning,
+                      index: tokenIndex++,
+                      channel: "reasoning",
+                    };
+                  }
+                  continue;
                 }
+                const plain = choice.text;
+                if (typeof plain === "string" && plain.length > 0) {
+                  yield { type: "token", text: plain, index: tokenIndex++, channel: "content" };
+                }
+                continue;
               }
-              
-              if (content) {
-                yield {
-                  type: "token",
-                  text: content,
-                  index: tokenIndex++,
-                };
+              for (const field of contentFields) {
+                if (typeof data[field] === "string" && (data[field] as string).length > 0) {
+                  const channel: StreamTokenChannel =
+                    field === "content" || field === "text" || field === "output_text"
+                      ? "content"
+                      : "reasoning";
+                  yield {
+                    type: "token",
+                    text: data[field] as string,
+                    index: tokenIndex++,
+                    channel,
+                  };
+                  break;
+                }
               }
             } catch (error) {
               // 只忽略 JSON 解析错误（不完整的块），其他错误需要抛出

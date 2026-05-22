@@ -151,6 +151,18 @@ export type KgmOutputExtensions = {
   };
 };
 
+export type KgmOllamaHints = {
+  /** 关闭 Ollama thinking 通道，避免仅 reasoning 无 content（Copilot 默认 false） */
+  think?: boolean;
+};
+
+export type KgmRoutingTraceMeta = {
+  provider?: string;
+  baseUrlHost?: string;
+  routeKey?: string;
+  failureReason?: string;
+};
+
 export type KgmExtensions = KgmOutputExtensions & {
   retrieval?: KgmRetrievalOptions;
   graph?: KgmGraphOptions;
@@ -158,6 +170,11 @@ export type KgmExtensions = KgmOutputExtensions & {
   capabilities?: KgmCapabilityOptions;
   playground?: KgmPlaygroundRequestHints;
   ycb?: KgmYcbHints;
+  ollama?: KgmOllamaHints;
+  /** 响应帧：路由审计（provider / baseUrl 摘要 / 失败原因）；完整轨迹见 autoRouting */
+  routing?: KgmRoutingTraceMeta;
+  /** OpenAI 兼容响应中的完整 autoRouting 轨迹（与 routing 摘要并存） */
+  autoRouting?: Record<string, unknown>;
 };
 
 export type ToolPolicy = {

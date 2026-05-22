@@ -10,6 +10,9 @@ export type AutoRoutingCandidateSnapshot = {
   model: string;
   provider?: string;
   runtimeId?: string;
+  /** 上游 baseUrl 主机摘要（便于 Copilot 展示路由契约） */
+  baseUrlHost?: string;
+  failureReason?: string;
   score: number;
   estimatedCost: number;
   successRate: number;

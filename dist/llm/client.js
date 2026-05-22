@@ -144,32 +144,59 @@ export class HttpLlmClient {
                                     : data.error.message || JSON.stringify(data.error);
                                 throw new Error(`Upstream error: ${errorMessage}`);
                             }
-                            let content = "";
-                            // 尝试从多种可能的字段中提取内容
                             if (data.choices?.[0]) {
                                 const choice = data.choices[0];
-                                if (choice.delta) {
-                                    content = choice.delta.content || choice.delta.reasoning_content || choice.delta.text || "";
-                                }
-                                else {
-                                    content = choice.text || "";
-                                }
-                            }
-                            // 也尝试直接从根级字段提取
-                            if (!content) {
-                                for (const field of contentFields) {
-                                    if (typeof data[field] === "string") {
-                                        content = data[field];
-                                        break;
+                                const delta = choice.delta;
+                                if (delta) {
+                                    const content = typeof delta.content === "string" && delta.content.length > 0
+                                        ? delta.content
+                                        : typeof delta.text === "string"
+                                            ? delta.text
+                                            : "";
+                                    if (content) {
+                                        yield {
+                                            type: "token",
+                                            text: content,
+                                            index: tokenIndex++,
+                                            channel: "content",
+                                        };
                                     }
+                                    let reasoning = "";
+                                    for (const key of ["reasoning_content", "reasoning", "thinking", "thought"]) {
+                                        const v = delta[key];
+                                        if (typeof v === "string" && v.length > 0) {
+                                            reasoning += v;
+                                        }
+                                    }
+                                    if (reasoning) {
+                                        yield {
+                                            type: "token",
+                                            text: reasoning,
+                                            index: tokenIndex++,
+                                            channel: "reasoning",
+                                        };
+                                    }
+                                    continue;
                                 }
+                                const plain = choice.text;
+                                if (typeof plain === "string" && plain.length > 0) {
+                                    yield { type: "token", text: plain, index: tokenIndex++, channel: "content" };
+                                }
+                                continue;
                             }
-                            if (content) {
-                                yield {
-                                    type: "token",
-                                    text: content,
-                                    index: tokenIndex++,
-                                };
+                            for (const field of contentFields) {
+                                if (typeof data[field] === "string" && data[field].length > 0) {
+                                    const channel = field === "content" || field === "text" || field === "output_text"
+                                        ? "content"
+                                        : "reasoning";
+                                    yield {
+                                        type: "token",
+                                        text: data[field],
+                                        index: tokenIndex++,
+                                        channel,
+                                    };
+                                    break;
+                                }
                             }
                         }
                         catch (error) {

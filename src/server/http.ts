@@ -22,7 +22,10 @@ import {
   type OpenAiChatCompletionRequest,
   type OpenAiResponsesRequest,
 } from "../openai/compat.js";
-import { maybeProxyNativeOpenAiStream } from "../openai/passthrough.js";
+import { maybeProxyNativeOpenAiStream, sendNormalizedUpstreamSse } from "../openai/passthrough.js";
+import { parseStreamIdleMs } from "../openai/sseStreamNormalize.js";
+import { handleGetModelProviders, handlePutModelProviders } from "./adminModelProviders.js";
+import { ProviderConfigurationManager } from "../models/providerConfigManager.js";
 import { normalizeIncomingHttpHeaders } from "../output/gfmNormalize.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { SandboxConfigurationError, SandboxManager } from "../sandbox/manager.js";
@@ -652,7 +655,34 @@ export function createKgmRequestListener(
       }
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
-        return sendJson(res, 200, buildOpenAiModelList(params.configStore, modelManager));
+        const configuredOnly =
+          url.searchParams.get("configured") === "true" ||
+          url.searchParams.get("configured_only") === "1";
+        let configuredProviders: import("../llm/providerFactory.js").ProviderConfig[] | undefined;
+        if (configuredOnly) {
+          const pcm = new ProviderConfigurationManager(
+            process.env.KGM_PROVIDER_CONFIG_PATH ?? "config/model-providers.json",
+          );
+          await pcm.loadConfiguration();
+          pcm.updateFromEnvironment();
+          configuredProviders = pcm.getActiveProviderConfigs().filter((p) => p.apiKey || p.apiKeys?.length);
+        }
+        return sendJson(
+          res,
+          200,
+          buildOpenAiModelList(params.configStore, modelManager, {
+            configuredOnly,
+            configuredProviders,
+          }),
+        );
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/admin/model-providers") {
+        return handleGetModelProviders(res);
+      }
+
+      if (req.method === "PUT" && url.pathname === "/v1/admin/model-providers") {
+        return handlePutModelProviders(req, res, params.configStore);
       }
 
       if (req.method === "GET" && url.pathname === "/v1/models/effective") {
@@ -1336,7 +1366,7 @@ export function createKgmRequestListener(
             modelManager,
             protocol: "chat",
             payload,
-            send: (upstream) => relayUpstreamSse(res, upstream),
+            send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
           });
           if (proxied) {
             return;
@@ -1379,7 +1409,7 @@ export function createKgmRequestListener(
             modelManager,
             protocol: "responses",
             payload,
-            send: (upstream) => relayUpstreamSse(res, upstream),
+            send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
           });
           if (proxied) {
             return;
@@ -2116,11 +2146,22 @@ async function sendSse(
   const abortController = new AbortController();
   const timeoutMsValue = options?.timeoutMs ?? parseInt(process.env.KGM_STREAM_TIMEOUT_MS || "300000", 10); // 默认5分钟
   const timeoutMs = isNaN(timeoutMsValue) ? 300000 : timeoutMsValue;
+  const idleMs = parseStreamIdleMs();
 
   // 设置超时
   const timeoutId = setTimeout(() => {
     abortController.abort(new Error("Stream timeout"));
   }, timeoutMs);
+
+  let lastActivity = Date.now();
+  const idleTimer =
+    idleMs > 0
+      ? setInterval(() => {
+          if (Date.now() - lastActivity > idleMs) {
+            abortController.abort(new Error("Stream idle timeout"));
+          }
+        }, Math.min(idleMs, 5000))
+      : undefined;
 
   // 监听客户端断开连接
   const onClose = () => {
@@ -2133,6 +2174,7 @@ async function sendSse(
       if (abortController.signal.aborted) {
         break;
       }
+      lastActivity = Date.now();
       res.write(`data: ${event}\n\n`);
     }
     if (options?.appendDone !== false && !abortController.signal.aborted) {
@@ -2144,6 +2186,7 @@ async function sendSse(
     }
   } finally {
     clearTimeout(timeoutId);
+    if (idleTimer) clearInterval(idleTimer);
     res.off("close", onClose);
     if (!res.destroyed) {
       res.end();

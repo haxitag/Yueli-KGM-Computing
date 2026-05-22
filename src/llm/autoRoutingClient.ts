@@ -1175,6 +1175,16 @@ export function extractResolvedModel(raw: unknown): string | undefined {
   return undefined;
 }
 
+function summarizeProviderBaseUrl(providerConfig?: { baseUrl?: string }): string | undefined {
+  if (!providerConfig?.baseUrl?.trim()) return undefined;
+  try {
+    return new URL(providerConfig.baseUrl).host;
+  } catch {
+    const u = providerConfig.baseUrl;
+    return u.length > 48 ? `${u.slice(0, 48)}…` : u;
+  }
+}
+
 function toSnapshot(candidate: RoutingCandidate): AutoRoutingCandidateSnapshot {
   return {
     routeKey: candidate.routeKey,
@@ -1183,6 +1193,7 @@ function toSnapshot(candidate: RoutingCandidate): AutoRoutingCandidateSnapshot {
     model: candidate.model,
     provider: candidate.provider,
     runtimeId: candidate.runtimeId,
+    baseUrlHost: summarizeProviderBaseUrl(candidate.providerConfig),
     score: round(candidate.score),
     estimatedCost: round(candidate.estimatedCost, 6),
     successRate: round(candidate.successRate),

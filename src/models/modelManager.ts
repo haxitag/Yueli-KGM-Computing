@@ -13,6 +13,11 @@ import { NativeRuntimeEngine } from "../native/engine.js";
 import { generateId } from "../utils/id.js";
 import { parseKgmfile, toModelRequests, type KgmfileSpec } from "./kgmfile.js";
 import { detectJangInModelDirectory } from "../native/jang.js";
+import {
+  DEFAULT_CLOUD_MODEL_CATALOG,
+  isProviderConfigured,
+  resolveCloudModelAlias,
+} from "./cloudModelCatalog.js";
 
 export type ManagedModelSourceType = "huggingface" | "ollama" | "github" | "modelscope" | "direct" | "local" | "kgm";
 export type ManagedModelArtifactStatus = "ready" | "downloading" | "pulling" | "error";
@@ -427,7 +432,14 @@ export class ManagedModelManager {
     return `${lines.join("\n")}\n`;
   }
 
-  listOpenAiModels(defaultModel?: string, defaultOwner = "kgm"): Array<Record<string, unknown>> {
+  listOpenAiModels(
+    defaultModel?: string,
+    defaultOwner = "kgm",
+    options?: {
+      configuredOnly?: boolean;
+      configuredProviders?: import("../llm/providerFactory.js").ProviderConfig[];
+    },
+  ): Array<Record<string, unknown>> {
     const created = Math.floor(Date.now() / 1000);
     const seen = new Set<string>();
     const models: Array<Record<string, unknown>> = [];
@@ -442,55 +454,27 @@ export class ManagedModelManager {
       });
     }
 
-    // 云端推理服务商支持的模型列表
-    const cloudModels = [
-      // OpenAI
-      { id: "gpt-5.4", owned_by: "openai" },
-      { id: "gpt-5.5", owned_by: "openai" },
-      { id: "gpt-oss", owned_by: "openai" },
-      // Zhipu
-      { id: "glm-5.0", owned_by: "zhipu" },
-      { id: "glm-5.1", owned_by: "zhipu" },
-      // Xiaomi
-      { id: "mimo-2.5", owned_by: "xiaomi" },
-      // Google Gemini
-      { id: "gemini-3.0", owned_by: "google" },
-      { id: "gemini-3.1", owned_by: "google" },
-      // Anthropic
-      { id: "claude-sonnet-4.6", owned_by: "anthropic" },
-      { id: "claude-opus-4.7", owned_by: "anthropic" },
-      // Moonshot / Kimi
-      { id: "kimi-2.5", owned_by: "moonshot" },
-      { id: "kimi-2.6", owned_by: "moonshot" },
-      // Minimax
-      { id: "minimax-2.5", owned_by: "minimax" },
-      { id: "minimax-2.7", owned_by: "minimax" },
-      // DeepSeek
-      { id: "deepseek-3.2", owned_by: "deepseek" },
-      { id: "deepseek-v4", owned_by: "deepseek" },
-      // Qwen / Aliyun
-      { id: "qwen-3.5", owned_by: "qwen" },
-      { id: "qwen-3.6", owned_by: "qwen" },
-      { id: "qwen-max", owned_by: "aliyun" },
-      { id: "qwen-plus", owned_by: "aliyun" },
-      // ModelScope
-      { id: "deepseek-r1", owned_by: "modelscope" },
-      { id: "llama3-70b", owned_by: "modelscope" },
-    ];
+    const pushCloud = (id: string, ownedBy: string) => {
+      const canonical = resolveCloudModelAlias(id);
+      if (seen.has(canonical)) return;
+      seen.add(canonical);
+      models.push({
+        id: canonical,
+        object: "model",
+        created,
+        owned_by: ownedBy,
+        kgm: { cloud: true, provider: ownedBy, modelType: "cloud-model" },
+      });
+    };
 
-    for (const cloudModel of cloudModels) {
-      if (!seen.has(cloudModel.id)) {
-        seen.add(cloudModel.id);
-        models.push({
-          id: cloudModel.id,
-          object: "model",
-          created,
-          owned_by: cloudModel.owned_by,
-          kgm: {
-            cloud: true,
-            provider: cloudModel.owned_by,
-          },
-        });
+    if (options?.configuredOnly) {
+      for (const provider of options.configuredProviders ?? []) {
+        if (!isProviderConfigured(provider)) continue;
+        pushCloud(provider.model, provider.type);
+      }
+    } else {
+      for (const entry of DEFAULT_CLOUD_MODEL_CATALOG) {
+        pushCloud(entry.id, entry.owned_by);
       }
     }
 

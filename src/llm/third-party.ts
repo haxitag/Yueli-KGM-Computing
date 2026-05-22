@@ -380,11 +380,13 @@ export class OllamaLlmClient implements LlmClient {
   }
 
   async *streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
+    const think = options?.think === true;
     const payload = {
       model: options?.model ?? this.model,
       messages: [
         { role: "user", content: prompt },
       ],
+      think,
       stream: true,
       options: {
         temperature: options?.temperature ?? 0.8,
@@ -439,7 +441,7 @@ export class OllamaLlmClient implements LlmClient {
 
           try {
             const data = JSON.parse(trimmed) as {
-              message?: { content?: string };
+              message?: { content?: string; thinking?: string; reasoning?: string };
               done?: boolean;
               error?: string;
             };
@@ -448,11 +450,22 @@ export class OllamaLlmClient implements LlmClient {
               throw new LlmProviderApiError("ollama", `Stream: ${stringifyLlmProviderErrorPayload(data.error)}`);
             }
 
-            if (data.message?.content) {
+            const msg = data.message;
+            if (msg?.content) {
               yield {
                 type: "token",
-                text: data.message.content,
+                text: msg.content,
                 index: tokenIndex++,
+                channel: "content",
+              };
+            }
+            const reasoningPart = msg?.thinking ?? msg?.reasoning ?? "";
+            if (reasoningPart) {
+              yield {
+                type: "token",
+                text: reasoningPart,
+                index: tokenIndex++,
+                channel: "reasoning",
               };
             }
 

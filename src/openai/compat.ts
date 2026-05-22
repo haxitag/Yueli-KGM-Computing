@@ -137,9 +137,19 @@ type CompatibilityRun = {
   conversation: ConversationMessage[];
 };
 
-export function buildOpenAiModelList(configStore: ConfigStore, modelManager?: ManagedModelManager) {
+export function buildOpenAiModelList(
+  configStore: ConfigStore,
+  modelManager?: ManagedModelManager,
+  options?: {
+    configuredOnly?: boolean;
+    configuredProviders?: import("../llm/providerFactory.js").ProviderConfig[];
+  },
+) {
   const llm = configStore.get().llm;
-  const data = modelManager?.listOpenAiModels(llm.model, llm.provider) ?? [
+  const data = modelManager?.listOpenAiModels(llm.model, llm.provider, {
+    configuredOnly: options?.configuredOnly,
+    configuredProviders: options?.configuredProviders,
+  }) ?? [
     {
       id: llm.model,
       object: "model",
@@ -630,7 +640,16 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
         builtinToolsIncluded: Boolean(kgm.capabilities?.includeBuiltinTools),
         previousResponseId: params.previousResponseId,
       },
-      ...(latestRoutingTrace ? { routing: latestRoutingTrace } : {}),
+      ...(latestRoutingTrace
+        ? {
+            autoRouting: latestRoutingTrace as unknown as Record<string, unknown>,
+            routing: {
+              provider: latestRoutingTrace.selected.provider,
+              baseUrlHost: latestRoutingTrace.selected.baseUrlHost,
+              routeKey: latestRoutingTrace.selected.routeKey,
+            },
+          }
+        : {}),
       tool_trace: traces,
     },
     finalText,
@@ -683,6 +702,18 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
     }
     if (event.type === "token" && event.text) {
       rawOutput += event.text;
+      if (event.channel === "reasoning") {
+        yield JSON.stringify({
+          id: direct.completionId,
+          object: "chat.completion.chunk",
+          created: direct.created,
+          model: activeModel,
+          choices: [
+            { index: 0, delta: { reasoning_content: event.text }, finish_reason: null },
+          ],
+        });
+        continue;
+      }
       const delta = extractFinalContentDelta(rawOutput, streamedContent);
       if (!delta) {
         continue;
@@ -711,6 +742,19 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
     { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders },
   );
   finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
+  const routingTrace = extractAutoRoutingTrace(finalResult?.raw);
+  if (routingTrace?.selected) {
+    finalized.kgm = {
+      ...finalized.kgm,
+      autoRouting: routingTrace as unknown as Record<string, unknown>,
+      routing: {
+        provider: routingTrace.selected.provider,
+        baseUrlHost: routingTrace.selected.baseUrlHost,
+        routeKey: routingTrace.selected.routeKey,
+        failureReason: routingTrace.selected.failureReason,
+      },
+    };
+  }
   if (finalized.finalText.length > streamedContent.length) {
     const trailing = finalized.finalText.slice(streamedContent.length);
     if (trailing) {
@@ -825,7 +869,8 @@ async function prepareDirectStream(params: ExecuteParams): Promise<DirectStreamS
   const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
   const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
 
-  if (effectiveTools.length > 0) {
+  const executeOnServer = kgm.capabilities?.executeToolCalls ?? true;
+  if (effectiveTools.length > 0 && executeOnServer) {
     return null;
   }
 
@@ -923,7 +968,16 @@ function finalizeDirectStream(
     metadata: setup.metadata,
     kgm: {
       ...setup.kgm,
-      ...(routingTrace ? { routing: routingTrace } : {}),
+      ...(routingTrace
+        ? {
+            autoRouting: routingTrace as unknown as Record<string, unknown>,
+            routing: {
+              provider: routingTrace.selected.provider,
+              baseUrlHost: routingTrace.selected.baseUrlHost,
+              routeKey: routingTrace.selected.routeKey,
+            },
+          }
+        : {}),
     },
     finalText,
     finishReason: "stop",

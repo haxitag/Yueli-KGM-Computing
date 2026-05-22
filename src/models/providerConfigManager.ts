@@ -130,6 +130,35 @@ export class ProviderConfigurationManager {
     this.config.providerRoutingRules.sort((a, b) => b.priority - a.priority);
   }
 
+  /** 导出完整配置（供 Admin API / Copilot 同步） */
+  getConfigData(): ProviderConfigData {
+    return {
+      providers: [...this.config.providers],
+      activeProviders: [...this.config.activeProviders],
+      defaultProvider: this.config.defaultProvider,
+      providerRoutingRules: [...this.config.providerRoutingRules],
+    };
+  }
+
+  /** 批量替换提供商（Copilot cloudProviders 同步） */
+  replaceFromCopilotSync(params: {
+    providers: ProviderConfig[];
+    activeProviders?: string[];
+    defaultProvider?: string;
+  }): void {
+    this.config.providers = [...params.providers];
+    if (params.activeProviders?.length) {
+      this.config.activeProviders = [...params.activeProviders];
+    } else {
+      this.config.activeProviders = params.providers.map((p) => `${p.type}:${p.model}`);
+    }
+    if (params.defaultProvider) {
+      this.config.defaultProvider = params.defaultProvider;
+    } else if (this.config.activeProviders[0]) {
+      this.config.defaultProvider = this.config.activeProviders[0];
+    }
+  }
+
   /**
    * 获取所有提供商配置
    */

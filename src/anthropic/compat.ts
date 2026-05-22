@@ -510,7 +510,11 @@ export async function *streamAnthropicMessagesJsonLines(
     if (delta?.tool_calls?.length) {
       mergeToolCallDeltas(toolAcc, delta.tool_calls);
     }
-    const content = delta?.content;
+    const deltaAny = delta as Record<string, unknown> | undefined;
+    const content =
+      delta?.content ||
+      (typeof deltaAny?.reasoning_content === "string" ? deltaAny.reasoning_content : undefined) ||
+      (typeof deltaAny?.reasoning === "string" ? deltaAny.reasoning : undefined);
     if (content) {
       if (!startedText) {
         yield* flushPendingTools();

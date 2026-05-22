@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": false,
   "workspaces": [
     "packages/*"
@@ -85,6 +85,7 @@
     "test:e2e:journey": "tsx --test tests/e2e/user-journey-matrix.e2e.test.ts",
     "test:e2e:critical": "tsx --test tests/e2e/critical-review-matrix.e2e.test.ts",
     "test:e2e:proxy": "tsx --test tests/e2e/upstream-proxy.e2e.test.ts",
+    "test:unit:sse": "node --import tsx --test tests/unit/sse_stream_normalize.test.ts",
     "test:e2e:cli": "tsx --test tests/e2e/kgm-cli.e2e.test.ts",
     "test:e2e:all": "tsx --test tests/e2e/kgm-server.e2e.test.ts tests/e2e/kce-compute.e2e.test.ts tests/e2e/playground-api.e2e.test.ts tests/e2e/upstream-proxy.e2e.test.ts tests/e2e/user-journey-matrix.e2e.test.ts tests/e2e/critical-review-matrix.e2e.test.ts tests/e2e/kgm-cli.e2e.test.ts",
     "test:kgm-regression": "npm run build && npm run test:jang && npm run test:mlx-hints && npm run test:jang-layer-plan && npm run test:apple-silicon-probe && npm run test:canonical-conversion && npm run test:hf-public-configs && npm run test:tokenizer-chat-template && npm run test:jinja-lite && npm run test:pytorch-index-canonical && npm run test:pytorch-index-validate-files && npm run test:gguf-layout-matrix && npm run test:native-gguf-negative-synth && npm run test:anthropic-tool-mapping && npm run test:anthropic-streaming-tool-text-order && npm run test:native-gpu-backend && npm run test:native-gpu-sim-difftest && npm run test:native-gpu-safetensors-layout && npm run test:native-gpu-safetensors-index-layout && npm run test:native-gpu-qwen2-weights-layout && npm run test:native-gpu-qwen2-tie-word-embeddings && npm run test:native-gpu-buffer-cast && npm run test:native-gpu-safetensors-index-buffer-cast && npm run test:native-gpu-minimal-infer-sim && npm run test:native-gpu-attention-kv-sim && npm run test:native-gpu-graph-capture-sim && npm run test:native-gpu-comm-sim-collectives && npm run test:native-gpu-tp-sharding-helpers && npm run test:managed-runtime-metrics-prom-extra && npm run smoke:native-safetensors && npm run smoke:native-gguf && npm run smoke:openai-compat",

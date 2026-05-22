@@ -53,6 +53,9 @@ export function resolveOutputNormalizeMode(
               (headers['X-Yueli-Output-Normalize'] as string)
           };
     const headerVal = (h.xKgm ?? h.xYueli ?? '').toString().trim().toLowerCase();
+    if (headerVal === 'off' || headerVal === 'false' || headerVal === '0' || headerVal === 'none') {
+      return undefined;
+    }
     if (headerVal === 'gfm-lite') return 'gfm-lite';
   }
 

@@ -2,6 +2,7 @@ import type { ConfigStore } from "../core/configStore.js";
 import type { KgmExtensions } from "../core/types.js";
 import type { ManagedModelManager } from "../models/modelManager.js";
 import type { OpenAiChatCompletionRequest, OpenAiResponsesRequest } from "./compat.js";
+import { relayUpstreamSseNormalized } from "./sseStreamNormalize.js";
 
 export async function maybeProxyNativeOpenAiStream(params: {
   configStore: ConfigStore;
@@ -15,6 +16,7 @@ export async function maybeProxyNativeOpenAiStream(params: {
   }
 
   const upstream = resolveUpstream(params);
+  const outbound = sanitizePassthroughPayload(params.payload);
   const url = joinPath(upstream.baseUrl, upstream.path);
   let response: Response;
   try {
@@ -24,7 +26,7 @@ export async function maybeProxyNativeOpenAiStream(params: {
         "content-type": "application/json",
         ...buildAuthHeaders(upstream.apiKey),
       },
-      body: JSON.stringify(params.payload),
+      body: JSON.stringify(outbound),
     });
   } catch {
     return false;
@@ -41,6 +43,31 @@ export async function maybeProxyNativeOpenAiStream(params: {
 
   await params.send(response);
   return true;
+}
+
+/** 默认 send：归一化 reasoning delta 并支持空闲断开 */
+export async function sendNormalizedUpstreamSse(
+  res: import("node:http").ServerResponse,
+  upstream: Response,
+): Promise<void> {
+  return relayUpstreamSseNormalized(res, upstream);
+}
+
+function sanitizePassthroughPayload(
+  payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest,
+): OpenAiChatCompletionRequest | OpenAiResponsesRequest {
+  const copy = { ...payload } as OpenAiChatCompletionRequest & { think?: boolean };
+  const kgm = copy.kgm;
+  if (kgm?.ollama && typeof kgm.ollama === "object") {
+    const o = kgm.ollama as { think?: boolean };
+    if (o.think === false) {
+      copy.think = false;
+    }
+  }
+  if (copy.think === undefined && payload.stream) {
+    copy.think = false;
+  }
+  return copy;
 }
 
 function resolveUpstream(params: {
@@ -83,7 +110,10 @@ function canUseNativeOpenAiStreamPassthrough(
   if (kgm.graph?.enabled || kgm.retrieval) {
     return false;
   }
-  if (kgm.capabilities?.includeBuiltinTools || kgm.capabilities?.executeToolCalls) {
+  if (kgm.capabilities?.includeBuiltinTools) {
+    return false;
+  }
+  if (kgm.capabilities?.executeToolCalls === true) {
     return false;
   }
 
@@ -91,7 +121,17 @@ function canUseNativeOpenAiStreamPassthrough(
 }
 
 function isPassThroughSafeExtension(kgm: KgmExtensions): boolean {
-  return !kgm.graph && !kgm.retrieval && !kgm.capabilities;
+  if (kgm.graph?.enabled || kgm.retrieval) {
+    return false;
+  }
+  const caps = kgm.capabilities;
+  if (!caps) {
+    return true;
+  }
+  if (caps.includeBuiltinTools || caps.executeToolCalls === true) {
+    return false;
+  }
+  return true;
 }
 
 function resolveProtocolPath(protocol: "chat" | "responses"): string {
