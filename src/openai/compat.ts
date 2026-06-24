@@ -19,6 +19,9 @@ import { collectPlaygroundSystemAddons } from "../playground/systemAddons.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { generateId } from "../utils/id.js";
 import type { ManagedModelManager } from "../models/modelManager.js";
+import type { MaaSOpenAiChatExtras } from "../llm/maas/types.js";
+import { extractMaaSOpenAiExtras } from "../llm/maas/reasoning.js";
+import type { CompletionOptions } from "../llm/client.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
 import { annotateOpenAiModels } from "../models/modelTypeAnnotator.js";
@@ -82,7 +85,7 @@ export type OpenAiChatCompletionRequest = {
   stream?: boolean;
   kgm?: KgmExtensions;
   routing?: RoutingHints;
-};
+} & MaaSOpenAiChatExtras;
 
 export type OpenAiResponsesInputItem = {
   type?: string;
@@ -110,7 +113,7 @@ export type OpenAiResponsesRequest = {
   parallel_tool_calls?: boolean;
   kgm?: KgmExtensions;
   routing?: RoutingHints;
-};
+} & MaaSOpenAiChatExtras;
 
 type CompatibilityToolTrace = {
   id: string;
@@ -276,6 +279,11 @@ export async function createOpenAiChatCompletion(params: CompatibilityParams & {
     routing: params.request.routing,
     protocol: "chat.completions",
     previousResponseId: undefined,
+    parallel_tool_calls: params.request.parallel_tool_calls,
+    thinking: params.request.thinking,
+    enable_thinking: params.request.enable_thinking,
+    reasoning_effort: params.request.reasoning_effort,
+    output_config: params.request.output_config,
   });
 
   const message: Record<string, unknown> = {
@@ -307,6 +315,21 @@ export async function createOpenAiChatCompletion(params: CompatibilityParams & {
   };
 }
 
+function spreadMaaSFieldsFromRequest(
+  req: MaaSOpenAiChatExtras & { parallel_tool_calls?: boolean },
+): Pick<
+  ExecuteParams,
+  "parallel_tool_calls" | "thinking" | "enable_thinking" | "reasoning_effort" | "output_config"
+> {
+  return {
+    parallel_tool_calls: req.parallel_tool_calls,
+    thinking: req.thinking,
+    enable_thinking: req.enable_thinking,
+    reasoning_effort: req.reasoning_effort,
+    output_config: req.output_config,
+  };
+}
+
 export async function createOpenAiResponse(params: CompatibilityParams & {
   request: OpenAiResponsesRequest;
 }): Promise<Record<string, unknown>> {
@@ -328,6 +351,7 @@ export async function createOpenAiResponse(params: CompatibilityParams & {
     routing: params.request.routing,
     protocol: "responses",
     previousResponseId: params.request.previous_response_id,
+    ...spreadMaaSFieldsFromRequest(params.request),
   });
 
   return buildResponsesObject(run);
@@ -354,6 +378,7 @@ export function streamOpenAiChatCompletion(params: CompatibilityParams & {
     routing: params.request.routing,
     protocol: "chat.completions",
     previousResponseId: undefined,
+    ...spreadMaaSFieldsFromRequest(params.request),
   });
 }
 
@@ -378,6 +403,7 @@ export function streamOpenAiResponse(params: CompatibilityParams & {
     routing: params.request.routing,
     protocol: "responses",
     previousResponseId: params.request.previous_response_id,
+    ...spreadMaaSFieldsFromRequest(params.request),
   });
 }
 
@@ -407,7 +433,33 @@ type ExecuteParams = CompatibilityParams & {
   routing?: RoutingHints;
   protocol: "chat.completions" | "responses";
   previousResponseId?: string;
-};
+  parallel_tool_calls?: boolean;
+} & MaaSOpenAiChatExtras;
+
+function buildMaaSCompletionOptions(
+  params: ExecuteParams,
+  base: Omit<CompletionOptions, keyof MaaSOpenAiChatExtras>,
+): CompletionOptions {
+  const extras = extractMaaSOpenAiExtras(params as unknown as Record<string, unknown>);
+  return {
+    ...base,
+    messages: params.messages.map((m) => ({
+      role: m.role,
+      content: m.content ?? "",
+      name: m.name,
+      tool_call_id: m.toolCallId,
+    })),
+    tools: params.tools,
+    toolChoice: params.toolChoice,
+    parallelToolCalls: params.parallel_tool_calls,
+    responseFormat: params.responseFormat,
+    thinking: params.thinking ?? extras.thinking,
+    enableThinking: params.enable_thinking ?? extras.enable_thinking,
+    reasoningEffort: params.reasoning_effort ?? extras.reasoning_effort,
+    outputConfig: params.output_config ?? extras.output_config,
+    maasExtras: extras,
+  };
+}
 
 type DirectStreamSetup = {
   requestId: string;
@@ -479,7 +531,7 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
       includeSkillNames: config.context.includeSkillNames,
       systemPromptAddons,
     });
-    const completion = await params.llmClient.complete(prompt, {
+    const completion = await params.llmClient.complete(prompt, buildMaaSCompletionOptions(params, {
       model,
       requestId,
       sessionId: deriveSessionId(params.metadata),
@@ -490,7 +542,7 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
       taskType: params.routing?.taskType,
       taskName: params.routing?.taskName,
       routing: params.routing,
-    });
+    }));
     latestRoutingTrace = extractAutoRoutingTrace(completion.raw);
     resolvedModel = extractResolvedModel(completion.raw) ?? resolvedModel;
     const structuredRound = extractStructuredCompletion(completion.raw, config.llm.provider);
@@ -689,7 +741,7 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
   let streamedReasoning = "";
   let finalResult: CompletionResult | undefined;
   let activeModel = direct.model;
-  for await (const event of streamCompletion(params.llmClient, direct.prompt, {
+  for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
     model: direct.model,
     requestId: direct.requestId,
     sessionId: deriveSessionId(params.metadata),
@@ -700,7 +752,7 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
     taskType: params.routing?.taskType,
     taskName: params.routing?.taskName,
     routing: params.routing,
-  })) {
+  }))) {
     if (event.type === "started" && event.model) {
       activeModel = event.model;
       continue;
@@ -810,7 +862,7 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
   let streamedReasoning = "";
   let finalResult: CompletionResult | undefined;
   let activeModel = direct.model;
-  for await (const event of streamCompletion(params.llmClient, direct.prompt, {
+  for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
     model: direct.model,
     requestId: direct.requestId,
     sessionId: deriveSessionId(params.metadata),
@@ -821,7 +873,7 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
     taskType: params.routing?.taskType,
     taskName: params.routing?.taskName,
     routing: params.routing,
-  })) {
+  }))) {
     if (event.type === "started" && event.model) {
       activeModel = event.model;
       continue;

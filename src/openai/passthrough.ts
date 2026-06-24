@@ -2,6 +2,7 @@ import type { ConfigStore } from "../core/configStore.js";
 import type { KgmExtensions } from "../core/types.js";
 import type { ManagedModelManager } from "../models/modelManager.js";
 import type { OpenAiChatCompletionRequest, OpenAiResponsesRequest } from "./compat.js";
+import { mergeOpenAiPassthroughBody } from "../llm/maas/openAiChatBody.js";
 import { relayUpstreamSseNormalized } from "./sseStreamNormalize.js";
 
 export async function maybeProxyNativeOpenAiStream(params: {
@@ -55,8 +56,12 @@ export async function sendNormalizedUpstreamSse(
 
 function sanitizePassthroughPayload(
   payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest,
-): OpenAiChatCompletionRequest | OpenAiResponsesRequest {
-  const copy = { ...payload } as OpenAiChatCompletionRequest & { think?: boolean };
+): Record<string, unknown> {
+  const merged = mergeOpenAiPassthroughBody(
+    payload as Record<string, unknown>,
+    payload as Record<string, unknown>,
+  );
+  const copy = merged as OpenAiChatCompletionRequest & { think?: boolean };
   const kgm = copy.kgm;
   if (kgm?.ollama && typeof kgm.ollama === "object") {
     const o = kgm.ollama as { think?: boolean };

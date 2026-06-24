@@ -1,5 +1,6 @@
 import type { ConfigStore } from "../core/configStore.js";
 import type { KgmExtensions } from "../core/types.js";
+import type { MaaSOutputConfig, MaaSThinkingParam } from "../llm/maas/types.js";
 import type { ContextBuilder } from "../context/contextBuilder.js";
 import type { LlmClient } from "../llm/client.js";
 import {
@@ -42,7 +43,13 @@ export type AnthropicToolResultBlock = {
   content: string | unknown;
 };
 
-export type AnthropicAssistantContentBlock = AnthropicTextBlock | AnthropicToolUseBlock;
+export type AnthropicThinkingBlock = {
+  type: "thinking";
+  thinking: string;
+  signature?: string;
+};
+
+export type AnthropicAssistantContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicThinkingBlock;
 
 export type AnthropicUserContentBlock = AnthropicTextBlock | AnthropicToolResultBlock;
 
@@ -81,11 +88,18 @@ export type AnthropicMessagesRequest = {
     role: "user" | "assistant";
     content: string | AnthropicMessageContentBlock[];
   }>;
-  system?: string;
+  system?: string | AnthropicMessageContentBlock[];
   max_tokens?: number;
   temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  stop_sequences?: string[];
   stream?: boolean;
   metadata?: Record<string, unknown>;
+  /** Anthropic adaptive / extended thinking（Opus 4.6+、Sonnet 4.6+、Fable 5） */
+  thinking?: MaaSThinkingParam;
+  /** 与 thinking.type=adaptive 配合的 effort 控制 */
+  output_config?: MaaSOutputConfig;
   /** 与 Anthropic Messages API 一致，经 `anthropicMessagesToOpenAiChatRequest` 映射到 OpenAI `tools` */
   tools?: AnthropicToolDefinition[];
   /** 映射到 OpenAI `tool_choice`（含 `none`、对象上的 `disable_parallel_tool_use`） */
@@ -135,9 +149,14 @@ export function openAiToolCallsToAnthropicToolUseBlocks(toolCalls: OpenAiToolCal
  */
 export function openAiAssistantMessageToAnthropicContent(message: {
   content?: string | null;
+  reasoning_content?: string | null;
   tool_calls?: OpenAiToolCallLike[];
-}): Array<AnthropicTextBlock | AnthropicToolUseBlock> {
-  const blocks: Array<AnthropicTextBlock | AnthropicToolUseBlock> = [];
+}): Array<AnthropicTextBlock | AnthropicToolUseBlock | AnthropicThinkingBlock> {
+  const blocks: Array<AnthropicTextBlock | AnthropicToolUseBlock | AnthropicThinkingBlock> = [];
+  const reasoning = message.reasoning_content;
+  if (typeof reasoning === "string" && reasoning.length > 0) {
+    blocks.push({ type: "thinking", thinking: reasoning });
+  }
   const text = message.content;
   if (text !== null && text !== undefined && String(text).length > 0) {
     blocks.push({ type: "text", text: String(text) });
@@ -173,7 +192,11 @@ export function openAiChatCompletionToAnthropicMessage(openai: Record<string, un
       tool_calls?: OpenAiToolCallLike[];
     };
   }> | undefined;
-  const message = choices?.[0]?.message;
+  const message = choices?.[0]?.message as {
+    content?: string | null;
+    reasoning_content?: string | null;
+    tool_calls?: OpenAiToolCallLike[];
+  } | undefined;
   const usage = openai.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
   const model = String(openai.model ?? "");
   const rawId = String(openai.id ?? "chatcmpl");
@@ -319,7 +342,9 @@ export function anthropicDisableParallelToOpenAiParallel(
 export function anthropicMessagesToOpenAiChatRequest(req: AnthropicMessagesRequest): OpenAiChatCompletionRequest {
   const messages: OpenAiChatMessage[] = [];
   if (req.system !== undefined && req.system !== "") {
-    messages.push({ role: "system", content: req.system });
+    const systemContent =
+      typeof req.system === "string" ? req.system : JSON.stringify(req.system);
+    messages.push({ role: "system", content: systemContent });
   }
   for (const m of req.messages) {
     if (typeof m.content === "string") {
@@ -346,6 +371,8 @@ export function anthropicMessagesToOpenAiChatRequest(req: AnthropicMessagesReque
     stream: req.stream,
     metadata: req.metadata,
     kgm: req.kgm,
+    ...(req.thinking !== undefined ? { thinking: req.thinking } : {}),
+    ...(req.output_config !== undefined ? { output_config: req.output_config } : {}),
     ...(tools !== undefined ? { tools } : {}),
     ...(tool_choice !== undefined ? { tool_choice } : {}),
     ...(parallel_tool_calls !== undefined ? { parallel_tool_calls } : {}),
@@ -468,7 +495,9 @@ export async function *streamAnthropicMessagesJsonLines(
   let lastFinish: string | null | undefined;
   let nextBlockIndex = 0;
   let textBlockIndex = -1;
+  let thinkingBlockIndex = -1;
   let startedText = false;
+  let startedThinking = false;
 
   function* flushPendingTools(): Generator<string> {
     if (Object.keys(toolAcc).length === 0) {
@@ -511,10 +540,29 @@ export async function *streamAnthropicMessagesJsonLines(
       mergeToolCallDeltas(toolAcc, delta.tool_calls);
     }
     const deltaAny = delta as Record<string, unknown> | undefined;
-    const content =
-      delta?.content ||
+    const reasoningText =
       (typeof deltaAny?.reasoning_content === "string" ? deltaAny.reasoning_content : undefined) ||
-      (typeof deltaAny?.reasoning === "string" ? deltaAny.reasoning : undefined);
+      (typeof deltaAny?.reasoning === "string" ? deltaAny.reasoning : undefined) ||
+      (typeof deltaAny?.thinking === "string" ? deltaAny.thinking : undefined);
+    if (reasoningText) {
+      if (!startedThinking) {
+        yield* flushPendingTools();
+        yield JSON.stringify({
+          type: "content_block_start",
+          index: nextBlockIndex,
+          content_block: { type: "thinking", thinking: "" },
+        });
+        thinkingBlockIndex = nextBlockIndex;
+        startedThinking = true;
+        nextBlockIndex += 1;
+      }
+      yield JSON.stringify({
+        type: "content_block_delta",
+        index: thinkingBlockIndex,
+        delta: { type: "thinking_delta", thinking: reasoningText },
+      });
+    }
+    const content = delta?.content;
     if (content) {
       if (!startedText) {
         yield* flushPendingTools();
@@ -535,7 +583,7 @@ export async function *streamAnthropicMessagesJsonLines(
     }
   }
 
-  if (!startedText) {
+  if (!startedText && !startedThinking) {
     yield* flushPendingTools();
   } else if (Object.keys(toolAcc).length > 0) {
     yield* flushPendingTools();

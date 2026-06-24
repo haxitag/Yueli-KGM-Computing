@@ -29,10 +29,17 @@
 
 ---
 
-## 🚀 0.2.9 版本更新
+## 🚀 0.3.0 版本更新
 
-### 本版要点
-- **OpenAI Responses API 增强**：`/v1/responses` 对齐新版流式事件（`response.output_text.delta`、`response.reasoning.delta`、`response.completed`）；Chat Completions 支持 `reasoning_content` 非流式与流式 `delta`；终态响应含 `kgm.reasoning_content` / `kgm.reasoning_trace`（见 `src/openai/compat.ts`）。
+### 本版要点：MaaS 全链路 Thinking / Reasoning 兼容
+- **统一 MaaS 层**（`src/llm/maas/`）：模型目录、请求封装、推理字段解析、Anthropic 原生代理
+- **最新旗舰模型**：Anthropic（Opus 4.8/4.7、Sonnet 4.6、Fable 5）、智谱 GLM-5.2/5.1/5.0、Kimi 2.7/2.6/2.5、MiniMax 3.0/2.7/2.6/2.5
+- **Thinking / Reasoning**：请求支持 `thinking`、`enable_thinking`、`reasoning_effort`、`output_config`；响应/流式统一解析 `reasoning_content` / `thinking` 等字段
+- **Anthropic 原生直通**：`/v1/messages` 在含 `thinking` / `output_config` 时直连 `api.anthropic.com`，流式输出 `thinking_delta` 内容块
+- **OpenAI-compat 增强**：智谱 / Moonshot / DeepSeek 改走完整 Chat Completions 客户端（流式 + tools + thinking 透传）
+
+### 0.2.9：OpenAI Responses API
+- `/v1/responses` 对齐新版流式事件；Chat Completions `reasoning_content` 非流式与流式 `delta` 支持
 
 ### 0.2.8：Copilot 集成
 - SSE 流式归一化：`executeToolCalls` 关闭时放宽透传；Ollama `think=false` 与 reasoning 通道
@@ -694,7 +701,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.2.9
+npm install @haxitag/yueli-kgm-computing@0.3.0
 ```
 
 ### 开源仓库同步（维护者）
@@ -720,15 +727,17 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前 npm：`0.2.9`）
+## 版本说明（当前 npm：`0.3.0`）
 
-**0.2.9**：OpenAI Responses API 流式事件与 reasoning 通道对齐；Chat Completions `reasoning_content` 支持（见上文「本版要点」）。
+**0.3.0**：MaaS 全链路 Thinking/Reasoning 兼容 — 统一 `src/llm/maas/` 层；补全 Anthropic / GLM / Kimi / MiniMax 最新旗舰模型；Anthropic 原生直通与 OpenAI-compat 推理字段透传（见上文「本版要点」）。
+
+**0.2.9**：OpenAI Responses API 流式事件与 reasoning 通道对齐；Chat Completions `reasoning_content` 支持。
 
 **0.2.8**：Copilot 集成 — SSE 归一化、云厂商同步 API、已配置模型列表与路由元数据。
 
 **0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明。
 
-**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.2.9** 一致。
+**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.3.0** 一致。
 
 ### ✅ 新增功能
 

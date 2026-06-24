@@ -1,5 +1,8 @@
 import type { ConfigStore } from "../core/configStore.js";
 import type { RoutingHints } from "../core/types.js";
+import type { MaaSChatMessage, MaaSOpenAiChatExtras, MaaSOutputConfig, MaaSThinkingParam } from "./maas/types.js";
+import { buildOpenAiChatCompletionsBody } from "./maas/openAiChatBody.js";
+import { extractOpenAiCompatChoiceText, extractOpenAiCompatDeltaParts } from "./maas/reasoning.js";
 import { OllamaLlmClient } from "./third-party.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
@@ -31,6 +34,19 @@ export type CompletionOptions = {
   routing?: RoutingHints;
   /** Ollama /v1/chat：默认 false，与 Copilot KGMAdapter 对齐 */
   think?: boolean;
+  /** 多轮 messages（优先于 prompt 单条 user） */
+  messages?: MaaSChatMessage[];
+  tools?: unknown[];
+  toolChoice?: unknown;
+  parallelToolCalls?: boolean;
+  responseFormat?: Record<string, unknown>;
+  /** GLM / OpenAI / 部分 MaaS thinking 参数 */
+  thinking?: MaaSThinkingParam;
+  enableThinking?: boolean;
+  reasoningEffort?: string;
+  outputConfig?: MaaSOutputConfig;
+  maasExtras?: MaaSOpenAiChatExtras;
+  extraBody?: Record<string, unknown>;
 };
 
 export type StreamTokenChannel = "content" | "reasoning";
@@ -122,13 +138,17 @@ export class HttpLlmClient implements LlmClient {
   async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
     const payload =
       this.mode === "chat"
-        ? {
+        ? buildOpenAiChatCompletionsBody({
             model: options?.model ?? this.model,
-            messages: [{ role: "user", content: prompt }],
-            max_tokens: options?.maxTokens ?? 512,
+            prompt,
+            messages: options?.messages,
+            stream: false,
+            maxTokens: options?.maxTokens ?? 512,
             temperature: options?.temperature ?? 0.2,
             stop: options?.stop,
-          }
+            topP: options?.topP,
+            options,
+          })
         : {
             model: options?.model ?? this.model,
             prompt,
@@ -141,41 +161,33 @@ export class HttpLlmClient implements LlmClient {
       headers: buildAuthHeaders(this.apiKey),
       timeoutMs: this.timeoutMs,
     })) as {
-      choices?: Array<{ text?: string; message?: { content?: string; reasoning?: string; thinking?: string } }>;
+      choices?: Array<Record<string, unknown>>;
       output_text?: string;
     };
 
     const choice = data.choices?.[0];
-    const firstNonEmpty = (...cands: Array<unknown>) => {
-      for (const c of cands) {
-        if (typeof c === "string" && c.trim().length > 0) return c;
-      }
-      return "";
-    };
-
-    // 兼容 reasoning-only 模型：部分 OpenAI-compat 返回 content=""，而真正输出在 message.reasoning/thinking
-    const text = firstNonEmpty(
-      data.output_text,
-      choice?.text,
-      choice?.message?.content,
-      choice?.message?.reasoning,
-      choice?.message?.thinking,
-    );
-    return { text, raw: data };
+    const { text } = extractOpenAiCompatChoiceText(choice);
+    const resolved =
+      text ||
+      (typeof data.output_text === "string" ? data.output_text : "");
+    return { text: resolved, raw: data };
   }
 
   async* streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
     const url = joinUrl(this.baseUrl, this.path);
     const payload =
       this.mode === "chat"
-        ? {
+        ? buildOpenAiChatCompletionsBody({
             model: options?.model ?? this.model,
-            messages: [{ role: "user", content: prompt }],
-            max_tokens: options?.maxTokens ?? 512,
+            prompt,
+            messages: options?.messages,
+            stream: true,
+            maxTokens: options?.maxTokens ?? 512,
             temperature: options?.temperature ?? 0.2,
             stop: options?.stop,
-            stream: true,
-          }
+            topP: options?.topP,
+            options,
+          })
         : {
             model: options?.model ?? this.model,
             prompt,
@@ -244,15 +256,10 @@ export class HttpLlmClient implements LlmClient {
               }
               
               if (data.choices?.[0]) {
-                const choice = data.choices[0];
+                const choice = data.choices[0] as Record<string, unknown>;
                 const delta = choice.delta as Record<string, unknown> | undefined;
                 if (delta) {
-                  const content =
-                    typeof delta.content === "string" && delta.content.length > 0
-                      ? delta.content
-                      : typeof delta.text === "string"
-                        ? delta.text
-                        : "";
+                  const { content, reasoning } = extractOpenAiCompatDeltaParts(delta);
                   if (content) {
                     yield {
                       type: "token",
@@ -260,13 +267,6 @@ export class HttpLlmClient implements LlmClient {
                       index: tokenIndex++,
                       channel: "content",
                     };
-                  }
-                  let reasoning = "";
-                  for (const key of ["reasoning_content", "reasoning", "thinking", "thought"]) {
-                    const v = delta[key];
-                    if (typeof v === "string" && v.length > 0) {
-                      reasoning += v;
-                    }
                   }
                   if (reasoning) {
                     yield {

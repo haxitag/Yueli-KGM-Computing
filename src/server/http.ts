@@ -14,6 +14,11 @@ import {
   type AnthropicMessagesRequest,
 } from "../anthropic/compat.js";
 import {
+  postAnthropicMessages,
+  streamAnthropicMessagesNative,
+} from "../llm/maas/anthropicNative.js";
+import { shouldProxyAnthropicMessagesNative } from "../llm/maas/reasoning.js";
+import {
   buildOpenAiModelList,
   createOpenAiChatCompletion,
   createOpenAiResponse,
@@ -1444,6 +1449,39 @@ export function createKgmRequestListener(
       if (req.method === "POST" && url.pathname === "/v1/messages") {
         void readAnthropicApiKey(req);
         const payload = (await readJson(req)) as AnthropicMessagesRequest;
+        const requestHeaders = normalizeIncomingHttpHeaders(
+          req.headers as Record<string, string | string[] | undefined>,
+        );
+        if (shouldProxyAnthropicMessagesNative(payload as unknown as Record<string, unknown>)) {
+          const apiKey =
+            readAnthropicApiKey(req) ??
+            params.configStore.get().llm.apiKey ??
+            process.env.ANTHROPIC_API_KEY;
+          if (!apiKey) {
+            return sendJson(res, 400, { error: "anthropic_api_key_required" });
+          }
+          const baseUrl = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com";
+          const nativeBody = { ...payload } as Record<string, unknown>;
+          delete nativeBody.kgm;
+          if (payload.stream) {
+            const events = streamAnthropicMessagesNative({
+              baseUrl,
+              apiKey,
+              body: nativeBody,
+              requestHeaders,
+              timeoutMs: params.configStore.get().llm.timeoutMs,
+            });
+            return sendSse(res, events, { appendDone: false });
+          }
+          const response = await postAnthropicMessages({
+            baseUrl,
+            apiKey,
+            body: nativeBody,
+            requestHeaders,
+            timeoutMs: params.configStore.get().llm.timeoutMs,
+          });
+          return sendJson(res, 200, response);
+        }
         if (payload.stream) {
           const events = streamAnthropicMessagesJsonLines({
             request: payload,

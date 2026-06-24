@@ -126,20 +126,27 @@ export class LlmProviderFactory {
         if (!config.apiKey && !config.apiKeys) {
           throw new Error('Zhipu API key is required');
         }
-        const zhipuApiKey = this.selectApiKey(config, 'zhipu');
-        if (!zhipuApiKey) {
-          throw new Error('Zhipu API key is required');
-        }
-        return new ZhipuLlmClient({
-          baseUrl: config.baseUrl || defaultUrls.zhipu,
-          model: config.model,
-          apiKey: zhipuApiKey,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'zhipu',
+          defaultBaseUrl: defaultUrls.zhipu,
         });
 
       case 'minimax': {
         const minimaxApiKey = this.selectApiKey(config, 'minimax');
+        const useOpenAi =
+          config.extraParams?.useOpenAIFormat === true ||
+          /^minimax-/i.test(config.model);
+        if (useOpenAi) {
+          if (!minimaxApiKey) {
+            throw new Error('Minimax API key is required');
+          }
+          return this.createOpenAiCompatHttp(config, {
+            routerKey: 'minimax',
+            defaultBaseUrl: config.baseUrl || 'https://api.minimaxi.com/v1',
+          });
+        }
         if (!minimaxApiKey || !config.extraParams?.groupId) {
-          throw new Error('Minimax API key and group ID are required');
+          throw new Error('Minimax API key and group ID are required (or set extraParams.useOpenAIFormat for OpenAI-compat models)');
         }
         return new MinimaxLlmClient({
           baseUrl: config.baseUrl || defaultUrls.minimax,
@@ -178,10 +185,9 @@ export class LlmProviderFactory {
         if (!deepSeekApiKey) {
           throw new Error('DeepSeek API key is required');
         }
-        return new DeepSeekLlmClient({
-          baseUrl: config.baseUrl || defaultUrls.deepseek,
-          model: config.model,
-          apiKey: deepSeekApiKey,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'deepseek',
+          defaultBaseUrl: defaultUrls.deepseek,
         });
       }
 
@@ -252,11 +258,9 @@ export class LlmProviderFactory {
         if (!apiKey) {
           throw new Error('Moonshot API key is required');
         }
-        return new MoonshotLlmClient({
-          baseUrl: config.baseUrl,
-          model: config.model,
-          apiKey: apiKey,
-          timeoutMs: config.timeoutMs,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'moonshot',
+          defaultBaseUrl: config.baseUrl || 'https://api.moonshot.cn/v1',
         });
       }
 
@@ -805,7 +809,10 @@ export class LlmProviderFactory {
       case 'zhipu':
         return !!config.apiKey;
       case 'minimax':
-        return !!config.apiKey && !!config.extraParams?.groupId;
+        return (
+          !!config.apiKey &&
+          (!!config.extraParams?.groupId || config.extraParams?.useOpenAIFormat === true || /^minimax-/i.test(config.model))
+        );
       case 'openrouter':
       case 'nvidia':
       case 'deepseek':
