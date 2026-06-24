@@ -2,6 +2,8 @@ import http from "node:http";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
 import { syncPlaygroundFromConfig } from "../playground/syncPlayground.js";
 import { createAnthropicMessagesResponse, streamAnthropicMessagesJsonLines, } from "../anthropic/compat.js";
+import { postAnthropicMessages, streamAnthropicMessagesNative, } from "../llm/maas/anthropicNative.js";
+import { shouldProxyAnthropicMessagesNative } from "../llm/maas/reasoning.js";
 import { buildOpenAiModelList, createOpenAiChatCompletion, createOpenAiResponse, streamOpenAiChatCompletion, streamOpenAiResponse, } from "../openai/compat.js";
 import { maybeProxyNativeOpenAiStream, sendNormalizedUpstreamSse } from "../openai/passthrough.js";
 import { parseStreamIdleMs } from "../openai/sseStreamNormalize.js";
@@ -29,6 +31,7 @@ import { handleRuntimeRoute } from "./routes/runtime.js";
 import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
 import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 import { appendHttpAccessLog, snapshotHttpAccessLog } from "./httpRequestRing.js";
+import { handleYueliaiRoute } from "../yueliai/routes.js";
 export function createKgmRequestListener(params) {
     // Validate environment variables on startup
     const env = validateEnv();
@@ -378,6 +381,9 @@ export function createKgmRequestListener(params) {
                 method: req.method ?? "?",
                 pathname: url.pathname,
             });
+            if (await handleYueliaiRoute(req, res, url.pathname, { configStore: params.configStore })) {
+                return;
+            }
             if (req.method === "GET" && url.pathname === "/health") {
                 const health = {
                     status: "ok",
@@ -1076,6 +1082,36 @@ export function createKgmRequestListener(params) {
             if (req.method === "POST" && url.pathname === "/v1/messages") {
                 void readAnthropicApiKey(req);
                 const payload = (await readJson(req));
+                const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
+                if (shouldProxyAnthropicMessagesNative(payload)) {
+                    const apiKey = readAnthropicApiKey(req) ??
+                        params.configStore.get().llm.apiKey ??
+                        process.env.ANTHROPIC_API_KEY;
+                    if (!apiKey) {
+                        return sendJson(res, 400, { error: "anthropic_api_key_required" });
+                    }
+                    const baseUrl = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com";
+                    const nativeBody = { ...payload };
+                    delete nativeBody.kgm;
+                    if (payload.stream) {
+                        const events = streamAnthropicMessagesNative({
+                            baseUrl,
+                            apiKey,
+                            body: nativeBody,
+                            requestHeaders,
+                            timeoutMs: params.configStore.get().llm.timeoutMs,
+                        });
+                        return sendSse(res, events, { appendDone: false });
+                    }
+                    const response = await postAnthropicMessages({
+                        baseUrl,
+                        apiKey,
+                        body: nativeBody,
+                        requestHeaders,
+                        timeoutMs: params.configStore.get().llm.timeoutMs,
+                    });
+                    return sendJson(res, 200, response);
+                }
                 if (payload.stream) {
                     const events = streamAnthropicMessagesJsonLines({
                         request: payload,

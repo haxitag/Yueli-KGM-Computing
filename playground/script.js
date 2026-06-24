@@ -50,29 +50,38 @@ class KGMTrustProxyPlayground {
             targetModel: '',
             maxCostPerRequest: '',
             exchangeRate: 6.82, // 默认汇率: 1 USD = 6.82 CNY
+            yueliGateway: {
+                host: 'https://www.yueli.com',
+                upstreamPrefix: '/api',
+                enabled: true,
+            },
         };
         this.loadConfigFromLocalStorage();
         this.renderStatusBar();
         this.loadManagedModels();
-        this.loadAutoRoutingOverview();
         this.playgroundConfig = null;
-        this.loadPlaygroundFromServer();
-        
+        this.activeWorkspace = 'chat';
+        this.activeIntegrationTab = null;
+        this.activeOutputTab = 'text';
+        this.loadServerConfigBundle();
+        this.switchWorkspace('chat');
+
         // 初始化 KCE 任务管理器
         this.taskManager = new KCETaskManager(this);
-        
-        // 默认显示任务标签页（最常用功能）
-        this.switchIntegrationTab('tasks');
-        
+
         window.setInterval(() => this.loadManagedModels(), 20000);
-        window.setInterval(() => this.loadAutoRoutingOverview(), 25000);
+        window.setInterval(() => {
+            if (this.activeWorkspace === 'routing') {
+                this.loadAutoRoutingOverview();
+            }
+        }, 25000);
     }
 
     initializeElements() {
         // 顶部菜单元素
         this.modelSelectBtn = document.getElementById('model-select-btn');
         this.modelConfigBtn = document.getElementById('model-config-btn');
-        this.autoRoutingBtn = document.getElementById('auto-routing-btn');
+        this.routingPrefsBtn = document.getElementById('routing-prefs-btn');
         this.pricingConfigBtn = document.getElementById('pricing-config-btn');
         this.apiKeysBtn = document.getElementById('api-keys-btn');
         this.infoBtn = document.getElementById('info-btn');
@@ -86,6 +95,8 @@ class KGMTrustProxyPlayground {
         this.statusModel = document.getElementById('status-model');
         this.statusProtocol = document.getElementById('status-protocol');
         this.statusStream = document.getElementById('status-stream');
+        this.statusRouting = document.getElementById('status-routing');
+        this.statusGateway = document.getElementById('status-gateway');
         this.statusModelPath = document.getElementById('status-model-path');
 
         // 配置元素
@@ -181,12 +192,22 @@ class KGMTrustProxyPlayground {
         this.routingRecentAudit = document.getElementById('routing-recent-audit');
 
         this.integrationTabs = document.querySelectorAll('.nav-item[data-int-tab]');
+        this.integrationSubnav = document.getElementById('integration-subnav');
         this.integrationPanels = {
+            tasks: document.getElementById('int-panel-tasks'),
             skills: document.getElementById('int-panel-skills'),
             mcp: document.getElementById('int-panel-mcp'),
-            tasks: document.getElementById('int-panel-tasks'),
             output: document.getElementById('int-panel-output'),
         };
+        this.workspaceTabs = document.querySelectorAll('.nav-item[data-workspace]');
+        this.workspaceViews = {
+            chat: document.getElementById('workspace-chat'),
+            routing: document.getElementById('workspace-routing'),
+            models: document.getElementById('workspace-models'),
+            integration: document.getElementById('workspace-integration'),
+        };
+        this.outputTabs = document.querySelectorAll('.output-tab[data-output-tab]');
+        this.outputPanels = document.querySelectorAll('.output-tab-panel[data-output-panel]');
         this.playgroundConfigJson = document.getElementById('playground-config-json');
         this.playgroundSaveBtn = document.getElementById('playground-save-btn');
         this.playgroundReloadBtn = document.getElementById('playground-reload-btn');
@@ -198,7 +219,9 @@ class KGMTrustProxyPlayground {
         // 顶部菜单事件监听
         this.modelSelectBtn.addEventListener('click', () => this.showModelSelectionModal());
         this.modelConfigBtn.addEventListener('click', () => this.showModelConfigModal());
-        this.autoRoutingBtn.addEventListener('click', () => this.showAutoRoutingModal());
+        if (this.routingPrefsBtn) {
+            this.routingPrefsBtn.addEventListener('click', () => this.showAutoRoutingModal());
+        }
         this.pricingConfigBtn.addEventListener('click', () => this.showPricingConfigModal());
         this.apiKeysBtn.addEventListener('click', () => this.showApiKeysModal());
         this.infoBtn.addEventListener('click', () => this.showInfoModal());
@@ -225,12 +248,22 @@ class KGMTrustProxyPlayground {
                     this.clearBtn.click();
                 }
             }
-            // Ctrl/Cmd + 1-4 切换扩展标签页
-            if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '4') {
+            // Ctrl/Cmd + 1-4 切换工作区
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key >= '1' && e.key <= '4') {
+                e.preventDefault();
+                const workspaces = ['chat', 'routing', 'models', 'integration'];
+                const index = parseInt(e.key, 10) - 1;
+                if (workspaces[index]) {
+                    this.switchWorkspace(workspaces[index]);
+                }
+            }
+            // Ctrl/Cmd + Shift + 1-4 切换集成子 Tab（需在集成工作区）
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '1' && e.key <= '4') {
                 e.preventDefault();
                 const tabs = ['tasks', 'skills', 'mcp', 'output'];
-                const index = parseInt(e.key) - 1;
+                const index = parseInt(e.key, 10) - 1;
                 if (tabs[index]) {
+                    this.switchWorkspace('integration');
                     this.switchIntegrationTab(tabs[index]);
                 }
             }
@@ -295,13 +328,33 @@ class KGMTrustProxyPlayground {
 
         if (this.integrationTabs?.length) {
             this.integrationTabs.forEach((tab) => {
-                tab.addEventListener('click', () => this.switchIntegrationTab(tab.dataset.intTab));
+                tab.addEventListener('click', () => {
+                    this.switchWorkspace('integration');
+                    this.switchIntegrationTab(tab.dataset.intTab);
+                });
                 tab.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
+                        this.switchWorkspace('integration');
                         this.switchIntegrationTab(tab.dataset.intTab);
                     }
                 });
+            });
+        }
+        if (this.workspaceTabs?.length) {
+            this.workspaceTabs.forEach((tab) => {
+                tab.addEventListener('click', () => this.switchWorkspace(tab.dataset.workspace));
+                tab.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.switchWorkspace(tab.dataset.workspace);
+                    }
+                });
+            });
+        }
+        if (this.outputTabs?.length) {
+            this.outputTabs.forEach((tab) => {
+                tab.addEventListener('click', () => this.switchOutputTab(tab.dataset.outputTab));
             });
         }
         if (this.playgroundSaveBtn) {
@@ -402,6 +455,9 @@ class KGMTrustProxyPlayground {
                     <label for="modal-provider-select">服务模式:</label>
                     <select id="modal-provider-select">
                         <option value="">自动选择 Provider</option>
+                        <optgroup label="阅粒 · 云端聚合">
+                            <option value="yueli-cloud" ${sel('yueli-cloud')}>阅粒云端推理聚合 (YueliAI v1)</option>
+                        </optgroup>
                         <optgroup label="云端 · 专用适配">
                             <option value="openai" ${sel('openai')}>OpenAI</option>
                             <option value="zhipu" ${sel('zhipu')}>智谱 AI</option>
@@ -995,8 +1051,38 @@ class KGMTrustProxyPlayground {
 
         const k = this.currentConfig.apiKeys || {};
         const val = (key) => this.escapeHtml(k[key] || '');
+        const gateway = this.currentConfig.yueliGateway || {};
+        const gatewayHost = this.escapeHtml(gateway.host || 'https://www.yueli.com');
+        const gatewayPrefix = this.escapeHtml(gateway.upstreamPrefix ?? '/api');
 
         const sections = [
+            {
+                title: '阅粒 · 云端推理聚合 (YueliAI v1)',
+                desc: '经本地 KGM 代理至云端 Bot Factory / yueliai 聚合 API；凭证同步到服务端 KgmConfig.yueliai，与 MaaS 厂商配置统一审计。',
+                fields: [
+                    {
+                        key: 'yueliai',
+                        label: 'YueliAI API Key',
+                        placeholder: 'sk-...',
+                        hint: '写入服务端 config + 本地 apiKeys.yueliai',
+                        multiKey: true,
+                    },
+                    {
+                        key: 'yueliaiHost',
+                        label: '聚合服务 Host',
+                        placeholder: 'https://www.yueli.com',
+                        hint: '对应 YUELIAI_HOST',
+                        inputType: 'text',
+                    },
+                    {
+                        key: 'yueliaiUpstreamPrefix',
+                        label: '上游路径前缀',
+                        placeholder: '/api',
+                        hint: '生产默认 /api → /api/yueliai/v1/*；根路径网关设为空',
+                        inputType: 'text',
+                    },
+                ],
+            },
             {
                 title: '云端 · 专用适配',
                 desc: '对接各厂商原生或专用 HTTP 客户端。保存于本机浏览器 localStorage。',
@@ -1084,6 +1170,26 @@ class KGMTrustProxyPlayground {
                     <div class="api-keys-grid">
             `;
             for (const f of sec.fields) {
+                if (f.key === 'yueliaiHost') {
+                    bodyHtml += `
+                        <div class="api-keys-field">
+                            <label for="api-key-yueliaiHost">${this.escapeHtml(f.label)}</label>
+                            <input type="text" id="api-key-yueliaiHost" value="${gatewayHost}" placeholder="${this.escapeHtml(f.placeholder || '')}">
+                            <span class="field-hint">${this.escapeHtml(f.hint || '')}</span>
+                        </div>
+                    `;
+                    continue;
+                }
+                if (f.key === 'yueliaiUpstreamPrefix') {
+                    bodyHtml += `
+                        <div class="api-keys-field">
+                            <label for="api-key-yueliaiUpstreamPrefix">${this.escapeHtml(f.label)}</label>
+                            <input type="text" id="api-key-yueliaiUpstreamPrefix" value="${gatewayPrefix}" placeholder="${this.escapeHtml(f.placeholder || '')}">
+                            <span class="field-hint">${this.escapeHtml(f.hint || '')}</span>
+                        </div>
+                    `;
+                    continue;
+                }
                 const inputType = f.inputType || 'password';
                 const multiKey = f.multiKey || false;
                 const maxKeys = multiKey ? 3 : 1;
@@ -1123,6 +1229,7 @@ class KGMTrustProxyPlayground {
         bodyHtml += `
                 <div class="api-keys-actions">
                     <button type="button" class="btn btn-primary" id="save-api-keys">保存凭证</button>
+                    <button type="button" class="btn btn-secondary" id="sync-maas-providers">同步 MaaS 凭证到服务端</button>
                 </div>
             </div>
         `;
@@ -1130,11 +1237,14 @@ class KGMTrustProxyPlayground {
         this.modalBody.innerHTML = bodyHtml;
 
         const saveBtn = document.getElementById('save-api-keys');
-        saveBtn.addEventListener('click', () => {
+        saveBtn.addEventListener('click', async () => {
             this.currentConfig.apiKeys = this.currentConfig.apiKeys || {};
             const root = this.modalBody.querySelector('.api-keys-modal') || this.modalBody;
             root.querySelectorAll('input[id^="api-key-"]').forEach((el) => {
                 const id = el.id.slice('api-key-'.length);
+                if (id === 'yueliaiHost' || id === 'yueliaiUpstreamPrefix') {
+                    return;
+                }
                 const value = el.value.trim();
                 if (value) {
                     this.currentConfig.apiKeys[id] = value;
@@ -1142,12 +1252,224 @@ class KGMTrustProxyPlayground {
                     delete this.currentConfig.apiKeys[id];
                 }
             });
+            const hostEl = document.getElementById('api-key-yueliaiHost');
+            const prefixEl = document.getElementById('api-key-yueliaiUpstreamPrefix');
+            this.currentConfig.yueliGateway = this.currentConfig.yueliGateway || {};
+            if (hostEl) {
+                this.currentConfig.yueliGateway.host = hostEl.value.trim() || 'https://www.yueli.com';
+            }
+            if (prefixEl) {
+                this.currentConfig.yueliGateway.upstreamPrefix = prefixEl.value.trim();
+            }
             this.saveConfigToLocalStorage();
+            try {
+                await this.syncGatewayConfigToServer();
+                this.showToast('API Keys 与 YueliAI 网关已保存', 'success');
+            } catch (err) {
+                this.showToast('本地已保存，服务端同步失败: ' + (err.message || err), 'error');
+            }
             this.hideModal();
-            this.showToast('API Keys 已保存', 'success');
         });
 
+        const syncMaasBtn = document.getElementById('sync-maas-providers');
+        if (syncMaasBtn) {
+            syncMaasBtn.addEventListener('click', async () => {
+                try {
+                    const count = await this.syncMaasProvidersToServer();
+                    this.showToast(`已同步 ${count} 个 MaaS Provider 到服务端`, 'success');
+                } catch (err) {
+                    this.showToast('MaaS 同步失败: ' + (err.message || err), 'error');
+                }
+            });
+        }
+
         this.showModal();
+    }
+
+    async loadGatewayConfigFromServer() {
+        try {
+            const response = await fetch('/v1/kgm/config');
+            if (!response.ok) {
+                return;
+            }
+            const data = await response.json();
+            this.applyYueliGatewayFromServer(data.yueliai);
+            this.saveConfigToLocalStorage();
+            this.renderStatusBar();
+        } catch {
+            // 离线或无权访问时保留 localStorage
+        }
+    }
+
+    applyYueliGatewayFromServer(y) {
+        if (!y || typeof y !== 'object') {
+            return;
+        }
+        this.currentConfig.yueliGateway = {
+            host: y.host || 'https://www.yueli.com',
+            upstreamPrefix: y.upstreamPrefix ?? '/api',
+            enabled: y.enabled !== false,
+        };
+        if (y.apiKey) {
+            this.currentConfig.apiKeys = this.currentConfig.apiKeys || {};
+            this.currentConfig.apiKeys.yueliai = y.apiKey;
+        }
+    }
+
+    parsePlaygroundConfigJson(raw) {
+        const trimmed = String(raw || '').trim();
+        if (!trimmed || trimmed.startsWith('//')) {
+            throw new Error('配置为空或含无效注释，请从服务端重新加载');
+        }
+        return JSON.parse(trimmed);
+    }
+
+    async loadServerConfigBundle() {
+        try {
+            const [configResponse, routingResponse, summaryResponse] = await Promise.all([
+                fetch('/v1/kgm/config'),
+                fetch('/v1/kgm/auto-routing'),
+                fetch('/v1/kgm/auto-routing/summary?limit=8'),
+            ]);
+            if (configResponse.ok) {
+                const data = await configResponse.json();
+                this.applyYueliGatewayFromServer(data.yueliai);
+                this.playgroundConfig = data.playground || {};
+                if (this.playgroundConfigJson) {
+                    this.playgroundConfigJson.value = JSON.stringify(this.playgroundConfig, null, 2);
+                }
+                this.saveConfigToLocalStorage();
+            } else if (this.playgroundConfigJson) {
+                this.playgroundConfigJson.value = '{}';
+            }
+            if (routingResponse.ok) {
+                this.autoRoutingConfig = await routingResponse.json();
+                this.autoRoutingSummary = summaryResponse.ok ? await summaryResponse.json() : null;
+                this.renderAutoRoutingPanel();
+            }
+        } catch (error) {
+            if (this.playgroundConfigJson) {
+                this.playgroundConfigJson.value = `{\n  "_loadError": ${JSON.stringify(error.message)}\n}`;
+            }
+        }
+    }
+
+    switchWorkspace(name) {
+        if (!name) {
+            return;
+        }
+        this.activeWorkspace = name;
+        this.workspaceTabs?.forEach((tab) => {
+            const on = tab.dataset.workspace === name;
+            tab.classList.toggle('active', on);
+            tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        Object.entries(this.workspaceViews || {}).forEach(([key, el]) => {
+            if (!el) {
+                return;
+            }
+            const on = key === name;
+            el.hidden = !on;
+            el.classList.toggle('active', on);
+        });
+        if (this.integrationSubnav) {
+            this.integrationSubnav.classList.toggle('is-hidden', name !== 'integration');
+        }
+        if (name === 'routing') {
+            this.loadAutoRoutingOverview();
+        }
+        if (name === 'models') {
+            this.loadManagedModels();
+        }
+        if (name === 'integration' && !this.activeIntegrationTab) {
+            this.switchIntegrationTab('tasks');
+        }
+    }
+
+    switchOutputTab(name) {
+        if (!name) {
+            return;
+        }
+        this.activeOutputTab = name;
+        this.outputTabs?.forEach((tab) => {
+            const on = tab.dataset.outputTab === name;
+            tab.classList.toggle('active', on);
+            tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        this.outputPanels?.forEach((panel) => {
+            const on = panel.dataset.outputPanel === name;
+            panel.hidden = !on;
+            panel.classList.toggle('active', on);
+        });
+    }
+
+    async syncGatewayConfigToServer() {
+        const keys = this.currentConfig.apiKeys || {};
+        const gateway = this.currentConfig.yueliGateway || {};
+        const apiKey = keys.yueliai || keys.yueliai_2 || keys.yueliai_3 || '';
+        const response = await fetch('/v1/kgm/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                yueliai: {
+                    enabled: Boolean(apiKey),
+                    host: gateway.host || 'https://www.yueli.com',
+                    upstreamPrefix: gateway.upstreamPrefix ?? '/api',
+                    apiKey: apiKey || undefined,
+                    timeoutMs: 120000,
+                },
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+    }
+
+    async syncMaasProvidersToServer() {
+        const keys = this.currentConfig.apiKeys || {};
+        const pick = (base) => {
+            for (const id of [base, `${base}_2`, `${base}_3`]) {
+                const v = keys[id];
+                if (typeof v === 'string' && v.trim()) {
+                    return v.trim();
+                }
+            }
+            return '';
+        };
+        const presets = [
+            { presetId: 'openai', model: 'gpt-5.4-mini' },
+            { presetId: 'zhipu', model: 'glm-5.1' },
+            { presetId: 'anthropic', model: 'claude-sonnet-4.6' },
+            { presetId: 'deepseek', model: 'deepseek-v4-flash' },
+            { presetId: 'moonshot', model: 'kimi-2.6' },
+            { presetId: 'minimax', model: 'minimax-2.7' },
+            { presetId: 'gemini', model: 'gemini-3.1' },
+            { presetId: 'openrouter', model: 'openai/gpt-4o' },
+            { presetId: 'aliyun_bailian', model: 'qwen-3.6' },
+            { presetId: 'volcengine_ark', model: 'deepseek-v4-flash' },
+        ];
+        const cloudProviders = presets
+            .map((p) => {
+                const apiKey = pick(p.presetId);
+                if (!apiKey) {
+                    return null;
+                }
+                return { presetId: p.presetId, model: p.model, apiKey, enabled: true };
+            })
+            .filter(Boolean);
+        if (cloudProviders.length === 0) {
+            throw new Error('未填写任何 MaaS API Key');
+        }
+        const response = await fetch('/v1/admin/model-providers', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cloudProviders }),
+        });
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+        const data = await response.json();
+        return data.saved ?? cloudProviders.length;
     }
 
     /** 当前服务模式对应的 Bearer；本机推理优先 apiKeys.localhost，与 LlmProviderFactory 类型对齐 */
@@ -1167,6 +1489,9 @@ class KGMTrustProxyPlayground {
         };
         if (provider === 'yueli-native') {
             return pick('localhost');
+        }
+        if (provider === 'yueli-cloud') {
+            return pick('yueliai');
         }
         if (LOCALHOST_BEARER_PROVIDERS.has(provider)) {
             return pick('localhost') || pick(provider);
@@ -1277,16 +1602,41 @@ class KGMTrustProxyPlayground {
 
     renderStatusBar() {
         if (this.statusService) {
-            this.statusService.textContent = this.currentConfig.provider === 'yueli-native' ? 'yueli-native' : 'provider-routed';
+            if (this.currentConfig.provider === 'yueli-native') {
+                this.statusService.textContent = 'yueli-native';
+            } else if (this.currentConfig.provider === 'yueli-cloud') {
+                this.statusService.textContent = 'yueli-cloud';
+            } else {
+                this.statusService.textContent = 'provider-routed';
+            }
         }
         if (this.statusProvider) {
-            this.statusProvider.textContent = this.currentConfig.provider === 'yueli-native'
-                ? 'Yueli-KGM'
-                : (this.currentConfig.provider || this.currentConfig.targetProvider || '自动');
+            if (this.currentConfig.provider === 'yueli-native') {
+                this.statusProvider.textContent = 'Yueli-KGM 本地';
+            } else if (this.currentConfig.provider === 'yueli-cloud') {
+                const gw = this.currentConfig.yueliGateway || {};
+                this.statusProvider.textContent = `YueliAI (${gw.host || 'www.yueli.com'})`;
+            } else {
+                this.statusProvider.textContent = this.currentConfig.provider || this.currentConfig.targetProvider || '自动';
+            }
         }
         if (this.statusModel) this.statusModel.textContent = this.currentConfig.modelName || this.currentConfig.targetModel || '自动';
         if (this.statusProtocol) this.statusProtocol.textContent = this.currentConfig.protocol || 'chat.completions';
         if (this.statusStream) this.statusStream.textContent = this.currentConfig.stream !== false ? 'on' : 'off';
+        if (this.statusRouting) {
+            this.statusRouting.textContent = this.currentConfig.routingProfile || 'quality_first';
+        }
+        if (this.statusGateway) {
+            const gw = this.currentConfig.yueliGateway || {};
+            const keys = this.currentConfig.apiKeys || {};
+            const hasKey = Boolean(keys.yueliai || keys.yueliai_2 || keys.yueliai_3);
+            if (hasKey && gw.enabled !== false) {
+                const host = (gw.host || 'https://www.yueli.com').replace(/^https?:\/\//, '');
+                this.statusGateway.textContent = host;
+            } else {
+                this.statusGateway.textContent = '未配置';
+            }
+        }
         if (this.statusModelPath) this.statusModelPath.textContent = this.currentConfig.nativeModelPath || '未设置';
     }
 
@@ -1405,6 +1755,10 @@ class KGMTrustProxyPlayground {
 
         try {
             this.resetOutputs();
+            if (this.currentConfig.provider === 'yueli-cloud') {
+                await this.handleYueliCloudSubmit();
+                return;
+            }
             const endpoint = this.currentConfig.protocol === 'responses' ? '/v1/responses' : '/v1/chat/completions';
             const requestData = this.buildProtocolRequest();
             const response = await fetch(endpoint, {
@@ -1432,6 +1786,89 @@ class KGMTrustProxyPlayground {
         } finally {
             this.setLoadingState(false);
         }
+    }
+
+    async handleYueliCloudSubmit() {
+        const prompt = this.promptText.value.trim();
+        const requestData = {
+            model: this.resolveModel() || 'deepseek/deepseek-v4-flash',
+            input: prompt + this.buildMediaSummary(),
+            stream: this.currentConfig.stream !== false,
+        };
+        const endpoint = requestData.stream ? '/yueliai/v1/completions/stream' : '/yueliai/v1/completions';
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...this.buildPlaygroundAuthHeaders(),
+            },
+            body: JSON.stringify(requestData),
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`YueliAI ${response.status}: ${text}`);
+        }
+        if (requestData.stream) {
+            await this.consumeYueliAiSse(response);
+            return;
+        }
+        const result = await response.json();
+        this.displayYueliAiResults(result);
+    }
+
+    displayYueliAiResults(result) {
+        if (!result?.success) {
+            const msg = result?.error?.message || JSON.stringify(result);
+            this.showError(msg);
+            return;
+        }
+        const content = result.data?.content || '';
+        this.formatAndShowOutput(content);
+        this.traceOutput.textContent = JSON.stringify({
+            channel: 'yueliai',
+            model: result.data?.model,
+            usage: result.data?.usage,
+            requestId: result.requestId,
+        }, null, 2);
+    }
+
+    async consumeYueliAiSse(response) {
+        const reader = response.body?.getReader();
+        if (!reader) {
+            throw new Error('SSE body unavailable');
+        }
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let full = '';
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) {
+                    continue;
+                }
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') {
+                    continue;
+                }
+                try {
+                    const chunk = JSON.parse(payload);
+                    const piece = chunk.content || chunk.data?.content || '';
+                    if (piece) {
+                        full += piece;
+                        this.formatAndShowOutput(full);
+                    }
+                } catch {
+                    // ignore partial json
+                }
+            }
+        }
+        this.traceOutput.textContent = JSON.stringify({ channel: 'yueliai', stream: true, length: full.length }, null, 2);
     }
 
     displayResults(result, protocol = this.currentConfig.protocol) {
@@ -1462,6 +1899,7 @@ class KGMTrustProxyPlayground {
         if (!name || !this.integrationTabs?.length) {
             return;
         }
+        this.activeIntegrationTab = name;
         this.integrationTabs.forEach((tab) => {
             const on = tab.dataset.intTab === name;
             tab.classList.toggle('active', on);
@@ -1475,10 +1913,6 @@ class KGMTrustProxyPlayground {
             el.hidden = !on;
             el.classList.toggle('active', on);
         });
-        const section = document.getElementById('integration-section');
-        if (section) {
-            section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
     }
 
     async loadPlaygroundFromServer() {
@@ -1491,10 +1925,12 @@ class KGMTrustProxyPlayground {
                 throw new Error(`HTTP ${response.status}`);
             }
             const data = await response.json();
+            this.applyYueliGatewayFromServer(data.yueliai);
             this.playgroundConfig = data.playground || {};
             this.playgroundConfigJson.value = JSON.stringify(this.playgroundConfig, null, 2);
+            this.saveConfigToLocalStorage();
         } catch (error) {
-            this.playgroundConfigJson.value = `// 加载失败: ${error.message}\n{}`;
+            this.playgroundConfigJson.value = `{\n  "_loadError": ${JSON.stringify(error.message)}\n}`;
         }
     }
 
@@ -1503,7 +1939,7 @@ class KGMTrustProxyPlayground {
             return;
         }
         try {
-            const playground = JSON.parse(this.playgroundConfigJson.value || '{}');
+            const playground = this.parsePlaygroundConfigJson(this.playgroundConfigJson.value);
             const response = await fetch('/v1/kgm/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1540,7 +1976,7 @@ class KGMTrustProxyPlayground {
             const parsed = await response.json();
             let pg;
             try {
-                pg = JSON.parse(this.playgroundConfigJson.value || '{}');
+                pg = this.parsePlaygroundConfigJson(this.playgroundConfigJson.value);
             } catch {
                 pg = {};
             }
@@ -1569,9 +2005,10 @@ class KGMTrustProxyPlayground {
         if (!this.textOutput) {
             return;
         }
+        this.switchOutputTab('text');
         let pg;
         try {
-            pg = JSON.parse(this.playgroundConfigJson?.value || '{}');
+            pg = this.parsePlaygroundConfigJson(this.playgroundConfigJson?.value);
         } catch {
             this.textOutput.textContent = rawText ?? '';
             return;
@@ -1943,6 +2380,13 @@ class KGMTrustProxyPlayground {
         if (!normalized.apiKeys || typeof normalized.apiKeys !== 'object') {
             normalized.apiKeys = {};
         }
+        if (!normalized.yueliGateway || typeof normalized.yueliGateway !== 'object') {
+            normalized.yueliGateway = {
+                host: 'https://www.yueli.com',
+                upstreamPrefix: '/api',
+                enabled: true,
+            };
+        }
         if (normalized.provider === 'slang') {
             normalized.provider = 'sglang';
         }
@@ -2034,6 +2478,7 @@ class KGMTrustProxyPlayground {
     }
 
     appendStreamEvent(payload) {
+        this.switchOutputTab('stream');
         this.streamOutput.textContent += payload + '\n';
         this.streamOutput.scrollTop = this.streamOutput.scrollHeight;
     }
@@ -2676,6 +3121,7 @@ const PROVIDER_ALIASES = [
     'vllm',
     'vmlx',
     'xiaomi',
+    'yueli-cloud',
     'zhipu',
 ];
 

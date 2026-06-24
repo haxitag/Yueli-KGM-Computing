@@ -28,6 +28,10 @@ export function openAiToolCallsToAnthropicToolUseBlocks(toolCalls) {
  */
 export function openAiAssistantMessageToAnthropicContent(message) {
     const blocks = [];
+    const reasoning = message.reasoning_content;
+    if (typeof reasoning === "string" && reasoning.length > 0) {
+        blocks.push({ type: "thinking", thinking: reasoning });
+    }
     const text = message.content;
     if (text !== null && text !== undefined && String(text).length > 0) {
         blocks.push({ type: "text", text: String(text) });
@@ -194,7 +198,8 @@ export function anthropicDisableParallelToOpenAiParallel(disableParallelToolUse)
 export function anthropicMessagesToOpenAiChatRequest(req) {
     const messages = [];
     if (req.system !== undefined && req.system !== "") {
-        messages.push({ role: "system", content: req.system });
+        const systemContent = typeof req.system === "string" ? req.system : JSON.stringify(req.system);
+        messages.push({ role: "system", content: systemContent });
     }
     for (const m of req.messages) {
         if (typeof m.content === "string") {
@@ -221,6 +226,8 @@ export function anthropicMessagesToOpenAiChatRequest(req) {
         stream: req.stream,
         metadata: req.metadata,
         kgm: req.kgm,
+        ...(req.thinking !== undefined ? { thinking: req.thinking } : {}),
+        ...(req.output_config !== undefined ? { output_config: req.output_config } : {}),
         ...(tools !== undefined ? { tools } : {}),
         ...(tool_choice !== undefined ? { tool_choice } : {}),
         ...(parallel_tool_calls !== undefined ? { parallel_tool_calls } : {}),
@@ -309,7 +316,9 @@ export async function* streamAnthropicMessagesJsonLines(params) {
     let lastFinish;
     let nextBlockIndex = 0;
     let textBlockIndex = -1;
+    let thinkingBlockIndex = -1;
     let startedText = false;
+    let startedThinking = false;
     function* flushPendingTools() {
         if (Object.keys(toolAcc).length === 0) {
             return;
@@ -335,9 +344,28 @@ export async function* streamAnthropicMessagesJsonLines(params) {
             mergeToolCallDeltas(toolAcc, delta.tool_calls);
         }
         const deltaAny = delta;
-        const content = delta?.content ||
-            (typeof deltaAny?.reasoning_content === "string" ? deltaAny.reasoning_content : undefined) ||
-            (typeof deltaAny?.reasoning === "string" ? deltaAny.reasoning : undefined);
+        const reasoningText = (typeof deltaAny?.reasoning_content === "string" ? deltaAny.reasoning_content : undefined) ||
+            (typeof deltaAny?.reasoning === "string" ? deltaAny.reasoning : undefined) ||
+            (typeof deltaAny?.thinking === "string" ? deltaAny.thinking : undefined);
+        if (reasoningText) {
+            if (!startedThinking) {
+                yield* flushPendingTools();
+                yield JSON.stringify({
+                    type: "content_block_start",
+                    index: nextBlockIndex,
+                    content_block: { type: "thinking", thinking: "" },
+                });
+                thinkingBlockIndex = nextBlockIndex;
+                startedThinking = true;
+                nextBlockIndex += 1;
+            }
+            yield JSON.stringify({
+                type: "content_block_delta",
+                index: thinkingBlockIndex,
+                delta: { type: "thinking_delta", thinking: reasoningText },
+            });
+        }
+        const content = delta?.content;
         if (content) {
             if (!startedText) {
                 yield* flushPendingTools();
@@ -357,7 +385,7 @@ export async function* streamAnthropicMessagesJsonLines(params) {
             });
         }
     }
-    if (!startedText) {
+    if (!startedText && !startedThinking) {
         yield* flushPendingTools();
     }
     else if (Object.keys(toolAcc).length > 0) {

@@ -1,3 +1,4 @@
+import { mergeOpenAiPassthroughBody } from "../llm/maas/openAiChatBody.js";
 import { relayUpstreamSseNormalized } from "./sseStreamNormalize.js";
 export async function maybeProxyNativeOpenAiStream(params) {
     if (!canUseNativeOpenAiStreamPassthrough(params.payload)) {
@@ -35,7 +36,8 @@ export async function sendNormalizedUpstreamSse(res, upstream) {
     return relayUpstreamSseNormalized(res, upstream);
 }
 function sanitizePassthroughPayload(payload) {
-    const copy = { ...payload };
+    const merged = mergeOpenAiPassthroughBody(payload, payload);
+    const copy = merged;
     const kgm = copy.kgm;
     if (kgm?.ollama && typeof kgm.ollama === "object") {
         const o = kgm.ollama;

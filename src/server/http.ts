@@ -69,6 +69,7 @@ import { handleRuntimeRoute } from "./routes/runtime.js";
 import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
 import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 import { appendHttpAccessLog, snapshotHttpAccessLog } from "./httpRequestRing.js";
+import { handleYueliaiRoute } from "../yueliai/routes.js";
 
 export type KgmServerParams = {
   scheduler: Scheduler;
@@ -583,6 +584,11 @@ export function createKgmRequestListener(
         method: req.method ?? "?",
         pathname: url.pathname,
       });
+
+      if (await handleYueliaiRoute(req, res, url.pathname, { configStore: params.configStore })) {
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/health") {
         const health = {
           status: "ok",

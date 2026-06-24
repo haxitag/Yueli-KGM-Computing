@@ -4,6 +4,7 @@ import { parseIntent } from "../parse/parser.js";
 import { renderPrompt } from "../prompt/renderer.js";
 import { collectPlaygroundSystemAddons } from "../playground/systemAddons.js";
 import { generateId } from "../utils/id.js";
+import { extractMaaSOpenAiExtras } from "../llm/maas/reasoning.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
 import { annotateOpenAiModels } from "../models/modelTypeAnnotator.js";
@@ -130,6 +131,11 @@ export async function createOpenAiChatCompletion(params) {
         routing: params.request.routing,
         protocol: "chat.completions",
         previousResponseId: undefined,
+        parallel_tool_calls: params.request.parallel_tool_calls,
+        thinking: params.request.thinking,
+        enable_thinking: params.request.enable_thinking,
+        reasoning_effort: params.request.reasoning_effort,
+        output_config: params.request.output_config,
     });
     const message = {
         role: "assistant",
@@ -158,6 +164,15 @@ export async function createOpenAiChatCompletion(params) {
         kgm: run.kgm,
     };
 }
+function spreadMaaSFieldsFromRequest(req) {
+    return {
+        parallel_tool_calls: req.parallel_tool_calls,
+        thinking: req.thinking,
+        enable_thinking: req.enable_thinking,
+        reasoning_effort: req.reasoning_effort,
+        output_config: req.output_config,
+    };
+}
 export async function createOpenAiResponse(params) {
     if (isMockMode()) {
         return createMockResponse(params.request, params.configStore);
@@ -177,6 +192,7 @@ export async function createOpenAiResponse(params) {
         routing: params.request.routing,
         protocol: "responses",
         previousResponseId: params.request.previous_response_id,
+        ...spreadMaaSFieldsFromRequest(params.request),
     });
     return buildResponsesObject(run);
 }
@@ -199,6 +215,7 @@ export function streamOpenAiChatCompletion(params) {
         routing: params.request.routing,
         protocol: "chat.completions",
         previousResponseId: undefined,
+        ...spreadMaaSFieldsFromRequest(params.request),
     });
 }
 export function streamOpenAiResponse(params) {
@@ -220,7 +237,29 @@ export function streamOpenAiResponse(params) {
         routing: params.request.routing,
         protocol: "responses",
         previousResponseId: params.request.previous_response_id,
+        ...spreadMaaSFieldsFromRequest(params.request),
     });
+}
+function buildMaaSCompletionOptions(params, base) {
+    const extras = extractMaaSOpenAiExtras(params);
+    return {
+        ...base,
+        messages: params.messages.map((m) => ({
+            role: m.role,
+            content: m.content ?? "",
+            name: m.name,
+            tool_call_id: m.toolCallId,
+        })),
+        tools: params.tools,
+        toolChoice: params.toolChoice,
+        parallelToolCalls: params.parallel_tool_calls,
+        responseFormat: params.responseFormat,
+        thinking: params.thinking ?? extras.thinking,
+        enableThinking: params.enable_thinking ?? extras.enable_thinking,
+        reasoningEffort: params.reasoning_effort ?? extras.reasoning_effort,
+        outputConfig: params.output_config ?? extras.output_config,
+        maasExtras: extras,
+    };
 }
 async function executeCompatibilityRun(params) {
     const requestId = generateId();
@@ -277,7 +316,7 @@ async function executeCompatibilityRun(params) {
             includeSkillNames: config.context.includeSkillNames,
             systemPromptAddons,
         });
-        const completion = await params.llmClient.complete(prompt, {
+        const completion = await params.llmClient.complete(prompt, buildMaaSCompletionOptions(params, {
             model,
             requestId,
             sessionId: deriveSessionId(params.metadata),
@@ -288,7 +327,7 @@ async function executeCompatibilityRun(params) {
             taskType: params.routing?.taskType,
             taskName: params.routing?.taskName,
             routing: params.routing,
-        });
+        }));
         latestRoutingTrace = extractAutoRoutingTrace(completion.raw);
         resolvedModel = extractResolvedModel(completion.raw) ?? resolvedModel;
         const structuredRound = extractStructuredCompletion(completion.raw, config.llm.provider);
@@ -467,7 +506,7 @@ async function* streamChatCompletionChunks(params) {
     let streamedReasoning = "";
     let finalResult;
     let activeModel = direct.model;
-    for await (const event of streamCompletion(params.llmClient, direct.prompt, {
+    for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
         model: direct.model,
         requestId: direct.requestId,
         sessionId: deriveSessionId(params.metadata),
@@ -478,7 +517,7 @@ async function* streamChatCompletionChunks(params) {
         taskType: params.routing?.taskType,
         taskName: params.routing?.taskName,
         routing: params.routing,
-    })) {
+    }))) {
         if (event.type === "started" && event.model) {
             activeModel = event.model;
             continue;
@@ -576,7 +615,7 @@ async function* streamResponsesChunks(params) {
     let streamedReasoning = "";
     let finalResult;
     let activeModel = direct.model;
-    for await (const event of streamCompletion(params.llmClient, direct.prompt, {
+    for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
         model: direct.model,
         requestId: direct.requestId,
         sessionId: deriveSessionId(params.metadata),
@@ -587,7 +626,7 @@ async function* streamResponsesChunks(params) {
         taskType: params.routing?.taskType,
         taskName: params.routing?.taskName,
         routing: params.routing,
-    })) {
+    }))) {
         if (event.type === "started" && event.model) {
             activeModel = event.model;
             continue;

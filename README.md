@@ -29,9 +29,15 @@
 
 ---
 
-## 🚀 0.3.0 版本更新
+## 🚀 0.3.1 版本更新
 
-### 本版要点：MaaS 全链路 Thinking / Reasoning 兼容
+### 本版要点：YueliAI 云端聚合网关与 Playground 工作区
+- **YueliAI v1 反向代理**：`YUELIAI_HOST` + `YUELIAI_API_KEY` 暴露 `/yueliai/v1/*` 与 `/api/yueliai/v1/*`，代理至阅粒云端聚合 API（含 SSE）
+- **配置持久化**：`configStore.yueliai` 与 Playground Keys 弹窗联动；请求审计增加 `channel: yueliai`
+- **Playground 重构**：工作区导航（对话 / 路由 / 模型 / 集成）、输出 Tab、统一 `loadServerConfigBundle()` 加载网关与 playground 配置
+- **文档**：`docs/KGM服务调用.md` 推理服务调用章节；`docs/四种调用方法和组合.md`
+
+### 0.3.0：MaaS 全链路 Thinking / Reasoning 兼容
 - **统一 MaaS 层**（`src/llm/maas/`）：模型目录、请求封装、推理字段解析、Anthropic 原生代理
 - **最新旗舰模型**：Anthropic（Opus 4.8/4.7、Sonnet 4.6、Fable 5）、智谱 GLM-5.2/5.1/5.0、Kimi 2.7/2.6/2.5、MiniMax 3.0/2.7/2.6/2.5
 - **Thinking / Reasoning**：请求支持 `thinking`、`enable_thinking`、`reasoning_effort`、`output_config`；响应/流式统一解析 `reasoning_content` / `thinking` 等字段
@@ -701,7 +707,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.0
+npm install @haxitag/yueli-kgm-computing@0.3.1
 ```
 
 ### 开源仓库同步（维护者）
@@ -727,7 +733,9 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前 npm：`0.3.0`）
+## 版本说明（当前 npm：`0.3.1`）
+
+**0.3.1**：YueliAI 云端聚合网关（`/yueliai/v1` 代理）、Playground 工作区与配置加载优化、推理调用文档补充。
 
 **0.3.0**：MaaS 全链路 Thinking/Reasoning 兼容 — 统一 `src/llm/maas/` 层；补全 Anthropic / GLM / Kimi / MiniMax 最新旗舰模型；Anthropic 原生直通与 OpenAI-compat 推理字段透传（见上文「本版要点」）。
 
@@ -737,7 +745,7 @@ npm run dev:enhanced
 
 **0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明。
 
-**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.3.0** 一致。
+**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.3.1** 一致。
 
 ### ✅ 新增功能
 

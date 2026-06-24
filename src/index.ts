@@ -67,6 +67,9 @@ export * from "./utils/streamOptimizer.js";
 export * from "./utils/memoryPool.js";
 export * from "./utils/connectionPool.js";
 export * from "./kce/engine.js";
+export * from "./yueliai/config.js";
+export * from "./yueliai/types.js";
+export * from "./yueliai/routes.js";
 
 // Shimmy-inspired inference optimizations
 export * from "./inference/modelDiscovery.js";

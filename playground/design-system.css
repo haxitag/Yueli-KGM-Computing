@@ -68,7 +68,8 @@
 }
 
 .nav-primary,
-.nav-extensions {
+.nav-extensions,
+.nav-workspaces {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
@@ -116,6 +117,128 @@ a.nav-item {
     outline-offset: 2px;
 }
 
+.nav-item.nav-workspace.active {
+    color: var(--color-accent);
+    font-weight: 500;
+    background: #eff6ff;
+}
+
+.integration-subnav.is-hidden {
+    display: none;
+}
+
+.playground-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.workspace-view {
+    display: none;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.workspace-view.active {
+    display: flex;
+}
+
+.workspace-view[hidden] {
+    display: none !important;
+}
+
+/* —— 可折叠输入 —— */
+.input-collapse {
+    margin-bottom: 14px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: #fafafa;
+}
+
+.input-collapse summary {
+    cursor: pointer;
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    list-style: none;
+}
+
+.input-collapse summary::-webkit-details-marker {
+    display: none;
+}
+
+.input-collapse[open] summary {
+    border-bottom: 1px solid var(--color-border);
+}
+
+.input-collapse .media-inputs,
+.input-collapse .request-options {
+    padding: 12px;
+}
+
+/* —— 输出 Tab —— */
+.output-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.output-panel-head .panel-title {
+    margin-bottom: 0;
+}
+
+.output-tabs {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+}
+
+.output-tab {
+    appearance: none;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    font: inherit;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+.output-tab:hover {
+    background: #f3f4f6;
+    color: var(--color-text);
+}
+
+.output-tab.active {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+    font-weight: 500;
+}
+
+.output-tab-panels {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.output-tab-panel {
+    flex: 1;
+    min-height: 200px;
+    overflow: auto;
+}
+
+.output-tab-panel[hidden] {
+    display: none !important;
+}
+
 .nav-divider {
     width: 1px;
     height: 20px;
@@ -157,13 +280,18 @@ a.nav-item {
     padding: 16px;
     gap: 0;
     min-height: 0;
-    border-bottom: 1px solid var(--color-border);
+}
+
+.workspace-view#workspace-chat.active .main-layout {
+    flex: 1;
+    border-bottom: none;
 }
 
 .input-panel,
 .output-panel {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     padding: 16px;
@@ -255,7 +383,8 @@ a.nav-item {
 /* —— 扩展配置 —— */
 .integration-section {
     background: var(--color-bg);
-    border-bottom: 1px solid var(--color-border);
+    flex: 1;
+    width: 100%;
 }
 
 .integration-desc {

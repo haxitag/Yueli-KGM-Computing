@@ -302,6 +302,13 @@ const defaultConfig = {
             },
         ],
     },
+    yueliai: {
+        enabled: false,
+        host: "https://www.yueli.com",
+        apiKey: "",
+        upstreamPrefix: "/api",
+        timeoutMs: 120_000,
+    },
     playground: {
         skills: [
             {
@@ -396,7 +403,22 @@ function mergeConfig(base, patch) {
         ycb: { ...base.ycb, ...(patch.ycb ?? {}) },
         routing: { ...base.routing, ...(patch.routing ?? {}) },
         autoRouting: mergeAutoRoutingConfig(base.autoRouting, patch.autoRouting),
+        yueliai: mergeYueliAiGatewayConfig(base.yueliai, patch.yueliai),
         playground: mergePlaygroundConfig(base.playground, patch.playground),
+    };
+}
+function mergeYueliAiGatewayConfig(base, patch) {
+    if (!patch) {
+        return base;
+    }
+    return {
+        ...base,
+        ...patch,
+        host: patch.host?.trim() || base.host,
+        upstreamPrefix: patch.upstreamPrefix !== undefined ? patch.upstreamPrefix : base.upstreamPrefix,
+        timeoutMs: patch.timeoutMs !== undefined && Number.isFinite(patch.timeoutMs) && patch.timeoutMs > 0
+            ? patch.timeoutMs
+            : base.timeoutMs,
     };
 }
 function mergePlaygroundConfig(base, patch) {

@@ -63,6 +63,11 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   
   // Timeout
+  YUELIAI_HOST: z.string().optional(),
+  YUELIAI_API_KEY: z.string().optional(),
+  YUELIAI_UPSTREAM_PREFIX: z.string().optional(),
+  YUELIAI_TIMEOUT_MS: z.string().transform(Number).optional(),
+
   KGM_REQUEST_TIMEOUT_MS: z.string().transform(Number).default('30000'),
   KGM_CIRCUIT_BREAKER_TIMEOUT_MS: z.string().transform(Number).default('10000'),
   KGM_CIRCUIT_BREAKER_ERROR_THRESHOLD: z.string().transform(Number).default('5'),

@@ -99,6 +99,17 @@ export type YcbConfig = {
   requireBuildRef: boolean;
 };
 
+/** 阅粒云端 YueliAI v1 推理聚合网关（Playground / KGM 统一配置） */
+export type YueliAiGatewayConfig = {
+  enabled: boolean;
+  host: string;
+  apiKey?: string;
+  upstreamPrefix: string;
+  timeoutMs: number;
+};
+
+export type YueliAiGatewayConfigPatch = Partial<YueliAiGatewayConfig>;
+
 export type ModelPricingConfig = {
   inputPer1kTokens: number;
   outputPer1kTokens: number;
@@ -241,6 +252,7 @@ export type KgmConfig = {
   ycb: YcbConfig;
   routing: BusinessRoutingConfig;
   autoRouting: AutoRoutingConfig;
+  yueliai: YueliAiGatewayConfig;
   playground: PlaygroundConfig;
 };
 
@@ -254,6 +266,7 @@ export type KgmConfigPatch = {
   ycb?: Partial<YcbConfig>;
   routing?: Partial<BusinessRoutingConfig>;
   autoRouting?: AutoRoutingConfigPatch;
+  yueliai?: YueliAiGatewayConfigPatch;
   playground?: PlaygroundConfigPatch;
 };
 
@@ -558,6 +571,13 @@ const defaultConfig: KgmConfig = {
       },
     ],
   },
+  yueliai: {
+    enabled: false,
+    host: "https://www.yueli.com",
+    apiKey: "",
+    upstreamPrefix: "/api",
+    timeoutMs: 120_000,
+  },
   playground: {
     skills: [
       {
@@ -668,7 +688,27 @@ function mergeConfig(base: KgmConfig, patch: KgmConfigPatch): KgmConfig {
     ycb: { ...base.ycb, ...(patch.ycb ?? {}) },
     routing: { ...base.routing, ...(patch.routing ?? {}) },
     autoRouting: mergeAutoRoutingConfig(base.autoRouting, patch.autoRouting),
+    yueliai: mergeYueliAiGatewayConfig(base.yueliai, patch.yueliai),
     playground: mergePlaygroundConfig(base.playground, patch.playground),
+  };
+}
+
+function mergeYueliAiGatewayConfig(
+  base: YueliAiGatewayConfig,
+  patch?: YueliAiGatewayConfigPatch,
+): YueliAiGatewayConfig {
+  if (!patch) {
+    return base;
+  }
+  return {
+    ...base,
+    ...patch,
+    host: patch.host?.trim() || base.host,
+    upstreamPrefix: patch.upstreamPrefix !== undefined ? patch.upstreamPrefix : base.upstreamPrefix,
+    timeoutMs:
+      patch.timeoutMs !== undefined && Number.isFinite(patch.timeoutMs) && patch.timeoutMs > 0
+        ? patch.timeoutMs
+        : base.timeoutMs,
   };
 }
 

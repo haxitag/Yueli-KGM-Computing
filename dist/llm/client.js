@@ -1,3 +1,5 @@
+import { buildOpenAiChatCompletionsBody } from "./maas/openAiChatBody.js";
+import { extractOpenAiCompatChoiceText, extractOpenAiCompatDeltaParts } from "./maas/reasoning.js";
 import { OllamaLlmClient } from "./third-party.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
@@ -45,13 +47,17 @@ export class HttpLlmClient {
     }
     async complete(prompt, options) {
         const payload = this.mode === "chat"
-            ? {
+            ? buildOpenAiChatCompletionsBody({
                 model: options?.model ?? this.model,
-                messages: [{ role: "user", content: prompt }],
-                max_tokens: options?.maxTokens ?? 512,
+                prompt,
+                messages: options?.messages,
+                stream: false,
+                maxTokens: options?.maxTokens ?? 512,
                 temperature: options?.temperature ?? 0.2,
                 stop: options?.stop,
-            }
+                topP: options?.topP,
+                options,
+            })
             : {
                 model: options?.model ?? this.model,
                 prompt,
@@ -64,28 +70,25 @@ export class HttpLlmClient {
             timeoutMs: this.timeoutMs,
         }));
         const choice = data.choices?.[0];
-        const firstNonEmpty = (...cands) => {
-            for (const c of cands) {
-                if (typeof c === "string" && c.trim().length > 0)
-                    return c;
-            }
-            return "";
-        };
-        // 兼容 reasoning-only 模型：部分 OpenAI-compat 返回 content=""，而真正输出在 message.reasoning/thinking
-        const text = firstNonEmpty(data.output_text, choice?.text, choice?.message?.content, choice?.message?.reasoning, choice?.message?.thinking);
-        return { text, raw: data };
+        const { text } = extractOpenAiCompatChoiceText(choice);
+        const resolved = text ||
+            (typeof data.output_text === "string" ? data.output_text : "");
+        return { text: resolved, raw: data };
     }
     async *streamComplete(prompt, options) {
         const url = joinUrl(this.baseUrl, this.path);
         const payload = this.mode === "chat"
-            ? {
+            ? buildOpenAiChatCompletionsBody({
                 model: options?.model ?? this.model,
-                messages: [{ role: "user", content: prompt }],
-                max_tokens: options?.maxTokens ?? 512,
+                prompt,
+                messages: options?.messages,
+                stream: true,
+                maxTokens: options?.maxTokens ?? 512,
                 temperature: options?.temperature ?? 0.2,
                 stop: options?.stop,
-                stream: true,
-            }
+                topP: options?.topP,
+                options,
+            })
             : {
                 model: options?.model ?? this.model,
                 prompt,
@@ -148,11 +151,7 @@ export class HttpLlmClient {
                                 const choice = data.choices[0];
                                 const delta = choice.delta;
                                 if (delta) {
-                                    const content = typeof delta.content === "string" && delta.content.length > 0
-                                        ? delta.content
-                                        : typeof delta.text === "string"
-                                            ? delta.text
-                                            : "";
+                                    const { content, reasoning } = extractOpenAiCompatDeltaParts(delta);
                                     if (content) {
                                         yield {
                                             type: "token",
@@ -160,13 +159,6 @@ export class HttpLlmClient {
                                             index: tokenIndex++,
                                             channel: "content",
                                         };
-                                    }
-                                    let reasoning = "";
-                                    for (const key of ["reasoning_content", "reasoning", "thinking", "thought"]) {
-                                        const v = delta[key];
-                                        if (typeof v === "string" && v.length > 0) {
-                                            reasoning += v;
-                                        }
                                     }
                                     if (reasoning) {
                                         yield {

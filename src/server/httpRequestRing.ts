@@ -2,6 +2,9 @@ export type HttpAccessLogEntry = {
   ts: string;
   method: string;
   pathname: string;
+  /** 推理通道：yueliai / openai / kgm 等 */
+  channel?: string;
+  subpath?: string;
 };
 
 const MAX = 500;
