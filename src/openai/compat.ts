@@ -131,6 +131,7 @@ type CompatibilityRun = {
   metadata: Record<string, unknown>;
   kgm: KgmExtensions & { compatibility: Record<string, unknown>; tool_trace: CompatibilityToolTrace[] };
   finalText: string;
+  reasoningText?: string;
   finishReason: "stop" | "tool_calls";
   toolCalls: CompatibilityToolTrace[];
   usage: Record<string, number>;
@@ -281,6 +282,9 @@ export async function createOpenAiChatCompletion(params: CompatibilityParams & {
     role: "assistant",
     content: run.finalText || null,
   };
+  if (run.reasoningText?.trim()) {
+    message.reasoning_content = run.reasoningText;
+  }
   if (run.toolCalls.length > 0) {
     message.tool_calls = run.toolCalls.map(toOpenAiToolCall);
   }
@@ -682,6 +686,7 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
 
   let rawOutput = "";
   let streamedContent = "";
+  let streamedReasoning = "";
   let finalResult: CompletionResult | undefined;
   let activeModel = direct.model;
   for await (const event of streamCompletion(params.llmClient, direct.prompt, {
@@ -703,6 +708,7 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
     if (event.type === "token" && event.text) {
       rawOutput += event.text;
       if (event.channel === "reasoning") {
+        streamedReasoning += event.text;
         yield JSON.stringify({
           id: direct.completionId,
           object: "chat.completion.chunk",
@@ -740,6 +746,7 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
     finalResult,
     params.responseStore,
     { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders },
+    streamedReasoning,
   );
   finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
   const routingTrace = extractAutoRoutingTrace(finalResult?.raw);
@@ -800,6 +807,7 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
 
   let rawOutput = "";
   let streamedContent = "";
+  let streamedReasoning = "";
   let finalResult: CompletionResult | undefined;
   let activeModel = direct.model;
   for await (const event of streamCompletion(params.llmClient, direct.prompt, {
@@ -820,6 +828,14 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
     }
     if (event.type === "token" && event.text) {
       rawOutput += event.text;
+      if (event.channel === "reasoning") {
+        streamedReasoning += event.text;
+        yield JSON.stringify({
+          type: "response.reasoning.delta",
+          delta: event.text,
+        });
+        continue;
+      }
       const delta = extractFinalContentDelta(rawOutput, streamedContent);
       if (!delta) {
         continue;
@@ -843,6 +859,7 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
     finalResult,
     params.responseStore,
     { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders },
+    streamedReasoning,
   );
   finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
   if (finalized.finalText.length > streamedContent.length) {
@@ -945,6 +962,7 @@ function finalizeDirectStream(
     metadata?: Record<string, unknown>;
     requestHeaders?: Record<string, string | string[] | undefined>;
   },
+  streamedReasoning = "",
 ): CompatibilityRun {
   const rawText = finalResult?.text ?? rawOutput;
   const intent = parseIntent(rawText);
@@ -980,6 +998,7 @@ function finalizeDirectStream(
         : {}),
     },
     finalText,
+    reasoningText: streamedReasoning.trim() || undefined,
     finishReason: "stop",
     toolCalls: [],
     usage: {
@@ -1251,7 +1270,12 @@ function buildResponsesObject(run: CompatibilityRun): Record<string, unknown> {
     output_text: run.finalText,
     usage: run.usage,
     metadata: run.metadata,
-    kgm: run.kgm,
+    kgm: {
+      ...run.kgm,
+      ...(run.reasoningText?.trim()
+        ? { reasoning_content: run.reasoningText, reasoning_trace: run.reasoningText.split("\n").filter(Boolean).map((line) => ({ content: line })) }
+        : {}),
+    },
   };
 }
 

@@ -135,6 +135,9 @@ export async function createOpenAiChatCompletion(params) {
         role: "assistant",
         content: run.finalText || null,
     };
+    if (run.reasoningText?.trim()) {
+        message.reasoning_content = run.reasoningText;
+    }
     if (run.toolCalls.length > 0) {
         message.tool_calls = run.toolCalls.map(toOpenAiToolCall);
     }
@@ -461,6 +464,7 @@ async function* streamChatCompletionChunks(params) {
     });
     let rawOutput = "";
     let streamedContent = "";
+    let streamedReasoning = "";
     let finalResult;
     let activeModel = direct.model;
     for await (const event of streamCompletion(params.llmClient, direct.prompt, {
@@ -482,6 +486,7 @@ async function* streamChatCompletionChunks(params) {
         if (event.type === "token" && event.text) {
             rawOutput += event.text;
             if (event.channel === "reasoning") {
+                streamedReasoning += event.text;
                 yield JSON.stringify({
                     id: direct.completionId,
                     object: "chat.completion.chunk",
@@ -511,7 +516,7 @@ async function* streamChatCompletionChunks(params) {
             finalResult = event.result;
         }
     }
-    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders });
+    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders }, streamedReasoning);
     finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
     const routingTrace = extractAutoRoutingTrace(finalResult?.raw);
     if (routingTrace?.selected) {
@@ -568,6 +573,7 @@ async function* streamResponsesChunks(params) {
     });
     let rawOutput = "";
     let streamedContent = "";
+    let streamedReasoning = "";
     let finalResult;
     let activeModel = direct.model;
     for await (const event of streamCompletion(params.llmClient, direct.prompt, {
@@ -588,6 +594,14 @@ async function* streamResponsesChunks(params) {
         }
         if (event.type === "token" && event.text) {
             rawOutput += event.text;
+            if (event.channel === "reasoning") {
+                streamedReasoning += event.text;
+                yield JSON.stringify({
+                    type: "response.reasoning.delta",
+                    delta: event.text,
+                });
+                continue;
+            }
             const delta = extractFinalContentDelta(rawOutput, streamedContent);
             if (!delta) {
                 continue;
@@ -603,7 +617,7 @@ async function* streamResponsesChunks(params) {
             finalResult = event.result;
         }
     }
-    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders });
+    const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders }, streamedReasoning);
     finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
     if (finalized.finalText.length > streamedContent.length) {
         const trailing = finalized.finalText.slice(streamedContent.length);
@@ -688,7 +702,7 @@ async function prepareDirectStream(params) {
         conversation: [...params.messages],
     };
 }
-function finalizeDirectStream(setup, rawOutput, streamedContent, finalResult, responseStore, normalizeContext) {
+function finalizeDirectStream(setup, rawOutput, streamedContent, finalResult, responseStore, normalizeContext, streamedReasoning = "") {
     const rawText = finalResult?.text ?? rawOutput;
     const intent = parseIntent(rawText);
     let finalText = intent.type === "final" ? intent.content : streamedContent || rawText;
@@ -718,6 +732,7 @@ function finalizeDirectStream(setup, rawOutput, streamedContent, finalResult, re
                 : {}),
         },
         finalText,
+        reasoningText: streamedReasoning.trim() || undefined,
         finishReason: "stop",
         toolCalls: [],
         usage: {
@@ -988,7 +1003,12 @@ function buildResponsesObject(run) {
         output_text: run.finalText,
         usage: run.usage,
         metadata: run.metadata,
-        kgm: run.kgm,
+        kgm: {
+            ...run.kgm,
+            ...(run.reasoningText?.trim()
+                ? { reasoning_content: run.reasoningText, reasoning_trace: run.reasoningText.split("\n").filter(Boolean).map((line) => ({ content: line })) }
+                : {}),
+        },
     };
 }
 function buildFunctionCallItem(toolCall) {

@@ -29,12 +29,19 @@
 
 ---
 
-## 🚀 0.2.7 版本更新
+## 🚀 0.2.9 版本更新
 
 ### 本版要点
-- **Critical E2E**：补充 `/v1/chat/completions` 与 `/v1/responses` 的 SSE 流式覆盖（含 `tool_calls`、`response.output_item.added` 等）；记录「同步路径 `502`」与「流式先返回 SSE `200` 后上游失败截断」的差异（见 `tests/e2e/critical-review-matrix.e2e.test.ts` 与部署文档）。
+- **OpenAI Responses API 增强**：`/v1/responses` 对齐新版流式事件（`response.output_text.delta`、`response.reasoning.delta`、`response.completed`）；Chat Completions 支持 `reasoning_content` 非流式与流式 `delta`；终态响应含 `kgm.reasoning_content` / `kgm.reasoning_trace`（见 `src/openai/compat.ts`）。
 
-### 0.2.6 起延续：Yueli KGM Runtime 品牌统一
+### 0.2.8：Copilot 集成
+- SSE 流式归一化：`executeToolCalls` 关闭时放宽透传；Ollama `think=false` 与 reasoning 通道
+- 管理 API：`PUT/GET /v1/admin/model-providers` 云厂商同步；`/v1/models?configured=true` 已配置模型列表
+- 路由元数据、`KGM_STREAM_IDLE_MS`、`X-KGM-Output-Normalize: off` 等 Copilot 对接能力
+
+### 0.2.7 及延续：Critical E2E 与品牌统一
+- **Critical E2E**：补充 `/v1/chat/completions` 与 `/v1/responses` 的 SSE 流式覆盖（含 `tool_calls`、`response.output_item.added` 等）；记录「同步路径 `502`」与「流式先返回 SSE `200` 后上游失败截断」的差异
+- **0.2.6 起延续：Yueli KGM Runtime 品牌统一**
 
 **1. 用户体验优化**
 - 统一品牌标识：将所有用户可见的错误消息、日志输出从 `native_runtime_*` 格式更新为 `Yueli KGM Runtime` 品牌标识
@@ -687,7 +694,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.2.7
+npm install @haxitag/yueli-kgm-computing@0.2.9
 ```
 
 ### 开源仓库同步（维护者）
@@ -713,11 +720,15 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前 npm：`0.2.7`）
+## 版本说明（当前 npm：`0.2.9`）
 
-**0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明（见上文「本版要点」）。
+**0.2.9**：OpenAI Responses API 流式事件与 reasoning 通道对齐；Chat Completions `reasoning_content` 支持（见上文「本版要点」）。
 
-**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.2.7** 一致。
+**0.2.8**：Copilot 集成 — SSE 归一化、云厂商同步 API、已配置模型列表与路由元数据。
+
+**0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明。
+
+**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.2.9** 一致。
 
 ### ✅ 新增功能
 
