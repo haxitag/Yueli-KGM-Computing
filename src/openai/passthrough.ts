@@ -4,6 +4,7 @@ import type { ManagedModelManager } from "../models/modelManager.js";
 import type { OpenAiChatCompletionRequest, OpenAiResponsesRequest } from "./compat.js";
 import { mergeOpenAiPassthroughBody } from "../llm/maas/openAiChatBody.js";
 import { relayUpstreamSseNormalized } from "./sseStreamNormalize.js";
+import { protectedFetch } from "../observability/circuitBreaker.js";
 
 export async function maybeProxyNativeOpenAiStream(params: {
   configStore: ConfigStore;
@@ -21,7 +22,7 @@ export async function maybeProxyNativeOpenAiStream(params: {
   const url = joinPath(upstream.baseUrl, upstream.path);
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await protectedFetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",

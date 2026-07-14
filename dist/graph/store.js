@@ -201,6 +201,9 @@ export class InMemoryGraphStore {
         }
         return added;
     }
+    async listTriples(params) {
+        return Array.from(this.edgesFor(params?.namespace).values());
+    }
     edgesFor(namespace) {
         const key = namespace?.trim() || "__global__";
         if (!this.namespaces.has(key)) {

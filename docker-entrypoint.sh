@@ -20,7 +20,7 @@ if [ "$WAIT_FOR_DEPENDENCIES" = "true" ]; then
     echo "Redis is ready!"
   fi
   
-  # 等待NATS
+  # 等待 NATS
   if [ -n "$NATS_URL" ]; then
     NATS_HOST=$(echo $NATS_URL | sed 's/nats:\/\///' | cut -d':' -f1)
     NATS_PORT=$(echo $NATS_URL | sed 's/nats:\/\///' | cut -d':' -f2)
@@ -30,6 +30,18 @@ if [ "$WAIT_FOR_DEPENDENCIES" = "true" ]; then
       sleep 1
     done
     echo "NATS is ready!"
+  fi
+
+  # 等待前站 micro-worker（encoder 轨）
+  if [ -n "$KGM_FRONTSTATION_INTENT_URL" ]; then
+    FS_HOST=$(echo "$KGM_FRONTSTATION_INTENT_URL" | sed -E 's#https?://([^/:]+).*#\1#')
+    FS_PORT=$(echo "$KGM_FRONTSTATION_INTENT_URL" | sed -E 's#https?://[^/:]+(:([0-9]+))?.*#\2#')
+    FS_PORT=${FS_PORT:-8091}
+    echo "Waiting for frontstation-worker at $FS_HOST:$FS_PORT..."
+    while ! nc -z "$FS_HOST" "$FS_PORT"; do
+      sleep 1
+    done
+    echo "frontstation-worker is ready!"
   fi
 fi
 
@@ -105,6 +117,7 @@ echo "Cluster: $KGM_CLUSTER_NAME"
 echo "Discovery: $KGM_CLUSTER_DISCOVERY"
 echo "Storage: $KGM_STORAGE_BACKEND"
 echo "Metrics Port: $KGM_METRICS_PORT"
+echo "Frontstation: mode=${KGM_FRONTSTATION_MODE:--} prefer_onnx=${KGM_FRONTSTATION_PREFER_ONNX:--} intent_url=${KGM_FRONTSTATION_INTENT_URL:-}"
 echo "==========================="
 
 # 执行主命令

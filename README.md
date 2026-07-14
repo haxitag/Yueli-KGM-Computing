@@ -29,13 +29,19 @@
 
 ---
 
-## 🚀 0.3.1 版本更新
+## 🚀 0.3.3 版本更新
 
-### 本版要点：YueliAI 云端聚合网关与 Playground 工作区
-- **YueliAI v1 反向代理**：`YUELIAI_HOST` + `YUELIAI_API_KEY` 暴露 `/yueliai/v1/*` 与 `/api/yueliai/v1/*`，代理至阅粒云端聚合 API（含 SSE）
-- **配置持久化**：`configStore.yueliai` 与 Playground Keys 弹窗联动；请求审计增加 `channel: yueliai`
-- **Playground 重构**：工作区导航（对话 / 路由 / 模型 / 集成）、输出 Tab、统一 `loadServerConfigBundle()` 加载网关与 playground 配置
-- **文档**：`docs/KGM服务调用.md` 推理服务调用章节；`docs/四种调用方法和组合.md`
+### 本版要点：战略能力收线 · 算子复用 llama.cpp · 开放图导出
+- **算子策略（冻结自研）**：生产算子复用 **llama.cpp**（GGUF）与 **vLLM/SGLang**（高吞吐）；可选部署闸门 `KGM_LLAMA_CPP_ENABLED` / `workers.llamaCpp`（详见 `docs/算子几llamaCPP.md`）
+- **开放图防锁定**：`/v1/kgm/graph/export|import` 支持 JSON-LD / N-Triples / Turtle / GraphML
+- **双轨推理**：`/v1/kgm/graph/reason/dual_track` + KCE `validation.dual_track`（符号 × 检索 × LLM）
+- **执行闭环**：`runtime: "auto"`、`/v1/kgm/weights/resolve|capabilities`；HF 全面可执行 = via_worker
+- **LoRA（worker）**、`/v1/runtime/workers/llama.cpp`、GPU 吞吐规划 API
+- 完整变更见根目录 [`CHANGELOG.md`](./CHANGELOG.md)
+
+### 0.3.1：YueliAI 云端聚合网关与 Playground 工作区
+- **YueliAI v1 反向代理**：`YUELIAI_HOST` + `YUELIAI_API_KEY` 暴露 `/yueliai/v1/*` 与 `/api/yueliai/v1/*`
+- **Playground 重构**与配置持久化；文档 `docs/KGM服务调用.md`
 
 ### 0.3.0：MaaS 全链路 Thinking / Reasoning 兼容
 - **统一 MaaS 层**（`src/llm/maas/`）：模型目录、请求封装、推理字段解析、Anthropic 原生代理
@@ -113,7 +119,7 @@ console.log(result.text);
 - **npm**：[@haxitag/yueli-kgm-computing](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing)
 - **GitHub**：[haxitag/Yueli-KGM-Computing](https://github.com/haxitag/Yueli-KGM-Computing)
 - **npm 包内容**：`dist/`（运行时代码）+ `playground/`（Web Playground 静态资源）+ 本 `README`；**不**再内置仓库中的大量 `docs/*.md`，以减小包体；完整文档以社区与官网为准
-- **生产加固（可选）**：`KGM_HTTP_API_KEY`（`Authorization: Bearer` 或 `X-API-Key`）；`KGM_HTTP_AUTH_EXEMPT` 逗号路径前缀，默认只豁免 `/health`（若开启 API Key 且需本机 Playground，可加入 `/api` 等前缀）；`KGM_HTTP_RATE_LIMIT_MAX` + `KGM_HTTP_RATE_LIMIT_WINDOW_MS`（`MAX=0` 表示不限流）
+- **生产加固**：`NODE_ENV=production`（或 `KGM_HTTP_SECURITY_MODE=strict`）**强制** `KGM_HTTP_API_KEY`；未设限流时默认 **120 req/分钟**；`KGM_HTTP_AUTH_EXEMPT` 默认 `/health,/metrics,/openapi.json`；`KGM_HTTP_TRUST_PROXY=1` 才信任 `X-Forwarded-For`。本地开发默认 permissive。上游 LLM 经 **opossum** 按 host 熔断（`KGM_CIRCUIT_BREAKER_*`）。Managed worker（vLLM/SGLang/llama.cpp/MLX）异常退出默认**自动重启**（`KGM_WORKER_AUTO_RESTART`，指数退避）；自动路由在首 token 前失败时可 **stream failover** 到 default 候选。
 - **OpenAPI 3.1**：`GET /openapi.json`（主规范同 `src/openapi/kgmOpenApiV1Spec.ts`）
 - **Runtime 观测层**：`GET /v1/runtime/status`、`/topology`、`/discovery`、`/diagnostics`，以及 `POST /v1/runtime/route/explain`，用于应用端启动体检、模型发现、路由预检与失败解释
 - **检索三阶段**：`kgm.retrieval.strategy=hybrid`（BM25+向量）、`kgm.retrieval.rerank=embed`（双塔成对编码）或 `rerank=http` + `KGM_RERANK_HTTP_URL`
@@ -201,6 +207,20 @@ KGM_DISCOVERY_ENABLED / KGM_DISCOVERY_PORTS / KGM_DISCOVERY_TIMEOUT_MS
 KGM_MOCK_MODE
 KGM_HTTP_API_KEY / KGM_HTTP_RATE_LIMIT_MAX / KGM_HTTP_RATE_LIMIT_WINDOW_MS
 KGM_CONFIG_PATH / KGM_DB_PATH / KGM_VECTOR_BACKEND
+KGM_FRONTSTATION_MODE / KGM_FRONTSTATION_*_URL / KGM_FRONTSTATION_PREFER_ONNX / KGM_FRONTSTATION_ONNX_MODEL
+```
+
+前站浅层（encoder 轨，进 LLM 前；与 decoder-only Native GPU 分轨）：
+
+```bash
+# 本地：ONNX MiniLM 或 hash 回退（见 .env.example）
+export KGM_FRONTSTATION_MODE=auto
+export KGM_FRONTSTATION_PREFER_ONNX=1
+
+# Docker Compose：自动拉起 frontstation-worker 并注入 URL
+export KGM_HTTP_API_KEY=$(openssl rand -hex 16)
+docker compose up --build
+# worker: :8091/health ；kgm: :3000
 ```
 
 自动发现本机 OpenAI-compatible 引擎示例：
@@ -709,7 +729,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.1
+npm install @haxitag/yueli-kgm-computing@0.3.3
 ```
 
 ### 开源仓库同步（维护者）
@@ -735,11 +755,13 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前 npm：`0.3.1`）
+## 版本说明（当前：`0.3.3`）
+
+**0.3.3**：开放图导出 / 双轨推理 / 执行策略闭环；算子复用 llama.cpp（可选部署）；LoRA worker 挂载；Native GPU 自研算子冻结。详见 [`CHANGELOG.md`](./CHANGELOG.md)。
 
 **0.3.1**：YueliAI 云端聚合网关（`/yueliai/v1` 代理）、Playground 工作区与配置加载优化、推理调用文档补充。
 
-**0.3.0**：MaaS 全链路 Thinking/Reasoning 兼容 — 统一 `src/llm/maas/` 层；补全 Anthropic / GLM / Kimi / MiniMax 最新旗舰模型；Anthropic 原生直通与 OpenAI-compat 推理字段透传（见上文「本版要点」）。
+**0.3.0**：MaaS 全链路 Thinking/Reasoning 兼容 — 统一 `src/llm/maas/` 层；补全 Anthropic / GLM / Kimi / MiniMax 最新旗舰模型；Anthropic 原生直通与 OpenAI-compat 推理字段透传。
 
 **0.2.9**：OpenAI Responses API 流式事件与 reasoning 通道对齐；Chat Completions `reasoning_content` 支持。
 
@@ -747,7 +769,7 @@ npm run dev:enhanced
 
 **0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明。
 
-**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告，能力与兼容性与当前 **0.3.1** 一致。
+**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告；当前以 **0.3.3** 为准。
 
 ### ✅ 新增功能
 

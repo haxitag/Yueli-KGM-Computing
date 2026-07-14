@@ -284,6 +284,43 @@ export const openApiSchemaComponents = {
         },
     },
     GraphTriplesResult: { type: "object", properties: { status: { type: "string" }, count: { type: "integer" }, triples: { type: "array" } } },
+    GraphExportRequest: {
+        type: "object",
+        anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
+        properties: {
+            format: {
+                type: "string",
+                enum: ["jsonld", "ntriples", "turtle", "graphml", "json-triples"],
+                description: "开放导出格式；默认 jsonld",
+            },
+            userId: { type: "string" },
+            namespace: { type: "string" },
+        },
+    },
+    GraphExportResult: {
+        type: "object",
+        properties: {
+            status: { type: "string" },
+            format: { type: "string" },
+            contentType: { type: "string" },
+            body: { type: "string" },
+            tripleCount: { type: "integer" },
+            antiLockIn: { type: "object" },
+        },
+    },
+    GraphImportRequest: {
+        type: "object",
+        anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
+        properties: {
+            format: { type: "string" },
+            content: { type: "string" },
+            body: { type: "string" },
+            triples: { type: "array" },
+            source: { type: "string" },
+            userId: { type: "string" },
+            namespace: { type: "string" },
+        },
+    },
     ImageEmbed: {
         type: "object",
         description: "对 KGM 路由 `POST /v1/kgm/multimodal/embed`；进程侧经 `embedImageRemote` 访问上游。环境变量：KGM_MULTIMODAL_BASE_URL（必填）、KGM_MULTIMODAL_PATH（默认 /v1/embeddings）、KGM_MULTIMODAL_MODEL、KGM_MULTIMODAL_KEY、KGM_MULTIMODAL_TIMEOUT_MS；KGM_MULTIMODAL_JSON_TEMPLATE=1 时对上游体为 {model,image,mime,text?}，否则 {model,input:[dataUrl]}。",

@@ -7,6 +7,7 @@ import { OllamaLlmClient } from "./third-party.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
 import { KgmStructuredError } from "../errors/structuredError.js";
+import { protectedFetch } from "../observability/circuitBreaker.js";
 
 /**
  * 进程内「上游 LLM」访问统一走 **HTTP + OpenAI Chat/Completions 形 JSON**：
@@ -89,11 +90,11 @@ export async function* streamCompletion(
     return;
   }
 
+  const result = await client.complete(prompt, options);
   yield {
     type: "started",
     model: options?.model,
   };
-  const result = await client.complete(prompt, options);
   if (result.text) {
     yield {
       type: "token",
@@ -201,9 +202,8 @@ export class HttpLlmClient implements LlmClient {
     const timeoutId = this.timeoutMs ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
 
     try {
-      yield { type: "started", model: options?.model ?? this.model };
-
-      const response = await fetch(url, {
+      // 先建连再发 started，确保上游不可达时 headers 前失败 → JSON 502
+      const response = await protectedFetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -222,6 +222,8 @@ export class HttpLlmClient implements LlmClient {
       if (!reader) {
         throw new Error("No response body");
       }
+
+      yield { type: "started", model: options?.model ?? this.model };
 
       const decoder = new TextDecoder("utf-8");
       let tokenIndex = 0;
@@ -316,7 +318,6 @@ export class HttpLlmClient implements LlmClient {
     }
   }
 }
-
 export class ConfigurableLlmClient implements LlmClient {
   private store: ConfigStore;
 
@@ -378,9 +379,8 @@ export class ConfigurableLlmClient implements LlmClient {
         model: options?.model ?? config.model,
       });
     } else {
-      // Fallback to non-streaming if stream isn't supported
-      yield { type: "started", model: options?.model ?? config.model };
       const result = await this.complete(prompt, options);
+      yield { type: "started", model: options?.model ?? config.model };
       if (result.text) {
         yield { type: "token", text: result.text, index: 0 };
       }

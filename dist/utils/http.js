@@ -1,49 +1,51 @@
+import { protectedFetch } from "../observability/circuitBreaker.js";
 /**
- * 优化的HTTP POST请求
- * 支持连接池复用，减少TCP握手开销
+ * 优化的 HTTP POST：上游经 opossum 熔断；超时用 AbortController。
  */
 export async function postJson(url, body, options = {}) {
-    if (typeof fetch !== "function") {
-        throw new Error("fetch is not available in this runtime");
-    }
     const controller = options.timeoutMs ? new AbortController() : undefined;
     const timeout = options.timeoutMs
         ? setTimeout(() => controller?.abort(), options.timeoutMs)
         : undefined;
-    const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(options.headers ?? {}) },
-        body: JSON.stringify(body),
-        signal: controller?.signal,
-    });
-    if (timeout) {
-        clearTimeout(timeout);
+    try {
+        const response = await protectedFetch(url, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...(options.headers ?? {}) },
+            body: JSON.stringify(body),
+            signal: controller?.signal,
+        }, { name: options.circuitName, enableBreakerTimeout: false });
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`http ${response.status}: ${text}`);
+        }
+        return response.json();
     }
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`http ${response.status}: ${text}`);
+    finally {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
     }
-    return response.json();
 }
 export async function getJson(url, options = {}) {
-    if (typeof fetch !== "function") {
-        throw new Error("fetch is not available in this runtime");
-    }
     const controller = options.timeoutMs ? new AbortController() : undefined;
     const timeout = options.timeoutMs
         ? setTimeout(() => controller?.abort(), options.timeoutMs)
         : undefined;
-    const response = await fetch(url, {
-        method: "GET",
-        headers: { ...(options.headers ?? {}) },
-        signal: controller?.signal,
-    });
-    if (timeout) {
-        clearTimeout(timeout);
+    try {
+        const response = await protectedFetch(url, {
+            method: "GET",
+            headers: { ...(options.headers ?? {}) },
+            signal: controller?.signal,
+        }, { name: options.circuitName, enableBreakerTimeout: false });
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`http ${response.status}: ${text}`);
+        }
+        return response.json();
     }
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`http ${response.status}: ${text}`);
+    finally {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
     }
-    return response.json();
 }

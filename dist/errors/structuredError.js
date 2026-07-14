@@ -78,7 +78,20 @@ export function toKgmStructuredError(error) {
             affectedFeatures: ["chat", "completions", "responses"],
         });
     }
-    if (lower.includes("fetch") || lower.includes("econnrefused") || lower.includes("upstream")) {
+    if (lower.includes("breaker is open") || (lower.includes("circuit") && lower.includes("open"))) {
+        return new KgmStructuredError({
+            code: "CIRCUIT_BREAKER_OPEN",
+            message: message || "LLM upstream circuit breaker is open",
+            type: "kgm_upstream_error",
+            status: 503,
+            stage: "inference.llm_provider",
+            path: "llmProvider",
+            routeAttempted: true,
+            suggestedFix: "Wait for circuit reset (KGM_CIRCUIT_BREAKER_RESET_TIMEOUT_MS) and verify upstream health via /v1/runtime/diagnostics.",
+            affectedFeatures: ["chat", "completions", "responses"],
+        });
+    }
+    if (lower.includes("fetch") || lower.includes("econnrefused") || lower.includes("upstream") || lower.includes("abort")) {
         return new KgmStructuredError({
             code: "LLM_UPSTREAM_UNREACHABLE",
             message: message || "LLM upstream is unreachable",
@@ -106,6 +119,9 @@ function defaultStatus(code) {
     }
     if (code === "LLM_UPSTREAM_UNREACHABLE") {
         return 502;
+    }
+    if (code === "CIRCUIT_BREAKER_OPEN") {
+        return 503;
     }
     return 500;
 }

@@ -2,6 +2,7 @@ import { CANONICAL_EMBEDDING } from "../core/config.js";
 import type { Embedder } from "../embedding/canonical.js";
 import type { Evidence, MemoryChunk } from "./store.js";
 import { buildMemoryChunk } from "./store.js";
+import { getFrontStation } from "../frontstation/factory.js";
 
 /**
  * 混合检索结果
@@ -273,21 +274,28 @@ export class HybridMemoryRetriever {
   }
 
   /**
-   * HyDE扩展
+   * HyDE扩展：无 LLM 时用前站意图原型词构造假设性文档（可关/换 HTTP）
    */
   private async expandWithHyde(query: string): Promise<string> {
-    // 这里应该调用LLM生成假设性文档
-    // 简化版本: 直接返回原查询
-    return query;
+    const classified = await getFrontStation().intent.classify(query);
+    return [
+      query,
+      `假设相关文档主题：${classified.intent}`,
+      `置信度 ${classified.confidence.toFixed(3)}`,
+      ...Object.entries(classified.scores)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([k, v]) => `${k}:${v.toFixed(3)}`),
+    ].join("\n");
   }
 
   /**
-   * 对称改写
+   * 对称改写：本地浅层 — 保留关键 token 并附加意图标签
    */
   private async expandWithSymmetric(query: string): Promise<string> {
-    // 这里应该调用LLM进行对称改写
-    // 简化版本: 直接返回原查询
-    return query;
+    const classified = await getFrontStation().intent.classify(query);
+    const terms = this.tokenize(query);
+    return `${terms.join(" ")} | intent:${classified.intent}`;
   }
 
   /**
@@ -405,9 +413,24 @@ export class HybridMemoryRetriever {
     results: RankedResult[],
     topK: number,
   ): Promise<RankedResult[]> {
-    // 这里应该使用Cross-Encoder模型进行重排序
-    // 简化版本: 直接返回原结果
-    return results.slice(0, topK);
+    const ce = await getFrontStation().reranker.rerank(
+      query,
+      results.map((r) => ({ id: r.id, text: r.text })),
+      topK,
+    );
+    const byId = new Map(results.map((r) => [r.id, r]));
+    return ce.results.map((hit) => {
+      const original = byId.get(hit.id);
+      return {
+        id: hit.id,
+        score: hit.score,
+        text: hit.text || original?.text || "",
+        source: original?.source ?? "rerank",
+        sparseScore: original?.sparseScore ?? 0,
+        denseScore: original?.denseScore ?? 0,
+        queryTerms: original?.queryTerms,
+      };
+    });
   }
 
   /**

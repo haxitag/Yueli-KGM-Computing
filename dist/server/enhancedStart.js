@@ -7,6 +7,7 @@ import { ConfigStore, createRuntimeWithStorage, } from "../index.js";
 import { playgroundRouter } from "./playgroundApi.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import { createKgmRequestListener } from "./http.js";
+import { createExpressCorsOptions } from "./corsPolicy.js";
 // 获取当前文件目录
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,8 +39,8 @@ async function main() {
     // 创建Express应用
     const app = express();
     const server = http.createServer(app);
-    // 中间件
-    app.use(cors());
+    // 中间件（CORS 与主 HTTP 同源策略，禁止默认 *）
+    app.use(cors(createExpressCorsOptions()));
     app.use(express.json({ limit: '50mb' }));
     app.use(createExpressKgmAccessMiddleware());
     app.use(express.urlencoded({ extended: true }));

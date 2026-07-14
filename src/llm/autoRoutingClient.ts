@@ -24,6 +24,7 @@ import { configuredLlmRouteSegment } from "../runtime/topologyResolver.js";
 import { streamCompletion } from "./client.js";
 import type { CompletionOptions, CompletionResult, CompletionStreamEvent, LlmClient } from "./client.js";
 import { createPricingService, type PricingService } from "./pricingService.js";
+import { classifyIntent, classifyIntentSync, intentToRoutingTaskType } from "../frontstation/index.js";
 
 type RoutingCandidate = {
   routeKey: string;
@@ -182,17 +183,31 @@ export class AutoRoutingLlmClient implements LlmClient {
 
   async *streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
     const selection = await this.selectCandidate(prompt, options);
-    yield {
-      type: "started",
-      model: selection.selected.model,
-    };
 
     const startedAt = Date.now();
     let output = "";
     let finalResult: CompletionResult | undefined;
+    let emittedStarted = false;
 
     try {
       for await (const event of this.executeCandidateStream(selection.selected, prompt, options)) {
+        if (event.type === "started") {
+          if (!emittedStarted) {
+            emittedStarted = true;
+            yield {
+              type: "started",
+              model: event.model ?? selection.selected.model,
+            };
+          }
+          continue;
+        }
+        if (!emittedStarted) {
+          emittedStarted = true;
+          yield {
+            type: "started",
+            model: selection.selected.model,
+          };
+        }
         if (event.type === "token") {
           output += event.text;
         }
@@ -204,9 +219,15 @@ export class AutoRoutingLlmClient implements LlmClient {
           };
           return;
         }
-        if (event.type !== "started") {
-          yield event;
-        }
+        yield event;
+      }
+
+      if (!emittedStarted) {
+        // 空流成功结束（极少见）：仍发出 started，便于上层对齐
+        yield {
+          type: "started",
+          model: selection.selected.model,
+        };
       }
 
       const synthetic = await this.wrapResult(
@@ -221,24 +242,114 @@ export class AutoRoutingLlmClient implements LlmClient {
         result: synthetic,
       };
     } catch (error) {
-      this.recordAudit(selection, prompt, options, Date.now() - startedAt, {
-        success: false,
-        error: String(error),
-        promptTokens: estimateTokens(prompt),
-        completionTokens: estimateTokens(output),
-        totalTokens: estimateTokens(prompt) + estimateTokens(output),
-        actualCost: selection.selected.estimatedCost,
-        evaluationPromptTokens: 0,
-        evaluationCompletionTokens: 0,
-        evaluationTotalTokens: 0,
-        evaluationCost: 0,
-        qualityScore: 0,
-        confidence: 0,
-        verificationAttempted: false,
-        verificationPassed: false,
-        evaluation: createHeuristicEvaluationRecord(selection.verifiable ? "heuristic" : "not_applicable"),
-      });
-      throw error;
+      const fallbackCandidate = selection.candidates.find((item) => item.source === "default");
+      const canFailover =
+        !emittedStarted &&
+        output.length === 0 &&
+        Boolean(fallbackCandidate) &&
+        fallbackCandidate!.routeKey !== selection.selected.routeKey;
+
+      if (!canFailover || !fallbackCandidate) {
+        this.recordAudit(selection, prompt, options, Date.now() - startedAt, {
+          success: false,
+          error: String(error),
+          promptTokens: estimateTokens(prompt),
+          completionTokens: estimateTokens(output),
+          totalTokens: estimateTokens(prompt) + estimateTokens(output),
+          actualCost: selection.selected.estimatedCost,
+          evaluationPromptTokens: 0,
+          evaluationCompletionTokens: 0,
+          evaluationTotalTokens: 0,
+          evaluationCost: 0,
+          qualityScore: 0,
+          confidence: 0,
+          verificationAttempted: false,
+          verificationPassed: false,
+          evaluation: createHeuristicEvaluationRecord(selection.verifiable ? "heuristic" : "not_applicable"),
+        });
+        throw error;
+      }
+
+      // 与 complete() 对齐：仅在尚未向客户端交付任何 token 时做路由 failover
+      const effective = {
+        ...selection,
+        selected: fallbackCandidate,
+      };
+      let fallbackOutput = "";
+      let fallbackFinal: CompletionResult | undefined;
+      let fallbackStarted = false;
+
+      for await (const event of this.executeCandidateStream(fallbackCandidate, prompt, options)) {
+        if (event.type === "started") {
+          if (!fallbackStarted) {
+            fallbackStarted = true;
+            yield {
+              type: "started",
+              model: event.model ?? fallbackCandidate.model,
+            };
+          }
+          continue;
+        }
+        if (!fallbackStarted) {
+          fallbackStarted = true;
+          yield {
+            type: "started",
+            model: fallbackCandidate.model,
+          };
+        }
+        if (event.type === "token") {
+          fallbackOutput += event.text;
+          yield event;
+          continue;
+        }
+        if (event.type === "finished") {
+          fallbackFinal = await this.wrapResult(
+            {
+              text: event.result.text,
+              raw: {
+                fallbackFrom: selection.selected.routeKey,
+                error: String(error),
+                result: event.result.raw,
+              },
+            },
+            effective,
+            prompt,
+            options,
+            Date.now() - startedAt,
+          );
+          yield {
+            type: "finished",
+            result: fallbackFinal,
+          };
+          return;
+        }
+        yield event;
+      }
+
+      if (!fallbackStarted) {
+        yield {
+          type: "started",
+          model: fallbackCandidate.model,
+        };
+      }
+      const synthetic = await this.wrapResult(
+        {
+          text: fallbackFinal?.text ?? fallbackOutput,
+          raw: {
+            fallbackFrom: selection.selected.routeKey,
+            error: String(error),
+            result: fallbackFinal?.raw ?? {},
+          },
+        },
+        effective,
+        prompt,
+        options,
+        Date.now() - startedAt,
+      );
+      yield {
+        type: "finished",
+        result: synthetic,
+      };
     }
   }
 
@@ -255,7 +366,10 @@ export class AutoRoutingLlmClient implements LlmClient {
     const hints = normalizeHints(options?.routing, options?.metadata);
     const profile = normalizeProfile(hints.profile ?? config.defaultProfile);
     const taskInput = options?.taskInput ?? prompt;
-    const taskType = options?.taskType ?? hints.taskType ?? detectTaskType(taskInput, config.defaultTaskType);
+    const taskType =
+      options?.taskType ??
+      hints.taskType ??
+      (await detectTaskTypeAsync(taskInput, config.defaultTaskType));
     const taskName = options?.taskName ?? hints.taskName;
     const verifiable = hints.verificationExpected ?? isVerifiableTask(taskInput, taskType, prompt);
     const complexity = estimateComplexity(taskInput);
@@ -1244,23 +1358,18 @@ function normalizeProfile(value?: string): RoutingProfile {
 }
 
 function detectTaskType(input: string, fallback: string): string {
-  const value = input.toLowerCase();
-  if (/(typescript|javascript|python|sql|bug|代码|编程|函数|class|api)/.test(value)) {
-    return "code_generation";
+  const classified = classifyIntentSync(input);
+  return intentToRoutingTaskType(classified.intent, fallback);
+}
+
+/** 路由前站：走完整级联（ONNX MiniLM / HTTP worker / local_neural） */
+async function detectTaskTypeAsync(input: string, fallback: string): Promise<string> {
+  try {
+    const classified = await classifyIntent(input);
+    return intentToRoutingTaskType(classified.intent, fallback);
+  } catch {
+    return detectTaskType(input, fallback);
   }
-  if (/(json|schema|结构化|yaml|xml|csv)/.test(value)) {
-    return "structured_output";
-  }
-  if (/(math|equation|calculate|solve|数学|方程|证明)/.test(value)) {
-    return "math_reasoning";
-  }
-  if (/(translate|translation|翻译)/.test(value)) {
-    return "translation";
-  }
-  if (/(analy|reason|推理|分析|strategy|plan|design)/.test(value)) {
-    return "reasoning";
-  }
-  return fallback;
 }
 
 function isVerifiableTask(input: string, taskType: string, prompt: string): boolean {

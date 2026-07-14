@@ -2,6 +2,7 @@ import type { LlmClient, CompletionOptions, CompletionResult, CompletionStreamEv
 import { LlmProviderApiError, stringifyLlmProviderErrorPayload } from "./providerApiError.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
+import { protectedFetch } from "../observability/circuitBreaker.js";
 
 /**
  * 智谱AI GLM模型客户端
@@ -403,9 +404,7 @@ export class OllamaLlmClient implements LlmClient {
     const timeoutId = this.timeoutMs ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
 
     try {
-      yield { type: "started", model: options?.model ?? this.model };
-
-      const response = await fetch(joinUrl(this.baseUrl, "/chat"), {
+      const response = await protectedFetch(joinUrl(this.baseUrl, "/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -422,6 +421,8 @@ export class OllamaLlmClient implements LlmClient {
       if (!reader) {
         throw new LlmProviderApiError("ollama", "No response body");
       }
+
+      yield { type: "started", model: options?.model ?? this.model };
 
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
@@ -459,16 +460,18 @@ export class OllamaLlmClient implements LlmClient {
                 channel: "content",
               };
             }
-            const reasoningPart = msg?.thinking ?? msg?.reasoning ?? "";
-            if (reasoningPart) {
+            const reasoning =
+              (typeof msg?.thinking === "string" && msg.thinking) ||
+              (typeof msg?.reasoning === "string" && msg.reasoning) ||
+              "";
+            if (reasoning) {
               yield {
                 type: "token",
-                text: reasoningPart,
+                text: reasoning,
                 index: tokenIndex++,
                 channel: "reasoning",
               };
             }
-
             if (data.done) {
               yield {
                 type: "finished",
@@ -476,11 +479,11 @@ export class OllamaLlmClient implements LlmClient {
               };
               return;
             }
-          } catch (e) {
-            if (e instanceof LlmProviderApiError) {
-              throw e;
+          } catch (error) {
+            if (error instanceof SyntaxError) {
+              continue;
             }
-            // 忽略解析错误的部分
+            throw error;
           }
         }
       }

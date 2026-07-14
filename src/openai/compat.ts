@@ -18,6 +18,7 @@ import type { SkillRuntime } from "../skills/runtime.js";
 import { collectPlaygroundSystemAddons } from "../playground/systemAddons.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { generateId } from "../utils/id.js";
+import { resolveRequestTraceIds } from "../observability/requestTrace.js";
 import type { ManagedModelManager } from "../models/modelManager.js";
 import type { MaaSOpenAiChatExtras } from "../llm/maas/types.js";
 import { extractMaaSOpenAiExtras } from "../llm/maas/reasoning.js";
@@ -132,7 +133,11 @@ type CompatibilityRun = {
   responseId: string;
   completionId: string;
   metadata: Record<string, unknown>;
-  kgm: KgmExtensions & { compatibility: Record<string, unknown>; tool_trace: CompatibilityToolTrace[] };
+  kgm: KgmExtensions & {
+    compatibility: Record<string, unknown>;
+    tool_trace: CompatibilityToolTrace[];
+    correlation?: { requestId: string; traceId: string };
+  };
   finalText: string;
   reasoningText?: string;
   finishReason: "stop" | "tool_calls";
@@ -468,19 +473,36 @@ type DirectStreamSetup = {
   responseId: string;
   completionId: string;
   metadata: Record<string, unknown>;
-  kgm: KgmExtensions & { compatibility: Record<string, unknown>; tool_trace: CompatibilityToolTrace[] };
+  kgm: KgmExtensions & {
+    compatibility: Record<string, unknown>;
+    tool_trace: CompatibilityToolTrace[];
+    correlation?: { requestId: string; traceId: string };
+  };
   prompt: string;
   promptTokens: number;
   conversation: ConversationMessage[];
 };
 
 async function executeCompatibilityRun(params: ExecuteParams): Promise<CompatibilityRun> {
-  const requestId = generateId();
+  const ids = resolveRequestTraceIds({
+    headers: params.requestHeaders,
+    body: {
+      kgm: params.kgm,
+      metadata: params.metadata,
+    },
+  });
+  const requestId = ids.requestId;
   const created = Math.floor(Date.now() / 1000);
   const config = params.configStore.get();
   const model = resolveRequestedModel(params.model, params.configStore);
   let resolvedModel = model;
-  const kgm = normalizeKgmExtensions(requestId, params.kgm);
+  const kgm = normalizeKgmExtensions(requestId, {
+    ...params.kgm,
+    ops: {
+      ...(params.kgm?.ops ?? {}),
+      traceId: ids.traceId,
+    },
+  });
   const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
   const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
   const executeToolCalls = kgm.capabilities?.executeToolCalls ?? true;
@@ -690,6 +712,10 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     metadata: params.metadata ?? {},
     kgm: {
       ...kgm,
+      correlation: {
+        requestId,
+        traceId: kgm.ops?.traceId ?? requestId,
+      },
       compatibility: {
         protocol: params.protocol,
         toolExecution: executeToolCalls ? "server" : "external",
@@ -728,13 +754,18 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
     return;
   }
 
-  yield JSON.stringify({
-    id: direct.completionId,
-    object: "chat.completion.chunk",
-    created: direct.created,
-    model: direct.model,
-    choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-  });
+  let emittedPreamble = false;
+  const emitPreamble = function* () {
+    if (emittedPreamble) return;
+    emittedPreamble = true;
+    yield JSON.stringify({
+      id: direct.completionId,
+      object: "chat.completion.chunk",
+      created: direct.created,
+      model: direct.model,
+      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+    });
+  };
 
   let rawOutput = "";
   let streamedContent = "";
@@ -755,9 +786,11 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
   }))) {
     if (event.type === "started" && event.model) {
       activeModel = event.model;
+      yield* emitPreamble();
       continue;
     }
     if (event.type === "token" && event.text) {
+      yield* emitPreamble();
       rawOutput += event.text;
       if (event.channel === "reasoning") {
         streamedReasoning += event.text;
@@ -787,10 +820,12 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
       continue;
     }
     if (event.type === "finished") {
+      yield* emitPreamble();
       finalResult = event.result;
     }
   }
 
+  yield* emitPreamble();
   const finalized = finalizeDirectStream(
     direct,
     rawOutput,
@@ -846,16 +881,21 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
     return;
   }
 
-  yield JSON.stringify({
-    type: "response.created",
-    response: {
-      id: direct.responseId,
-      object: "response",
-      created: direct.created,
-      model: direct.model,
-      status: "in_progress",
-    },
-  });
+  let emittedCreated = false;
+  const emitCreated = function* () {
+    if (emittedCreated) return;
+    emittedCreated = true;
+    yield JSON.stringify({
+      type: "response.created",
+      response: {
+        id: direct.responseId,
+        object: "response",
+        created: direct.created,
+        model: direct.model,
+        status: "in_progress",
+      },
+    });
+  };
 
   let rawOutput = "";
   let streamedContent = "";
@@ -876,9 +916,11 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
   }))) {
     if (event.type === "started" && event.model) {
       activeModel = event.model;
+      yield* emitCreated();
       continue;
     }
     if (event.type === "token" && event.text) {
+      yield* emitCreated();
       rawOutput += event.text;
       if (event.channel === "reasoning") {
         streamedReasoning += event.text;
@@ -900,10 +942,12 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
       continue;
     }
     if (event.type === "finished") {
+      yield* emitCreated();
       finalResult = event.result;
     }
   }
 
+  yield* emitCreated();
   const finalized = finalizeDirectStream(
     direct,
     rawOutput,
@@ -930,16 +974,27 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
 }
 
 async function prepareDirectStream(params: ExecuteParams): Promise<DirectStreamSetup | null> {
-  const requestId = generateId();
+  const ids = resolveRequestTraceIds({
+    headers: params.requestHeaders,
+    body: { kgm: params.kgm, metadata: params.metadata },
+  });
+  const requestId = ids.requestId;
   const created = Math.floor(Date.now() / 1000);
   const config = params.configStore.get();
   const model = resolveRequestedModel(params.model, params.configStore);
-  const kgm = normalizeKgmExtensions(requestId, params.kgm);
+  const kgm = normalizeKgmExtensions(requestId, {
+    ...params.kgm,
+    ops: {
+      ...(params.kgm?.ops ?? {}),
+      traceId: ids.traceId,
+    },
+  });
   const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
   const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
 
-  const executeOnServer = kgm.capabilities?.executeToolCalls ?? true;
-  if (effectiveTools.length > 0 && executeOnServer) {
+  // 只要注入了 tools（含「仅返回 tool_calls、服务端不执行」），走完整兼容管线，
+  // 以便 SSE/JSON 产出标准 tool_calls；直连流不负责工具编排。
+  if (effectiveTools.length > 0) {
     return null;
   }
 

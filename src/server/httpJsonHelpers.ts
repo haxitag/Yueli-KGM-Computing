@@ -55,7 +55,12 @@ export async function readKgmHttpJsonBody(
   }
 }
 
-export function sendKgmHttpJson(res: ServerResponse, status: number, body: unknown): void {
+export function sendKgmHttpJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders?: Record<string, string>,
+): void {
   if (res.headersSent) {
     console.warn("Attempted to send JSON response after headers were already sent");
     return;
@@ -64,6 +69,7 @@ export function sendKgmHttpJson(res: ServerResponse, status: number, body: unkno
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(payload),
+    ...(extraHeaders ?? {}),
   });
   res.end(payload);
 }

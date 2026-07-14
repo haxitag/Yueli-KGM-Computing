@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { playgroundRouter } from './playgroundApi.js';
+import { createExpressCorsOptions } from './corsPolicy.js';
 
 // 获取当前文件目录
 const __filename = fileURLToPath(import.meta.url);
@@ -11,8 +12,8 @@ const __dirname = path.dirname(__filename);
 export function createPlaygroundServer(port: number = 3001) {
   const app = express();
 
-  // 中间件
-  app.use(cors());
+  // 中间件（禁止默认 cors(*)；开发默认仅本机 Origin）
+  app.use(cors(createExpressCorsOptions()));
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true }));
 

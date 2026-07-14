@@ -1,4 +1,5 @@
 import { generateId } from "../utils/id.js";
+import { fuseDualTrackConfidence } from "./confidenceFusion.js";
 export class KceExecutionFailure extends Error {
     code = "kce_execution_failed";
     status = 500;
@@ -582,13 +583,36 @@ export class KceEngine {
                 details: hasChinese ? "zh content present" : "zh content missing",
             });
         }
-        const confidence = Number((checks.reduce((sum, item) => sum + item.confidence, 0) / Math.max(checks.length, 1)).toFixed(4));
+        const heuristicConfidence = Number((checks.reduce((sum, item) => sum + item.confidence, 0) / Math.max(checks.length, 1)).toFixed(4));
+        const symbolicScore = Number(((logicalForm.confidence * 0.45 +
+            (checks.find((c) => c.name === "evidence_grounding")?.confidence ?? 0.2) * 0.3 +
+            (checks.find((c) => c.name === "intent_specific_grounding")?.confidence ?? 0.2) * 0.25)).toFixed(4));
+        const retrievalScore = Number((clamp01((subgraph.evidence.length > 0 ? 0.35 : 0.1) +
+            Math.min(0.55, subgraph.evidence.reduce((s, e) => s + (e.score ?? 0), 0) / Math.max(subgraph.evidence.length, 1)) +
+            (subgraph.graph.triples.length > 0 ? 0.1 : 0))).toFixed(4));
+        const llmUsed = this.llmCalls > 0 || Boolean(executionResult.results.synthesize_answer);
+        const llmScore = Number(clamp01(llmUsed
+            ? 0.35 * heuristicConfidence +
+                0.35 * (checks.find((c) => c.name === "answer_non_empty")?.confidence ?? 0) +
+                0.3 * (checks.find((c) => c.name === "answer_grounded_tokens")?.confidence ?? 0)
+            : heuristicConfidence * 0.55 + retrievalScore * 0.45).toFixed(4));
+        const dual_track = fuseDualTrackConfidence({
+            symbolic: symbolicScore,
+            retrieval: retrievalScore,
+            llm: llmScore,
+        });
         return {
             passed: checks.every((item) => item.passed),
             checks,
-            confidence,
+            confidence: dual_track.fused,
+            dual_track,
         };
     }
+}
+function clamp01(value) {
+    if (!Number.isFinite(value))
+        return 0;
+    return Math.min(1, Math.max(0, value));
 }
 function buildHeuristicLogicalForm(request) {
     const input = request.input ?? "";

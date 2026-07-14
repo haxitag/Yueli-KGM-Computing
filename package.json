@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": false,
   "workspaces": [
     "packages/*"
@@ -89,7 +89,18 @@
     "test:e2e:journey": "tsx --test tests/e2e/user-journey-matrix.e2e.test.ts",
     "test:e2e:critical": "tsx --test tests/e2e/critical-review-matrix.e2e.test.ts",
     "test:e2e:proxy": "tsx --test tests/e2e/upstream-proxy.e2e.test.ts",
+    "test:unit:http-access": "node --import tsx --test tests/unit/http_access.test.ts",
+    "test:unit:worker-restart": "node --import tsx --test tests/unit/worker_restart_policy.test.ts",
+    "test:unit:stream-failover": "node --import tsx --test tests/unit/stream_failover.test.ts",
+    "test:unit:cors-policy": "node --import tsx --test tests/unit/cors_policy.test.ts",
     "test:unit:sse": "node --import tsx --test tests/unit/sse_stream_normalize.test.ts",
+    "test:unit:readiness": "node --import tsx --test tests/unit/readiness.test.ts",
+    "test:unit:frontstation": "node --import tsx --test tests/unit/frontstation_trace.test.ts",
+    "frontstation:worker": "python3 frontstation-worker/server.py",
+    "frontstation:worker:install": "python3 -m pip install -r frontstation-worker/requirements.txt",
+    "test:unit:continuous-batching": "node --import tsx --test tests/unit/continuous_batching.test.ts",
+    "test:unit:concurrency-guardrail": "node --import tsx --test tests/unit/concurrency_guardrail.test.ts",
+    "test:load:worker": "node --import tsx tests/performance/worker-concurrency-load.ts",
     "test:strategic-20260714": "node --import tsx --test tests/unit/graph_open_formats.test.ts tests/unit/dual_track_reasoner.test.ts tests/unit/runtime_lora_gpu.test.ts tests/unit/closed_loop_native_hf.test.ts",
     "test:closed-loop": "node --import tsx --test tests/unit/closed_loop_native_hf.test.ts",
     "test:llama-cpp-deploy": "node --import tsx --test tests/unit/llama_cpp_deploy.test.ts",
@@ -99,8 +110,8 @@
     "smoke:openai-compat": "tsx src/demo/openai_compat_smoke.ts",
     "smoke:openai-compat:infra": "KGM_SMOKE_FULL_INFRA=1 KGM_SANDBOX_BROWSER_USE_EMBEDDED=1 tsx src/demo/openai_compat_smoke.ts",
     "validate:gguf-llama-cpp": "tsx src/demo/gguf_llama_cpp_cross_validate.ts",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
+    "prisma:generate": "node -e \"console.error('Prisma is deprecated in this repo — see prisma/README.md. Runtime uses sqlite/pg stores.'); process.exit(1)\"",
+    "prisma:migrate": "node -e \"console.error('Prisma is deprecated in this repo — see prisma/README.md. Runtime uses sqlite/pg stores.'); process.exit(1)\"",
     "seed": "tsx src/demo/seed.ts"
   },
   "dependencies": {
@@ -113,6 +124,9 @@
     "pino": "^9.0.0",
     "pino-pretty": "^11.0.0",
     "zod": "^3.22.4"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.8.1"
   },
   "devDependencies": {
     "@types/bonjour": "^3.5.13",

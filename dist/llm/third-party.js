@@ -1,6 +1,7 @@
 import { LlmProviderApiError, stringifyLlmProviderErrorPayload } from "./providerApiError.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
+import { protectedFetch } from "../observability/circuitBreaker.js";
 /**
  * 智谱AI GLM模型客户端
  */
@@ -275,8 +276,7 @@ export class OllamaLlmClient {
         const controller = new AbortController();
         const timeoutId = this.timeoutMs ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
         try {
-            yield { type: "started", model: options?.model ?? this.model };
-            const response = await fetch(joinUrl(this.baseUrl, "/chat"), {
+            const response = await protectedFetch(joinUrl(this.baseUrl, "/chat"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
@@ -291,6 +291,7 @@ export class OllamaLlmClient {
             if (!reader) {
                 throw new LlmProviderApiError("ollama", "No response body");
             }
+            yield { type: "started", model: options?.model ?? this.model };
             const decoder = new TextDecoder("utf-8");
             let buffer = "";
             let tokenIndex = 0;
@@ -319,11 +320,13 @@ export class OllamaLlmClient {
                                 channel: "content",
                             };
                         }
-                        const reasoningPart = msg?.thinking ?? msg?.reasoning ?? "";
-                        if (reasoningPart) {
+                        const reasoning = (typeof msg?.thinking === "string" && msg.thinking) ||
+                            (typeof msg?.reasoning === "string" && msg.reasoning) ||
+                            "";
+                        if (reasoning) {
                             yield {
                                 type: "token",
-                                text: reasoningPart,
+                                text: reasoning,
                                 index: tokenIndex++,
                                 channel: "reasoning",
                             };
@@ -336,11 +339,11 @@ export class OllamaLlmClient {
                             return;
                         }
                     }
-                    catch (e) {
-                        if (e instanceof LlmProviderApiError) {
-                            throw e;
+                    catch (error) {
+                        if (error instanceof SyntaxError) {
+                            continue;
                         }
-                        // 忽略解析错误的部分
+                        throw error;
                     }
                 }
             }

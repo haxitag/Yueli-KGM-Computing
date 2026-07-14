@@ -6,7 +6,6 @@ import { postAnthropicMessages, streamAnthropicMessagesNative, } from "../llm/ma
 import { shouldProxyAnthropicMessagesNative } from "../llm/maas/reasoning.js";
 import { buildOpenAiModelList, createOpenAiChatCompletion, createOpenAiResponse, streamOpenAiChatCompletion, streamOpenAiResponse, } from "../openai/compat.js";
 import { maybeProxyNativeOpenAiStream, sendNormalizedUpstreamSse } from "../openai/passthrough.js";
-import { parseStreamIdleMs } from "../openai/sseStreamNormalize.js";
 import { handleGetModelProviders, handlePutModelProviders } from "./adminModelProviders.js";
 import { ProviderConfigurationManager } from "../models/providerConfigManager.js";
 import { normalizeIncomingHttpHeaders } from "../output/gfmNormalize.js";
@@ -14,7 +13,7 @@ import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { SandboxConfigurationError } from "../sandbox/manager.js";
 import { ManagedModelManager } from "../models/modelManager.js";
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from "../routing/routingService.js";
-import { createHttpAccessConfigFromEnv, HttpRequestAccess } from "./httpAccess.js";
+import { assertHttpAccessConfig, createHttpAccessConfigFromEnv, HttpRequestAccess, } from "./httpAccess.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText } from "./httpJsonHelpers.js";
 import { getOptimizer } from "../optimization/optimizer.js";
@@ -28,18 +27,43 @@ import { validateEnv } from "../config/envValidation.js";
 import { setupGracefulShutdown } from "../observability/gracefulShutdown.js";
 import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
 import { handleRuntimeRoute } from "./routes/runtime.js";
+import { handleGraphRoute } from "./routes/graph.js";
 import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
+import { getWeightCapabilityReport } from "../native/weightCapabilities.js";
+import { assessArtifactExecution, getNativeGpuClosedLoopStatus, resolveRuntimeKind, } from "../native/executionPolicy.js";
+import { inferRuntimeHintsForModelPath } from "../models/modelManager.js";
+import { planGpuThroughput } from "../inference/gpuThroughputRouter.js";
 import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 import { appendHttpAccessLog, snapshotHttpAccessLog } from "./httpRequestRing.js";
 import { handleYueliaiRoute } from "../yueliai/routes.js";
+import { parseStreamIdleMs, relayUpstreamSseNormalized, writeSseStructuredError, } from "../openai/sseStreamNormalize.js";
+import { isOriginAllowed, resolveCorsPolicy } from "./corsPolicy.js";
 export function createKgmRequestListener(params) {
     // Validate environment variables on startup
     const env = validateEnv();
     logger.info({ env: { NODE_ENV: env.NODE_ENV, PORT: env.PORT } }, 'Environment validated');
-    const modelManager = params.modelManager ?? new ManagedModelManager();
+    const modelManager = params.modelManager ??
+        new ManagedModelManager({
+            llamaCpp: () => {
+                const worker = params.configStore.get().workers.llamaCpp;
+                return {
+                    enabled: worker.enabled,
+                    command: worker.command,
+                    installHint: worker.installHint,
+                };
+            },
+        });
     const routingHistory = createRoutingHistoryStoreFromEnv();
     const responseStore = new OpenAiResponseStore();
-    const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
+    const accessConfig = createHttpAccessConfigFromEnv();
+    assertHttpAccessConfig(accessConfig);
+    const access = new HttpRequestAccess(accessConfig);
+    logger.info({
+        securityMode: accessConfig.securityMode,
+        apiKeyEnabled: Boolean(accessConfig.apiKey),
+        rateLimit: accessConfig.rateLimit,
+        trustProxy: accessConfig.trustProxy,
+    }, "HTTP access policy ready");
     const startedAt = Date.now();
     const discoveryService = new InferenceDiscoveryService();
     const kceEngine = new KceEngine({
@@ -318,12 +342,11 @@ export function createKgmRequestListener(params) {
             return this.runs[evaluationId] || [];
         },
     };
-    // CORS配置 - 生产环境不应使用 * 通配符
-    const corsOrigins = process.env.KGM_CORS_ORIGINS ? process.env.KGM_CORS_ORIGINS.split(",") : [];
-    const corsMethods = process.env.KGM_CORS_METHODS || "GET,POST,PUT,DELETE,OPTIONS,PATCH";
-    const corsHeaders = process.env.KGM_CORS_HEADERS || "Content-Type,Authorization,X-API-Key,X-KGM-Error";
-    const corsMaxAge = process.env.KGM_CORS_MAX_AGE || "86400"; // 24小时
-    const hasWildcardOrigin = corsOrigins.includes("*");
+    // CORS — 与 Express Playground 共用 resolveCorsPolicy（禁止非白名单回显 origins[0]）
+    const corsPolicy = resolveCorsPolicy();
+    const corsMethods = corsPolicy.methods;
+    const corsHeaders = corsPolicy.headers;
+    const corsMaxAge = corsPolicy.maxAge;
     // 安全响应头配置
     const securityHeaders = {
         "X-Content-Type-Options": "nosniff",
@@ -341,25 +364,28 @@ export function createKgmRequestListener(params) {
     }
     function handleCors(req, res) {
         applySecurityHeaders(res);
-        const origin = req.headers.origin;
-        // 设置CORS头部
-        if (hasWildcardOrigin) {
+        const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
+        const isPreflight = req.method === "OPTIONS";
+        if (corsPolicy.allowAll) {
             res.setHeader("Access-Control-Allow-Origin", "*");
         }
-        else if (origin && corsOrigins.length > 0) {
-            const allowedOrigin = corsOrigins.includes(origin) ? origin : corsOrigins[0];
-            res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+        else if (origin && isOriginAllowed(origin, corsPolicy)) {
+            res.setHeader("Access-Control-Allow-Origin", origin);
             res.setHeader("Vary", "Origin");
+            if (corsPolicy.allowCredentials) {
+                res.setHeader("Access-Control-Allow-Credentials", "true");
+            }
+        }
+        else if (origin && isPreflight) {
+            // 非白名单 Origin：预检直接拒绝，不回显任意允许源
+            res.writeHead(403, { "content-type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ error: { code: "cors_origin_denied", message: "Origin not allowed" } }));
+            return true;
         }
         res.setHeader("Access-Control-Allow-Methods", corsMethods);
         res.setHeader("Access-Control-Allow-Headers", corsHeaders);
         res.setHeader("Access-Control-Max-Age", corsMaxAge);
-        // 只有在不是通配符源时才允许携带凭证
-        if (!hasWildcardOrigin && corsOrigins.length > 0) {
-            res.setHeader("Access-Control-Allow-Credentials", "true");
-        }
-        // 处理OPTIONS预检请求
-        if (req.method === "OPTIONS") {
+        if (isPreflight) {
             res.writeHead(204);
             res.end();
             return true;
@@ -450,6 +476,27 @@ export function createKgmRequestListener(params) {
                     modelManager,
                     discoveryService,
                     startedAt,
+                });
+                if (handled)
+                    return;
+            }
+            if (req.method === "POST" &&
+                (url.pathname === "/v1/kgm/graph/export" ||
+                    url.pathname === "/v1/kgm/graph/import" ||
+                    url.pathname === "/v1/kgm/graph/query" ||
+                    url.pathname === "/v1/kgm/graph/reason/dual_track")) {
+                const body = await readJson(req);
+                const handled = await handleGraphRoute({
+                    method: req.method,
+                    pathname: url.pathname,
+                    body,
+                    res,
+                    sendJson,
+                    graphStore: params.graphStore,
+                    memoryStore: params.memoryStore,
+                    embedder: params.embedder,
+                    llm: params.llmClient,
+                    requireGraphNamespace,
                 });
                 if (handled)
                     return;
@@ -1024,7 +1071,7 @@ export function createKgmRequestListener(params) {
                         skillRuntime: params.skillRuntime,
                         requestHeaders,
                     });
-                    return sendSse(res, events);
+                    return await sendSse(res, events);
                 }
                 const response = await createOpenAiChatCompletion({
                     request: payload,
@@ -1064,7 +1111,7 @@ export function createKgmRequestListener(params) {
                         skillRuntime: params.skillRuntime,
                         requestHeaders,
                     });
-                    return sendSse(res, events);
+                    return await sendSse(res, events);
                 }
                 const response = await createOpenAiResponse({
                     request: payload,
@@ -1101,7 +1148,7 @@ export function createKgmRequestListener(params) {
                             requestHeaders,
                             timeoutMs: params.configStore.get().llm.timeoutMs,
                         });
-                        return sendSse(res, events, { appendDone: false });
+                        return await sendSse(res, events, { appendDone: false });
                     }
                     const response = await postAnthropicMessages({
                         baseUrl,
@@ -1123,7 +1170,7 @@ export function createKgmRequestListener(params) {
                         responseStore,
                         skillRuntime: params.skillRuntime,
                     });
-                    return sendSse(res, events, { appendDone: false });
+                    return await sendSse(res, events, { appendDone: false });
                 }
                 const response = await createAnthropicMessagesResponse({
                     request: payload,
@@ -1406,11 +1453,95 @@ export function createKgmRequestListener(params) {
             }
             if (req.method === "POST" && url.pathname === "/v1/kgm/models/runtimes") {
                 const payload = (await readJson(req));
-                const runtime = modelManager.createRuntime(payload);
-                return sendJson(res, 200, { runtime });
+                try {
+                    const runtime = modelManager.createRuntime(payload);
+                    return sendJson(res, 200, { runtime });
+                }
+                catch (error) {
+                    return sendJson(res, 400, kgmErrorBody("runtime_create_failed", String(error), 400));
+                }
+            }
+            if (req.method === "POST" &&
+                url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
+                url.pathname.endsWith("/lora")) {
+                const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
+                const payload = (await readJson(req));
+                const adapters = payload.adapters ?? (payload.adapter ? [payload.adapter] : []);
+                try {
+                    const runtime = modelManager.attachLoraAdapters(id, adapters);
+                    return sendJson(res, 200, { runtime, loraAdapters: runtime.loraAdapters ?? [] });
+                }
+                catch (error) {
+                    return sendJson(res, 400, kgmErrorBody("lora_attach_failed", String(error), 400));
+                }
+            }
+            if (req.method === "GET" &&
+                url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
+                url.pathname.endsWith("/lora")) {
+                const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
+                try {
+                    return sendJson(res, 200, { loraAdapters: modelManager.listLoraAdapters(id) });
+                }
+                catch {
+                    return sendJson(res, 404, { error: "runtime_not_found" });
+                }
+            }
+            if (req.method === "GET" && url.pathname === "/v1/kgm/weights/capabilities") {
+                return sendJson(res, 200, getWeightCapabilityReport());
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/weights/resolve") {
+                const payload = (await readJson(req));
+                const artifact = payload.artifactId
+                    ? modelManager.getArtifact(payload.artifactId)
+                    : payload.localPath
+                        ? {
+                            id: "ephemeral",
+                            name: "ephemeral",
+                            modelName: "ephemeral",
+                            sourceType: "local",
+                            sourceRef: payload.localPath,
+                            localPath: payload.localPath,
+                            status: "ready",
+                            runtimeHints: payload.runtimeHints ?? inferRuntimeHintsForModelPath(payload.localPath),
+                            notes: [],
+                            tags: [],
+                            metadata: {},
+                            createdAt: new Date().toISOString(),
+                            updatedAt: new Date().toISOString(),
+                        }
+                        : undefined;
+                const assessment = assessArtifactExecution(artifact);
+                let resolvedRuntime;
+                let resolveError;
+                try {
+                    resolvedRuntime = resolveRuntimeKind({
+                        requested: payload.requestedRuntime ?? "auto",
+                        artifact,
+                    });
+                }
+                catch (error) {
+                    resolveError = String(error);
+                }
+                return sendJson(res, 200, {
+                    assessment,
+                    resolvedRuntime,
+                    resolveError,
+                    nativeGpu: getNativeGpuClosedLoopStatus(),
+                    closedLoop: getWeightCapabilityReport().closedLoop,
+                });
+            }
+            if (req.method === "POST" && url.pathname === "/v1/kgm/runtime/gpu_throughput/plan") {
+                const payload = (await readJson(req));
+                return sendJson(res, 200, planGpuThroughput({
+                    modelManager,
+                    preference: payload.preference,
+                    modelName: payload.modelName,
+                }));
             }
             if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
-                const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/(start|stop)$/, "");
+                const id = url.pathname
+                    .replace("/v1/kgm/models/runtimes/", "")
+                    .replace(/\/(start|stop|lora|metrics)$/, "");
                 const runtime = modelManager.getRuntime(id);
                 if (!runtime) {
                     return sendJson(res, 404, { error: "runtime_not_found" });
@@ -1637,16 +1768,11 @@ async function sendSse(res, events, options) {
         console.warn("Attempted to send SSE response after headers were already sent");
         return;
     }
-    res.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-    });
     const abortController = new AbortController();
-    const timeoutMsValue = options?.timeoutMs ?? parseInt(process.env.KGM_STREAM_TIMEOUT_MS || "300000", 10); // 默认5分钟
-    const timeoutMs = isNaN(timeoutMsValue) ? 300000 : timeoutMsValue;
+    const timeoutMsValue = options?.timeoutMs ?? parseInt(process.env.KGM_STREAM_TIMEOUT_MS || "300000", 10);
+    const timeoutMs = Number.isNaN(timeoutMsValue) ? 300000 : timeoutMsValue;
     const idleMs = parseStreamIdleMs();
-    // 设置超时
+    const appendDone = options?.appendDone !== false;
     const timeoutId = setTimeout(() => {
         abortController.abort(new Error("Stream timeout"));
     }, timeoutMs);
@@ -1658,26 +1784,60 @@ async function sendSse(res, events, options) {
             }
         }, Math.min(idleMs, 5000))
         : undefined;
-    // 监听客户端断开连接
     const onClose = () => {
         abortController.abort(new Error("Client disconnected"));
     };
     res.on("close", onClose);
+    let headersOpened = false;
+    const openHeaders = () => {
+        if (headersOpened || res.headersSent) {
+            headersOpened = true;
+            return;
+        }
+        res.writeHead(200, {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache, no-transform",
+            connection: "keep-alive",
+        });
+        headersOpened = true;
+    };
     try {
         for await (const event of events) {
             if (abortController.signal.aborted) {
+                const reason = abortController.signal.reason;
+                const message = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "aborted";
+                if (message === "Client disconnected") {
+                    break;
+                }
+                openHeaders();
+                writeSseStructuredError(res, toKgmStructuredError(new Error(message)), { appendDone });
                 break;
             }
+            openHeaders();
             lastActivity = Date.now();
             res.write(`data: ${event}\n\n`);
         }
-        if (options?.appendDone !== false && !abortController.signal.aborted) {
+        if (headersOpened &&
+            appendDone &&
+            !abortController.signal.aborted &&
+            !res.destroyed &&
+            !res.writableEnded) {
             res.write("data: [DONE]\n\n");
         }
     }
     catch (error) {
-        if (!(error instanceof Error) || error.message !== "Client disconnected") {
-            console.error("SSE stream error:", error);
+        const isClientGone = (error instanceof Error && error.message === "Client disconnected") ||
+            (abortController.signal.aborted &&
+                abortController.signal.reason instanceof Error &&
+                abortController.signal.reason.message === "Client disconnected");
+        if (!isClientGone) {
+            if (!headersOpened && !res.headersSent) {
+                // 首帧前失败：交由外层写成与同步路径一致的 JSON 502/503（不在此记 SSE error）
+                throw error;
+            }
+            logger.error({ err: error }, "SSE stream mid-flight error");
+            openHeaders();
+            writeSseStructuredError(res, error, { appendDone });
         }
     }
     finally {
@@ -1685,7 +1845,7 @@ async function sendSse(res, events, options) {
         if (idleTimer)
             clearInterval(idleTimer);
         res.off("close", onClose);
-        if (!res.destroyed) {
+        if (!res.destroyed && (headersOpened || res.headersSent)) {
             res.end();
         }
     }
@@ -1702,25 +1862,9 @@ function readAnthropicApiKey(req) {
     }
     return undefined;
 }
+/** @deprecated Prefer sendNormalizedUpstreamSse */
 async function relayUpstreamSse(res, upstream) {
-    res.writeHead(200, {
-        "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-    });
-    const reader = upstream.body?.getReader();
-    if (!reader) {
-        res.end();
-        return;
-    }
-    while (true) {
-        const { value, done } = await reader.read();
-        if (done) {
-            break;
-        }
-        res.write(Buffer.from(value));
-    }
-    res.end();
+    return relayUpstreamSseNormalized(res, upstream);
 }
 function parseNumber(value) {
     if (!value)

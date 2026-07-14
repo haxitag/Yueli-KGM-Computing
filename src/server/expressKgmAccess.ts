@@ -1,7 +1,13 @@
 import type { Request, Response, NextFunction } from "express";
-import { createHttpAccessConfigFromEnv, HttpRequestAccess } from "./httpAccess.js";
+import {
+  assertHttpAccessConfig,
+  createHttpAccessConfigFromEnv,
+  HttpRequestAccess,
+} from "./httpAccess.js";
 
-const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
+const accessConfig = createHttpAccessConfigFromEnv();
+assertHttpAccessConfig(accessConfig);
+const access = new HttpRequestAccess(accessConfig);
 
 /**
  * 与 `createKgmServer` 相同的 KGM HTTP 访问控制（鉴权/限流），用于 Express 组合服。

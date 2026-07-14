@@ -1,5 +1,6 @@
 import type { IncomingHttpHeaders } from "node:http";
 import { extractAnthropicContentParts } from "./reasoning.js";
+import { protectedFetch } from "../../observability/circuitBreaker.js";
 
 export const ANTHROPIC_API_VERSION = "2023-06-01";
 
@@ -37,15 +38,19 @@ export async function postAnthropicMessages(params: {
     ? setTimeout(() => controller.abort(), params.timeoutMs)
     : undefined;
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: buildAnthropicNativeHeaders({
-        apiKey: params.apiKey,
-        requestHeaders: params.requestHeaders,
-      }),
-      body: JSON.stringify(params.body),
-      signal: controller.signal,
-    });
+    const response = await protectedFetch(
+      url,
+      {
+        method: "POST",
+        headers: buildAnthropicNativeHeaders({
+          apiKey: params.apiKey,
+          requestHeaders: params.requestHeaders,
+        }),
+        body: JSON.stringify(params.body),
+        signal: controller.signal,
+      },
+      { enableBreakerTimeout: true },
+    );
     const text = await response.text();
     let data: Record<string, unknown>;
     try {
@@ -78,15 +83,19 @@ export async function* streamAnthropicMessagesNative(params: {
     : undefined;
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: buildAnthropicNativeHeaders({
-        apiKey: params.apiKey,
-        requestHeaders: params.requestHeaders,
-      }),
-      body: JSON.stringify({ ...params.body, stream: true }),
-      signal: controller.signal,
-    });
+    response = await protectedFetch(
+      url,
+      {
+        method: "POST",
+        headers: buildAnthropicNativeHeaders({
+          apiKey: params.apiKey,
+          requestHeaders: params.requestHeaders,
+        }),
+        body: JSON.stringify({ ...params.body, stream: true }),
+        signal: controller.signal,
+      },
+      { enableBreakerTimeout: false },
+    );
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }

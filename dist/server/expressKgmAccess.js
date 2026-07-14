@@ -1,5 +1,7 @@
-import { createHttpAccessConfigFromEnv, HttpRequestAccess } from "./httpAccess.js";
-const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
+import { assertHttpAccessConfig, createHttpAccessConfigFromEnv, HttpRequestAccess, } from "./httpAccess.js";
+const accessConfig = createHttpAccessConfigFromEnv();
+assertHttpAccessConfig(accessConfig);
+const access = new HttpRequestAccess(accessConfig);
 /**
  * 与 `createKgmServer` 相同的 KGM HTTP 访问控制（鉴权/限流），用于 Express 组合服。
  * 对静态资源、根路径下非 API 资源不强制校验，仅对 `/v1` `/api` `/health` `/metrics` `/openapi.json` 等生效。

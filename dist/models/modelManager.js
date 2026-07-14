@@ -11,7 +11,10 @@ import { NativeRuntimeEngine } from "../native/engine.js";
 import { generateId } from "../utils/id.js";
 import { parseKgmfile, toModelRequests } from "./kgmfile.js";
 import { detectJangInModelDirectory } from "../native/jang.js";
+import { assessArtifactExecution, resolveRuntimeKind } from "../native/executionPolicy.js";
+import { assertLlamaCppCallable, resolveLlamaCppDeployConfig } from "../runtime/llamaCppDeploy.js";
 import { DEFAULT_CLOUD_MODEL_CATALOG, isProviderConfigured, resolveCloudModelAlias, } from "./cloudModelCatalog.js";
+import { isSpawnManagedWorkerKind, resolveWorkerAutoRestartConfig, workerRestartDelayMs, } from "./workerRestartPolicy.js";
 /** 分片存储目录名（相对 stateRoot） */
 const STORE_ARTIFACTS_DIR = "artifacts";
 const STORE_RUNTIMES_DIR = "runtimes";
@@ -43,12 +46,20 @@ export class ManagedModelManager {
     executionState = new Map();
     healthIntervalMs;
     healthTimer;
+    llamaCppOverrides;
+    workerRestartConfig;
+    /** 主动 stop 的 runtime，exit 回调不触发自动重启 */
+    intentionalStops = new Set();
+    restartTimers = new Map();
+    restartAttempts = new Map();
     constructor(options) {
         const configured = options?.statePath ?? process.env.KGM_MODEL_STATE_PATH ?? "data/models/store";
         const { stateRoot, legacyMonolithicCatalog } = resolveConfiguredModelStateRoot(configured);
         this.stateRoot = stateRoot;
         this.artifactDir = path.resolve(options?.artifactDir ?? process.env.KGM_MODEL_ARTIFACT_DIR ?? "data/model-artifacts");
         this.healthIntervalMs = parseNumber(process.env.KGM_MODEL_HEALTHCHECK_INTERVAL_MS) ?? 15000;
+        this.llamaCppOverrides = options?.llamaCpp;
+        this.workerRestartConfig = resolveWorkerAutoRestartConfig();
         fs.mkdirSync(this.stateRoot, { recursive: true });
         fs.mkdirSync(this.artifactDir, { recursive: true });
         if (legacyMonolithicCatalog) {
@@ -68,11 +79,21 @@ export class ManagedModelManager {
         this.persist();
         this.startHealthChecker();
     }
+    resolveLlamaCppConfig() {
+        const raw = typeof this.llamaCppOverrides === "function" ? this.llamaCppOverrides() : this.llamaCppOverrides;
+        return resolveLlamaCppDeployConfig(raw);
+    }
     close() {
         if (this.healthTimer) {
             clearInterval(this.healthTimer);
             this.healthTimer = undefined;
         }
+        for (const timer of this.restartTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.restartTimers.clear();
+        this.restartAttempts.clear();
+        this.intentionalStops.clear();
         this.nativeRuntimes.clear();
     }
     listArtifacts() {
@@ -191,6 +212,8 @@ export class ManagedModelManager {
         lines.push("# TYPE kgm_runtime_queue gauge");
         lines.push("# HELP kgm_runtime_circuit_state Circuit state encoded as closed=0 half_open=1 open=2.");
         lines.push("# TYPE kgm_runtime_circuit_state gauge");
+        lines.push("# HELP kgm_runtime_restarts_total Worker process auto-restart count.");
+        lines.push("# TYPE kgm_runtime_restarts_total counter");
         for (const runtime of this.state.runtimes) {
             const metrics = this.getRuntimeMetrics(runtime.id) ?? createRuntimeMetrics(runtime);
             const labels = `runtime_id="${runtime.id}",model="${escapeMetricLabel(runtime.modelName)}",kind="${runtime.runtime}"`;
@@ -204,6 +227,7 @@ export class ManagedModelManager {
             lines.push(`kgm_runtime_inflight{${labels}} ${metrics.inflightRequests}`);
             lines.push(`kgm_runtime_queue{${labels}} ${metrics.queuedRequests}`);
             lines.push(`kgm_runtime_circuit_state{${labels}} ${circuitStateValue(metrics.circuitState)}`);
+            lines.push(`kgm_runtime_restarts_total{${labels}} ${metrics.restartsTotal ?? 0}`);
         }
         return `${lines.join("\n")}\n`;
     }
@@ -311,12 +335,15 @@ export class ManagedModelManager {
                 runtime: request.runtime ?? { runtime: "openai-compatible" },
             };
         const artifact = await this.pull(requests.pull);
+        const requestedRuntime = request.runtime?.runtime
+            ?? (requests.runtime.runtime === "openai-compatible" && artifact.runtimeHints.includes("native")
+                ? "native"
+                : requests.runtime.runtime === "openai-compatible" && !artifact.runtimeHints.includes("native")
+                    ? "auto"
+                    : requests.runtime.runtime);
         const runtime = this.createRuntime({
             ...requests.runtime,
-            runtime: request.runtime?.runtime
-                ?? (requests.runtime.runtime === "openai-compatible" && artifact.runtimeHints.includes("native")
-                    ? "native"
-                    : requests.runtime.runtime),
+            runtime: requestedRuntime,
             artifactId: artifact.id,
         });
         if (request.autoStart) {
@@ -449,7 +476,16 @@ export class ManagedModelManager {
     }
     createRuntime(request) {
         const artifact = request.artifactId ? this.requireArtifact(request.artifactId) : undefined;
-        const runtime = request.runtime;
+        const assessment = assessArtifactExecution(artifact);
+        const llamaCpp = this.resolveLlamaCppConfig();
+        const runtime = resolveRuntimeKind({
+            requested: request.runtime,
+            artifact,
+            llamaCpp,
+        });
+        if (runtime === "llama.cpp") {
+            assertLlamaCppCallable(llamaCpp);
+        }
         const host = request.host ?? "127.0.0.1";
         const port = request.port ?? defaultPort(runtime);
         const baseUrl = request.baseUrl ?? defaultBaseUrl(runtime, host, port);
@@ -475,6 +511,7 @@ export class ManagedModelManager {
             upstreamModel,
             command: request.command ?? defaultCommand(runtime),
             args: request.args,
+            loraAdapters: request.loraAdapters?.map((adapter) => ({ ...adapter })),
             maxConcurrentRequests: request.maxConcurrentRequests ?? defaultMaxConcurrent(runtime),
             maxQueueSize: request.maxQueueSize ?? defaultMaxQueueSize(runtime),
             retryMaxRetries: request.retryMaxRetries ?? defaultRetryMaxRetries(),
@@ -482,9 +519,19 @@ export class ManagedModelManager {
             circuitBreakerCooldownMs: request.circuitBreakerCooldownMs ?? defaultCircuitBreakerCooldownMs(),
             healthPath: request.healthPath ?? "/health",
             healthStatus: "unknown",
-            notes: runtimeNotes(runtime, artifact),
+            notes: [
+                ...runtimeNotes(runtime, artifact),
+                `execution_path:${assessment.path}`,
+                `weight_format:${assessment.format}`,
+                `execution_reason:${assessment.reason}`,
+                ...(request.runtime === "auto" ? ["runtime_resolved_from:auto"] : []),
+            ],
             tags: [],
-            metadata: artifact ? { artifactId: artifact.id, sourceType: artifact.sourceType } : {},
+            metadata: {
+                ...(artifact ? { artifactId: artifact.id, sourceType: artifact.sourceType } : {}),
+                executionPolicy: assessment,
+                resolvedFrom: request.runtime === "auto" ? "auto" : "explicit",
+            },
             createdAt,
             updatedAt: createdAt,
         };
@@ -495,9 +542,11 @@ export class ManagedModelManager {
     }
     async startRuntime(id) {
         const runtime = this.requireRuntime(id);
-        if (runtime.status === "running") {
+        if (runtime.status === "running" && this.processes.has(id)) {
             return runtime;
         }
+        this.intentionalStops.delete(id);
+        this.clearRestartTimer(id);
         this.patchRuntime(id, { status: "starting", lastError: undefined });
         const next = this.requireRuntime(id);
         if (next.runtime === "openai-compatible") {
@@ -507,6 +556,11 @@ export class ManagedModelManager {
         }
         if (next.runtime === "native") {
             const artifact = next.artifactId ? this.requireArtifact(next.artifactId) : undefined;
+            const assessment = assessArtifactExecution(artifact);
+            if (!assessment.nativeAllowed) {
+                this.patchRuntime(id, { status: "error", lastError: assessment.reason });
+                throw new Error(`native_runtime_not_allowed:${assessment.reason};use_via_worker:${assessment.recommendedRuntimes.join(",")}`);
+            }
             const modelPath = artifact?.localPath;
             if (!modelPath) {
                 throw new Error("Yueli KGM Runtime requires local model artifact");
@@ -524,7 +578,9 @@ export class ManagedModelManager {
                     ? "native-core"
                     : process.env.KGM_NATIVE_SERVING_BACKEND === "js-reference"
                         ? "js-reference"
-                        : "auto",
+                        : process.env.KGM_NATIVE_SERVING_BACKEND === "native-gpu"
+                            ? "native-gpu"
+                            : "auto",
                 seed: parseValidatedNumber(process.env.KGM_NATIVE_RUNTIME_SEED, 1, 0, Number.MAX_SAFE_INTEGER, "KGM_NATIVE_RUNTIME_SEED"),
             });
             const manifest = engine.manifest();
@@ -577,7 +633,22 @@ export class ManagedModelManager {
             });
             return this.requireRuntime(id);
         }
-        const spawnConfig = this.buildSpawnConfig(next);
+        if (next.runtime === "llama.cpp") {
+            try {
+                const status = assertLlamaCppCallable(this.resolveLlamaCppConfig());
+                if (status.resolvedCommand) {
+                    this.patchRuntime(id, {
+                        command: status.resolvedCommand,
+                        notes: Array.from(new Set([...(next.notes ?? []), `llama_cpp_binary:${status.resolvedCommand}`, ...(status.version ? [`llama_cpp_version:${status.version}`] : [])])),
+                    });
+                }
+            }
+            catch (error) {
+                this.patchRuntime(id, { status: "error", lastError: String(error) });
+                throw error;
+            }
+        }
+        const spawnConfig = this.buildSpawnConfig(this.requireRuntime(id));
         const child = spawn(spawnConfig.command, spawnConfig.args, {
             cwd: spawnConfig.cwd,
             detached: false,
@@ -598,14 +669,21 @@ export class ManagedModelManager {
         child.on("exit", (code) => {
             this.processes.delete(id);
             const current = this.getRuntime(id);
-            if (!current || current.status === "stopped") {
+            if (!current) {
                 return;
             }
+            if (this.intentionalStops.has(id) || current.status === "stopped") {
+                this.intentionalStops.delete(id);
+                return;
+            }
+            const exitError = code === 0 ? undefined : stderr || `process_exit:${code ?? "unknown"}`;
             this.patchRuntime(id, {
-                status: code === 0 ? "stopped" : "error",
-                lastError: code === 0 ? undefined : stderr || `process_exit:${code ?? "unknown"}`,
+                status: "error",
+                lastError: exitError ?? `process_exit:${code ?? "unknown"}`,
                 pid: undefined,
+                healthStatus: "unavailable",
             });
+            this.scheduleWorkerAutoRestart(id, code);
         });
         this.patchRuntime(id, {
             status: "running",
@@ -619,6 +697,9 @@ export class ManagedModelManager {
     }
     stopRuntime(id) {
         const runtime = this.requireRuntime(id);
+        this.intentionalStops.add(id);
+        this.clearRestartTimer(id);
+        this.restartAttempts.delete(id);
         this.rejectQueuedRequests(id, new Error(`managed_runtime_stopped:${id}`));
         if (runtime.runtime === "native") {
             this.nativeRuntimes.delete(id);
@@ -641,6 +722,69 @@ export class ManagedModelManager {
             lastError: undefined,
         });
         return this.requireRuntime(id);
+    }
+    clearRestartTimer(id) {
+        const timer = this.restartTimers.get(id);
+        if (timer) {
+            clearTimeout(timer);
+            this.restartTimers.delete(id);
+        }
+    }
+    scheduleWorkerAutoRestart(id, exitCode) {
+        const cfg = this.workerRestartConfig;
+        if (!cfg.enabled || cfg.maxAttempts <= 0) {
+            return;
+        }
+        const runtime = this.getRuntime(id);
+        if (!runtime || !isSpawnManagedWorkerKind(runtime.runtime)) {
+            return;
+        }
+        if (this.intentionalStops.has(id)) {
+            return;
+        }
+        const nextAttempt = (this.restartAttempts.get(id) ?? 0) + 1;
+        if (nextAttempt > cfg.maxAttempts) {
+            this.patchRuntime(id, {
+                status: "error",
+                lastError: (runtime.lastError ? `${runtime.lastError}; ` : "") +
+                    `auto_restart_exhausted:${cfg.maxAttempts}`,
+                healthStatus: "unavailable",
+            });
+            return;
+        }
+        this.restartAttempts.set(id, nextAttempt);
+        const delayMs = workerRestartDelayMs(nextAttempt, cfg);
+        this.clearRestartTimer(id);
+        const timer = setTimeout(() => {
+            this.restartTimers.delete(id);
+            if (this.intentionalStops.has(id)) {
+                return;
+            }
+            const state = this.ensureRuntimeState(this.requireRuntime(id));
+            state.metrics.restartsTotal += 1;
+            state.metrics.lastRestartAt = new Date().toISOString();
+            this.patchRuntime(id, {
+                notes: Array.from(new Set([
+                    ...(this.requireRuntime(id).notes ?? []),
+                    `auto_restart_attempt:${nextAttempt}`,
+                    `auto_restart_exit_code:${exitCode ?? "null"}`,
+                ])),
+            });
+            void this.startRuntime(id)
+                .then(() => {
+                // 成功拉起后清零连续崩溃计数；健康探测仍由 health checker 负责
+                this.restartAttempts.delete(id);
+            })
+                .catch((error) => {
+                this.patchRuntime(id, {
+                    status: "error",
+                    lastError: `auto_restart_failed:${String(error)}`,
+                    healthStatus: "unavailable",
+                });
+                this.scheduleWorkerAutoRestart(id, exitCode);
+            });
+        }, delayMs);
+        this.restartTimers.set(id, timer);
     }
     async executeRuntimeCompletion(runtime, prompt, options) {
         const state = this.ensureRuntimeState(runtime);
@@ -1105,6 +1249,7 @@ export class ManagedModelManager {
                             runtime.host,
                             "--port",
                             String(runtime.port),
+                            ...buildLoraSpawnArgs("llama.cpp", runtime.loraAdapters),
                         ],
                 };
             case "vllm":
@@ -1118,6 +1263,7 @@ export class ManagedModelManager {
                             runtime.host,
                             "--port",
                             String(runtime.port),
+                            ...buildLoraSpawnArgs("vllm", runtime.loraAdapters),
                         ],
                     env: runtime.apiKey ? { VLLM_API_KEY: runtime.apiKey } : undefined,
                 };
@@ -1134,6 +1280,7 @@ export class ManagedModelManager {
                             runtime.host,
                             "--port",
                             String(runtime.port),
+                            ...buildLoraSpawnArgs("sglang", runtime.loraAdapters),
                         ],
                 };
             case "mlx":
@@ -1237,6 +1384,43 @@ export class ManagedModelManager {
             return;
         }
         throw new Error(`model_not_found:${id}`);
+    }
+    /**
+     * Attach LoRA adapters to a managed runtime (applied on next start/restart).
+     */
+    attachLoraAdapters(runtimeId, adapters) {
+        const runtime = this.requireRuntime(runtimeId);
+        if (runtime.runtime === "native" || runtime.runtime === "openai-compatible" || runtime.runtime === "ollama") {
+            throw new Error(`lora_not_supported_for_runtime:${runtime.runtime}`);
+        }
+        const normalized = adapters
+            .map((adapter) => ({
+            name: adapter.name.trim(),
+            path: adapter.path.trim(),
+            ...(typeof adapter.scale === "number" ? { scale: adapter.scale } : {}),
+        }))
+            .filter((adapter) => adapter.name && adapter.path);
+        if (normalized.length === 0) {
+            throw new Error("lora_adapters_required");
+        }
+        const merged = [...(runtime.loraAdapters ?? [])];
+        for (const adapter of normalized) {
+            const idx = merged.findIndex((item) => item.name === adapter.name);
+            if (idx >= 0) {
+                merged[idx] = adapter;
+            }
+            else {
+                merged.push(adapter);
+            }
+        }
+        this.patchRuntime(runtimeId, {
+            loraAdapters: merged,
+            notes: Array.from(new Set([...(runtime.notes ?? []), "lora_adapters_attached"])),
+        });
+        return this.requireRuntime(runtimeId);
+    }
+    listLoraAdapters(runtimeId) {
+        return [...(this.requireRuntime(runtimeId).loraAdapters ?? [])];
     }
     /**
      * 移除模型标签
@@ -1766,12 +1950,30 @@ function defaultApiPath(runtime) {
     }
     return "/chat/completions";
 }
+function buildLoraSpawnArgs(runtime, adapters) {
+    if (!adapters?.length)
+        return [];
+    switch (runtime) {
+        case "vllm":
+            return adapters.flatMap((adapter) => ["--lora-modules", `${adapter.name}=${adapter.path}`]);
+        case "sglang":
+            return adapters.flatMap((adapter) => ["--lora-path", adapter.path]);
+        case "llama.cpp":
+            return adapters.flatMap((adapter) => typeof adapter.scale === "number"
+                ? ["--lora", adapter.path, "--lora-scaled", String(adapter.scale)]
+                : ["--lora", adapter.path]);
+        default: {
+            const _exhaustive = runtime;
+            return _exhaustive;
+        }
+    }
+}
 function defaultCommand(runtime) {
     switch (runtime) {
         case "native":
             return process.execPath;
         case "llama.cpp":
-            return process.env.KGM_LLAMA_SERVER_CMD ?? "llama-server";
+            return resolveLlamaCppDeployConfig().command;
         case "ollama":
             return process.env.KGM_OLLAMA_CMD ?? "ollama";
         case "vllm":
@@ -1992,6 +2194,7 @@ function createRuntimeMetrics(runtime) {
         circuitState: "closed",
         cacheHits: 0,
         cacheMisses: 0,
+        restartsTotal: 0,
     };
 }
 function updateMetricsOnSuccess(metrics, params) {

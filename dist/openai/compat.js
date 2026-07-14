@@ -494,13 +494,19 @@ async function* streamChatCompletionChunks(params) {
         yield* replayChatCompletionRun(run);
         return;
     }
-    yield JSON.stringify({
-        id: direct.completionId,
-        object: "chat.completion.chunk",
-        created: direct.created,
-        model: direct.model,
-        choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-    });
+    let emittedPreamble = false;
+    const emitPreamble = function* () {
+        if (emittedPreamble)
+            return;
+        emittedPreamble = true;
+        yield JSON.stringify({
+            id: direct.completionId,
+            object: "chat.completion.chunk",
+            created: direct.created,
+            model: direct.model,
+            choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+        });
+    };
     let rawOutput = "";
     let streamedContent = "";
     let streamedReasoning = "";
@@ -520,9 +526,11 @@ async function* streamChatCompletionChunks(params) {
     }))) {
         if (event.type === "started" && event.model) {
             activeModel = event.model;
+            yield* emitPreamble();
             continue;
         }
         if (event.type === "token" && event.text) {
+            yield* emitPreamble();
             rawOutput += event.text;
             if (event.channel === "reasoning") {
                 streamedReasoning += event.text;
@@ -552,9 +560,11 @@ async function* streamChatCompletionChunks(params) {
             continue;
         }
         if (event.type === "finished") {
+            yield* emitPreamble();
             finalResult = event.result;
         }
     }
+    yield* emitPreamble();
     const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders }, streamedReasoning);
     finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
     const routingTrace = extractAutoRoutingTrace(finalResult?.raw);
@@ -600,16 +610,22 @@ async function* streamResponsesChunks(params) {
         yield* replayResponsesRun(run);
         return;
     }
-    yield JSON.stringify({
-        type: "response.created",
-        response: {
-            id: direct.responseId,
-            object: "response",
-            created: direct.created,
-            model: direct.model,
-            status: "in_progress",
-        },
-    });
+    let emittedCreated = false;
+    const emitCreated = function* () {
+        if (emittedCreated)
+            return;
+        emittedCreated = true;
+        yield JSON.stringify({
+            type: "response.created",
+            response: {
+                id: direct.responseId,
+                object: "response",
+                created: direct.created,
+                model: direct.model,
+                status: "in_progress",
+            },
+        });
+    };
     let rawOutput = "";
     let streamedContent = "";
     let streamedReasoning = "";
@@ -629,9 +645,11 @@ async function* streamResponsesChunks(params) {
     }))) {
         if (event.type === "started" && event.model) {
             activeModel = event.model;
+            yield* emitCreated();
             continue;
         }
         if (event.type === "token" && event.text) {
+            yield* emitCreated();
             rawOutput += event.text;
             if (event.channel === "reasoning") {
                 streamedReasoning += event.text;
@@ -653,9 +671,11 @@ async function* streamResponsesChunks(params) {
             continue;
         }
         if (event.type === "finished") {
+            yield* emitCreated();
             finalResult = event.result;
         }
     }
+    yield* emitCreated();
     const finalized = finalizeDirectStream(direct, rawOutput, streamedContent, finalResult, params.responseStore, { kgm: params.kgm, metadata: params.metadata, requestHeaders: params.requestHeaders }, streamedReasoning);
     finalized.model = extractResolvedModel(finalResult?.raw) ?? activeModel;
     if (finalized.finalText.length > streamedContent.length) {
@@ -680,8 +700,9 @@ async function prepareDirectStream(params) {
     const kgm = normalizeKgmExtensions(requestId, params.kgm);
     const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
     const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
-    const executeOnServer = kgm.capabilities?.executeToolCalls ?? true;
-    if (effectiveTools.length > 0 && executeOnServer) {
+    // 只要注入了 tools（含「仅返回 tool_calls、服务端不执行」），走完整兼容管线，
+    // 以便 SSE/JSON 产出标准 tool_calls；直连流不负责工具编排。
+    if (effectiveTools.length > 0) {
         return null;
     }
     const runtimeRequest = applyHaxiTagAssembly({

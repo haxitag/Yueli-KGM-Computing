@@ -20,6 +20,12 @@ import {
   isProviderConfigured,
   resolveCloudModelAlias,
 } from "./cloudModelCatalog.js";
+import {
+  isSpawnManagedWorkerKind,
+  resolveWorkerAutoRestartConfig,
+  workerRestartDelayMs,
+  type WorkerAutoRestartConfig,
+} from "./workerRestartPolicy.js";
 
 export type ManagedModelSourceType = "huggingface" | "ollama" | "github" | "modelscope" | "direct" | "local" | "kgm";
 export type ManagedModelArtifactStatus = "ready" | "downloading" | "pulling" | "error";
@@ -130,6 +136,9 @@ export type ManagedRuntimeMetrics = {
   circuitOpenUntil?: string;
   cacheHits: number;
   cacheMisses: number;
+  /** Worker 进程自动重启累计次数 */
+  restartsTotal: number;
+  lastRestartAt?: string;
 };
 
 export type ManagedModelSummary = {
@@ -258,6 +267,11 @@ export class ManagedModelManager {
   private healthIntervalMs: number;
   private healthTimer?: NodeJS.Timeout;
   private llamaCppOverrides?: Partial<LlamaCppDeployConfig> | (() => Partial<LlamaCppDeployConfig>);
+  private workerRestartConfig: WorkerAutoRestartConfig;
+  /** 主动 stop 的 runtime，exit 回调不触发自动重启 */
+  private intentionalStops = new Set<string>();
+  private restartTimers = new Map<string, NodeJS.Timeout>();
+  private restartAttempts = new Map<string, number>();
 
   constructor(options?: {
     statePath?: string;
@@ -271,6 +285,7 @@ export class ManagedModelManager {
     this.artifactDir = path.resolve(options?.artifactDir ?? process.env.KGM_MODEL_ARTIFACT_DIR ?? "data/model-artifacts");
     this.healthIntervalMs = parseNumber(process.env.KGM_MODEL_HEALTHCHECK_INTERVAL_MS) ?? 15000;
     this.llamaCppOverrides = options?.llamaCpp;
+    this.workerRestartConfig = resolveWorkerAutoRestartConfig();
     fs.mkdirSync(this.stateRoot, { recursive: true });
     fs.mkdirSync(this.artifactDir, { recursive: true });
     if (legacyMonolithicCatalog) {
@@ -301,6 +316,12 @@ export class ManagedModelManager {
       clearInterval(this.healthTimer);
       this.healthTimer = undefined;
     }
+    for (const timer of this.restartTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.restartTimers.clear();
+    this.restartAttempts.clear();
+    this.intentionalStops.clear();
     this.nativeRuntimes.clear();
   }
 
@@ -438,6 +459,8 @@ export class ManagedModelManager {
     lines.push("# TYPE kgm_runtime_queue gauge");
     lines.push("# HELP kgm_runtime_circuit_state Circuit state encoded as closed=0 half_open=1 open=2.");
     lines.push("# TYPE kgm_runtime_circuit_state gauge");
+    lines.push("# HELP kgm_runtime_restarts_total Worker process auto-restart count.");
+    lines.push("# TYPE kgm_runtime_restarts_total counter");
 
     for (const runtime of this.state.runtimes) {
       const metrics = this.getRuntimeMetrics(runtime.id) ?? createRuntimeMetrics(runtime);
@@ -452,6 +475,7 @@ export class ManagedModelManager {
       lines.push(`kgm_runtime_inflight{${labels}} ${metrics.inflightRequests}`);
       lines.push(`kgm_runtime_queue{${labels}} ${metrics.queuedRequests}`);
       lines.push(`kgm_runtime_circuit_state{${labels}} ${circuitStateValue(metrics.circuitState)}`);
+      lines.push(`kgm_runtime_restarts_total{${labels}} ${metrics.restartsTotal ?? 0}`);
     }
     return `${lines.join("\n")}\n`;
   }
@@ -803,10 +827,12 @@ export class ManagedModelManager {
 
   async startRuntime(id: string): Promise<ManagedModelRuntime> {
     const runtime = this.requireRuntime(id);
-    if (runtime.status === "running") {
+    if (runtime.status === "running" && this.processes.has(id)) {
       return runtime;
     }
 
+    this.intentionalStops.delete(id);
+    this.clearRestartTimer(id);
     this.patchRuntime(id, { status: "starting", lastError: undefined });
     const next = this.requireRuntime(id);
 
@@ -834,7 +860,7 @@ export class ManagedModelManager {
         promptCacheLimit: parseValidatedNumber(process.env.KGM_NATIVE_PROMPT_CACHE_SIZE, 8, 1, 1024, "KGM_NATIVE_PROMPT_CACHE_SIZE"),
         sessionCacheLimit: parseValidatedNumber(process.env.KGM_NATIVE_SESSION_CACHE_SIZE, 64, 1, 10000, "KGM_NATIVE_SESSION_CACHE_SIZE"),
         schedulerMaxBatchSize: parseValidatedNumber(process.env.KGM_NATIVE_SCHEDULER_MAX_BATCH_SIZE, 8, 1, 64, "KGM_NATIVE_SCHEDULER_MAX_BATCH_SIZE"),
-        schedulerMaxPrefillsPerTick: parseValidatedNumber(process.env.KGM_NATIVE_SCHEDULER_MAX_PREFILLS_PER_TICK, 1, 1, 16, "KGM_NATIVE_SCHEDULER_MAX_PREFILLS_PER_TICK"),
+        schedulerMaxPrefillsPerTick: parseValidatedNumber(process.env.KGM_NATIVE_SCHEDULER_MAX_PREFILLS_PER_TICK, 4, 1, 16, "KGM_NATIVE_SCHEDULER_MAX_PREFILLS_PER_TICK"),
         kvCacheMode: process.env.KGM_NATIVE_KV_CACHE_MODE === "dense" ? "dense" : "paged",
         kvPageSize: parseValidatedNumber(process.env.KGM_NATIVE_KV_PAGE_SIZE, 16, 1, 256, "KGM_NATIVE_KV_PAGE_SIZE"),
         cachedKvPageBudget: parseValidatedNumber(process.env.KGM_NATIVE_CACHED_KV_PAGE_BUDGET, 256, 1, 4096, "KGM_NATIVE_CACHED_KV_PAGE_BUDGET"),
@@ -941,14 +967,21 @@ export class ManagedModelManager {
     child.on("exit", (code) => {
       this.processes.delete(id);
       const current = this.getRuntime(id);
-      if (!current || current.status === "stopped") {
+      if (!current) {
         return;
       }
+      if (this.intentionalStops.has(id) || current.status === "stopped") {
+        this.intentionalStops.delete(id);
+        return;
+      }
+      const exitError = code === 0 ? undefined : stderr || `process_exit:${code ?? "unknown"}`;
       this.patchRuntime(id, {
-        status: code === 0 ? "stopped" : "error",
-        lastError: code === 0 ? undefined : stderr || `process_exit:${code ?? "unknown"}`,
+        status: "error",
+        lastError: exitError ?? `process_exit:${code ?? "unknown"}`,
         pid: undefined,
+        healthStatus: "unavailable",
       });
+      this.scheduleWorkerAutoRestart(id, code);
     });
 
     this.patchRuntime(id, {
@@ -965,6 +998,9 @@ export class ManagedModelManager {
 
   stopRuntime(id: string): ManagedModelRuntime {
     const runtime = this.requireRuntime(id);
+    this.intentionalStops.add(id);
+    this.clearRestartTimer(id);
+    this.restartAttempts.delete(id);
     this.rejectQueuedRequests(id, new Error(`managed_runtime_stopped:${id}`));
     if (runtime.runtime === "native") {
       this.nativeRuntimes.delete(id);
@@ -988,6 +1024,76 @@ export class ManagedModelManager {
     return this.requireRuntime(id);
   }
 
+  private clearRestartTimer(id: string): void {
+    const timer = this.restartTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.restartTimers.delete(id);
+    }
+  }
+
+  private scheduleWorkerAutoRestart(id: string, exitCode: number | null): void {
+    const cfg = this.workerRestartConfig;
+    if (!cfg.enabled || cfg.maxAttempts <= 0) {
+      return;
+    }
+    const runtime = this.getRuntime(id);
+    if (!runtime || !isSpawnManagedWorkerKind(runtime.runtime)) {
+      return;
+    }
+    if (this.intentionalStops.has(id)) {
+      return;
+    }
+
+    const nextAttempt = (this.restartAttempts.get(id) ?? 0) + 1;
+    if (nextAttempt > cfg.maxAttempts) {
+      this.patchRuntime(id, {
+        status: "error",
+        lastError:
+          (runtime.lastError ? `${runtime.lastError}; ` : "") +
+          `auto_restart_exhausted:${cfg.maxAttempts}`,
+        healthStatus: "unavailable",
+      });
+      return;
+    }
+
+    this.restartAttempts.set(id, nextAttempt);
+    const delayMs = workerRestartDelayMs(nextAttempt, cfg);
+    this.clearRestartTimer(id);
+    const timer = setTimeout(() => {
+      this.restartTimers.delete(id);
+      if (this.intentionalStops.has(id)) {
+        return;
+      }
+      const state = this.ensureRuntimeState(this.requireRuntime(id));
+      state.metrics.restartsTotal += 1;
+      state.metrics.lastRestartAt = new Date().toISOString();
+      this.patchRuntime(id, {
+        notes: Array.from(
+          new Set([
+            ...(this.requireRuntime(id).notes ?? []),
+            `auto_restart_attempt:${nextAttempt}`,
+            `auto_restart_exit_code:${exitCode ?? "null"}`,
+          ]),
+        ),
+      });
+      void this.startRuntime(id)
+        .then(() => {
+          // 成功拉起后清零连续崩溃计数；健康探测仍由 health checker 负责
+          this.restartAttempts.delete(id);
+        })
+        .catch((error) => {
+          this.patchRuntime(id, {
+            status: "error",
+            lastError: `auto_restart_failed:${String(error)}`,
+            healthStatus: "unavailable",
+          });
+          this.scheduleWorkerAutoRestart(id, exitCode);
+        });
+    }, delayMs);
+    this.restartTimers.set(id, timer);
+  }
+
   private async executeRuntimeCompletion(
     runtime: ManagedModelRuntime,
     prompt: string,
@@ -1006,7 +1112,6 @@ export class ManagedModelManager {
     const enqueuedAt = await this.acquireRuntimeSlot(runtime, state);
     const queueWaitMs = Date.now() - enqueuedAt;
     state.metrics.lastQueueWaitMs = queueWaitMs;
-    state.metrics.inflightRequests += 1;
     state.metrics.lastRequestAt = new Date().toISOString();
     const startedAt = Date.now();
     try {
@@ -1073,7 +1178,6 @@ export class ManagedModelManager {
     const enqueuedAt = await this.acquireRuntimeSlot(runtime, state);
     const queueWaitMs = Date.now() - enqueuedAt;
     state.metrics.lastQueueWaitMs = queueWaitMs;
-    state.metrics.inflightRequests += 1;
     state.metrics.lastRequestAt = new Date().toISOString();
     const startedAt = Date.now();
     let finalResult: CompletionResult | undefined;
@@ -1254,6 +1358,8 @@ export class ManagedModelManager {
       if (!next) {
         break;
       }
+      // 唤醒前先占住 slot，避免微任务批量唤醒导致超发并发
+      state.metrics.inflightRequests += 1;
       state.metrics.queuedRequests = state.queue.length;
       void next.run();
     }
@@ -1261,7 +1367,9 @@ export class ManagedModelManager {
 
   private async acquireRuntimeSlot(runtime: ManagedModelRuntime, state: RuntimeExecutionState): Promise<number> {
     const enqueuedAt = Date.now();
-    if (state.metrics.inflightRequests < (runtime.maxConcurrentRequests ?? defaultMaxConcurrent(runtime.runtime))) {
+    const limit = runtime.maxConcurrentRequests ?? defaultMaxConcurrent(runtime.runtime);
+    if (state.metrics.inflightRequests < limit) {
+      state.metrics.inflightRequests += 1;
       return enqueuedAt;
     }
     if (state.queue.length >= (runtime.maxQueueSize ?? defaultMaxQueueSize(runtime.runtime))) {
@@ -2521,6 +2629,7 @@ function createRuntimeMetrics(runtime: ManagedModelRuntime): ManagedRuntimeMetri
     circuitState: "closed",
     cacheHits: 0,
     cacheMisses: 0,
+    restartsTotal: 0,
   };
 }
 

@@ -1,419 +1,437 @@
 /**
- * Continuous Batching - 持续批处理
- * 借鉴 vLLM 的核心优化，动态合并请求以最大化 GPU 利用率
+ * Continuous Batching — KGM 控制面多请求调度核
+ *
+ * 职责：在进程内对多路请求做排队、准入与并发执行调度。
+ * - 生产路径：注入真实 `CompletionExecutor`（通常委托 NativeServingBackend / managed worker）
+ * - 仿真路径：仅当显式使用 `createSimulatedTokenExecutor`（冷启动/benchmark），不可作线上 SLA
+ *
+ * 真正的 token 级 continuous decode 批算在 `JsReferenceNativeServingBackend` 调度环内完成；
+ * 本模块负责「多请求响应」的准入与并发编排。
  */
 
 import { EventEmitter } from "node:events";
+import type { CompletionOptions, CompletionResult } from "../llm/client.js";
 
-interface BatchRequest {
+export type BatchRequestStatus =
+  | "waiting"
+  | "running"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export type BatchJob = {
   id: string;
   prompt: string;
-  maxTokens: number;
-  temperature: number;
+  options?: CompletionOptions;
   priority: number;
   receivedAt: number;
-  firstTokenAt?: number;
+  startedAt?: number;
   completedAt?: number;
-  tokensGenerated: number;
-  status: "waiting" | "prefilling" | "generating" | "completed" | "cancelled";
-  callback: (token: string, isLast: boolean) => void;
-}
+  status: BatchRequestStatus;
+  resolve: (result: CompletionResult) => void;
+  reject: (error: Error) => void;
+};
 
-interface BatchConfig {
-  maxBatchSize: number;
-  maxWaitingTime: number; // 最大等待时间 (ms)
+export type CompletionExecutor = (job: {
+  id: string;
+  prompt: string;
+  options?: CompletionOptions;
+  signal?: AbortSignal;
+}) => Promise<CompletionResult>;
+
+export type BatchSchedulerConfig = {
+  /** 最大同时执行的请求数（多请求并发上限） */
+  maxConcurrency: number;
+  /** 排队等待的最大请求数 */
   maxQueueLength: number;
-  prefillPriority: boolean; // 优先完成 prefill
-  dynamicSplitting: boolean; // 动态拆分长请求
-}
+  /** 兼容旧名：等同 maxConcurrency */
+  maxBatchSize?: number;
+  /** 兼容旧字段（毫秒）；>0 时短请求可等待凑批再放行 */
+  maxWaitingTime?: number;
+  /** 兼容旧字段，忽略语义保留 */
+  prefillPriority?: boolean;
+  dynamicSplitting?: boolean;
+};
 
-interface BatchStats {
-  totalBatches: number;
-  avgBatchSize: number;
-  avgLatency: number;
-  throughput: number; // tokens/sec
-  gpuUtilization: number;
-}
+export type BatchSchedulerStats = {
+  totalSubmitted: number;
+  totalCompleted: number;
+  totalFailed: number;
+  totalCancelled: number;
+  peakConcurrency: number;
+  peakQueue: number;
+  avgLatencyMs: number;
+  throughputRequestsPerSec: number;
+};
 
 /**
- * Continuous Batching Scheduler
- * 核心思想：当一个请求在生成 token 时，其他请求可以加入 batch
+ * 多请求并发调度器：队列 + 有界并发 + 可取消。
  */
 export class ContinuousBatchingScheduler extends EventEmitter {
-  private queue: BatchRequest[] = [];
-  private activeRequests: Map<string, BatchRequest> = new Map();
-  private config: BatchConfig;
-  private stats: BatchStats = {
-    totalBatches: 0,
-    avgBatchSize: 0,
-    avgLatency: 0,
-    throughput: 0,
-    gpuUtilization: 0,
+  private queue: BatchJob[] = [];
+  private active = new Map<string, BatchJob>();
+  private config: Required<
+    Pick<BatchSchedulerConfig, "maxConcurrency" | "maxQueueLength" | "maxWaitingTime">
+  >;
+  private executor: CompletionExecutor;
+  private stats: BatchSchedulerStats = {
+    totalSubmitted: 0,
+    totalCompleted: 0,
+    totalFailed: 0,
+    totalCancelled: 0,
+    peakConcurrency: 0,
+    peakQueue: 0,
+    avgLatencyMs: 0,
+    throughputRequestsPerSec: 0,
   };
-  private isRunning = false;
-  private batchLoopTimer?: NodeJS.Timeout;
-  private tokensGenerated = 0;
-  private startTime = Date.now();
+  private latencySumMs = 0;
+  private startedAt = Date.now();
+  private drainTimer?: ReturnType<typeof setTimeout>;
+  private running = false;
+  private abortControllers = new Map<string, AbortController>();
 
-  constructor(config: Partial<BatchConfig> = {}) {
+  constructor(
+    config: Partial<BatchSchedulerConfig> = {},
+    executor?: CompletionExecutor,
+  ) {
     super();
+    const maxConcurrency = Math.max(
+      1,
+      config.maxConcurrency ?? config.maxBatchSize ?? 8,
+    );
     this.config = {
-      maxBatchSize: config.maxBatchSize ?? 8,
-      maxWaitingTime: config.maxWaitingTime ?? 100, // 100ms 等待窗口
-      maxQueueLength: config.maxQueueLength ?? 100,
-      prefillPriority: config.prefillPriority ?? true,
-      dynamicSplitting: config.dynamicSplitting ?? true,
+      maxConcurrency,
+      maxQueueLength: Math.max(1, config.maxQueueLength ?? 100),
+      maxWaitingTime: Math.max(0, config.maxWaitingTime ?? 0),
     };
+    this.executor = executor ?? createSimulatedTokenExecutor();
+  }
+
+  /** 注入生产执行器（托管 worker / native backend） */
+  setExecutor(executor: CompletionExecutor): void {
+    this.executor = executor;
+  }
+
+  updateConfig(config: Partial<BatchSchedulerConfig>): void {
+    if (config.maxConcurrency !== undefined || config.maxBatchSize !== undefined) {
+      this.config.maxConcurrency = Math.max(
+        1,
+        config.maxConcurrency ?? config.maxBatchSize ?? this.config.maxConcurrency,
+      );
+    }
+    if (config.maxQueueLength !== undefined) {
+      this.config.maxQueueLength = Math.max(1, config.maxQueueLength);
+    }
+    if (config.maxWaitingTime !== undefined) {
+      this.config.maxWaitingTime = Math.max(0, config.maxWaitingTime);
+    }
+    this.emit("configUpdated", { ...this.config });
+    this.scheduleDrain();
   }
 
   /**
-   * 提交请求到批处理队列
+   * 提交请求；多路并发时由调度器在 maxConcurrency 内并行执行 executor。
    */
-  async submit(
-    params: Omit<BatchRequest, "id" | "receivedAt" | "tokensGenerated" | "status"> & {
+  submit(
+    prompt: string,
+    options?: CompletionOptions,
+    extras?: { priority?: number; id?: string },
+  ): Promise<CompletionResult> {
+    return new Promise<CompletionResult>((resolve, reject) => {
+      if (this.queue.length >= this.config.maxQueueLength) {
+        reject(new Error(`batch_scheduler_queue_full:${this.config.maxQueueLength}`));
+        return;
+      }
+
+      const id =
+        extras?.id?.trim() ||
+        options?.requestId?.trim() ||
+        `batch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const job: BatchJob = {
+        id,
+        prompt,
+        options,
+        priority: extras?.priority ?? 0,
+        receivedAt: Date.now(),
+        status: "waiting",
+        resolve,
+        reject,
+      };
+
+      const insertIndex = this.queue.findIndex((item) => item.priority < job.priority);
+      if (insertIndex === -1) {
+        this.queue.push(job);
+      } else {
+        this.queue.splice(insertIndex, 0, job);
+      }
+
+      this.stats.totalSubmitted += 1;
+      this.stats.peakQueue = Math.max(this.stats.peakQueue, this.queue.length);
+      this.emit("requestQueued", { id, queueLength: this.queue.length });
+      this.scheduleDrain();
+    });
+  }
+
+  /** 兼容旧 API：submit + callback 风格 */
+  async submitWithCallback(
+    params: {
       id?: string;
-    }
+      prompt: string;
+      maxTokens?: number;
+      temperature?: number;
+      priority?: number;
+      callback: (token: string, isLast: boolean) => void;
+    },
   ): Promise<string> {
-    if (this.queue.length >= this.config.maxQueueLength) {
-      throw new Error("Queue full");
-    }
-
-    const id = params.id ?? `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    const request: BatchRequest = {
-      ...params,
-      id,
-      receivedAt: Date.now(),
-      tokensGenerated: 0,
-      status: "waiting",
-    };
-
-    // 优先级插入
-    const insertIndex = this.queue.findIndex((r) => r.priority < request.priority);
-    if (insertIndex === -1) {
-      this.queue.push(request);
-    } else {
-      this.queue.splice(insertIndex, 0, request);
-    }
-
-    this.emit("requestQueued", { id, queueLength: this.queue.length });
-
-    // 触发批处理
-    if (!this.isRunning) {
-      this.startBatching();
-    }
-
+    const id = params.id ?? `batch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    void this.submit(
+      params.prompt,
+      {
+        maxTokens: params.maxTokens,
+        temperature: params.temperature,
+      },
+      { id, priority: params.priority },
+    )
+      .then((result) => {
+        params.callback(result.text, true);
+      })
+      .catch((error: Error) => {
+        params.callback(`error:${error.message}`, true);
+      });
     return id;
   }
 
-  /**
-   * 取消请求
-   */
   cancel(requestId: string): boolean {
-    // 从队列中移除
-    const queueIndex = this.queue.findIndex((r) => r.id === requestId);
+    const queueIndex = this.queue.findIndex((item) => item.id === requestId);
     if (queueIndex !== -1) {
-      this.queue.splice(queueIndex, 1);
-      this.emit("requestCancelled", { id: requestId, from: "queue" });
+      const [job] = this.queue.splice(queueIndex, 1);
+      if (job) {
+        job.status = "cancelled";
+        this.stats.totalCancelled += 1;
+        job.reject(new Error(`batch_scheduler_cancelled:${requestId}`));
+        this.emit("requestCancelled", { id: requestId, from: "queue" });
+      }
       return true;
     }
 
-    // 标记活跃请求为取消
-    const active = this.activeRequests.get(requestId);
+    const active = this.active.get(requestId);
     if (active) {
       active.status = "cancelled";
+      this.abortControllers.get(requestId)?.abort();
       this.emit("requestCancelled", { id: requestId, from: "active" });
       return true;
     }
-
     return false;
   }
 
-  /**
-   * 启动批处理循环
-   */
-  private startBatching(): void {
-    if (this.isRunning) return;
-    this.isRunning = true;
-    this.startTime = Date.now();
-
-    this.emit("batchingStarted");
-
-    const batchLoop = async () => {
-      if (!this.isRunning) return;
-
-      try {
-        await this.processBatch();
-      } catch (error) {
-        this.emit("batchError", error);
-      }
-
-      // 继续循环
-      if (this.queue.length > 0 || this.activeRequests.size > 0) {
-        this.batchLoopTimer = setTimeout(batchLoop, 10); // 10ms 间隔
-      } else {
-        this.isRunning = false;
-        this.emit("batchingStopped");
-      }
-    };
-
-    batchLoop();
-  }
-
-  /**
-   * 处理一个批次的请求
-   */
-  private async processBatch(): Promise<void> {
-    const now = Date.now();
-
-    // 1. 收集可以加入 batch 的请求
-    const newRequests: BatchRequest[] = [];
-    const remainingQueue: BatchRequest[] = [];
-
-    for (const request of this.queue) {
-      // 检查是否可以加入当前 batch
-      if (
-        this.activeRequests.size + newRequests.length < this.config.maxBatchSize &&
-        (now - request.receivedAt >= this.config.maxWaitingTime ||
-          this.queue.length > this.config.maxBatchSize)
-      ) {
-        newRequests.push(request);
-      } else {
-        remainingQueue.push(request);
-      }
-    }
-
-    this.queue = remainingQueue;
-
-    // 2. 将新请求加入 active batch
-    for (const request of newRequests) {
-      request.status = "prefilling";
-      this.activeRequests.set(request.id, request);
-      this.emit("requestStarted", { id: request.id });
-    }
-
-    if (this.activeRequests.size === 0) return;
-
-    // 3. 执行 batch 推理
-    // 这里模拟实际的 batch 推理过程
-    await this.executeBatch(Array.from(this.activeRequests.values()));
-
-    // 4. 清理完成的请求
-    for (const [id, request] of this.activeRequests) {
-      if (request.status === "completed" || request.status === "cancelled") {
-        this.activeRequests.delete(id);
-        if (request.status === "completed") {
-          request.completedAt = Date.now();
-          this.emit("requestCompleted", {
-            id,
-            tokensGenerated: request.tokensGenerated,
-            latency: request.completedAt - request.receivedAt,
-          });
-        }
-      }
-    }
-
-    // 5. 更新统计
-    this.updateStats(newRequests.length);
-  }
-
-  /**
-   * 执行 batch 推理
-   */
-  private async executeBatch(requests: BatchRequest[]): Promise<void> {
-    // 这里实现实际的 batch 推理逻辑
-    // 简化为每个请求生成一个 token
-
-    const batchSize = requests.length;
-    this.stats.totalBatches++;
-
-    // 并行生成 token
-    const generationPromises = requests.map(async (request) => {
-      if (request.status === "cancelled") return;
-
-      // 模拟 token 生成延迟
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      // 生成 token
-      const token = this.generateToken(request);
-      request.tokensGenerated++;
-
-      // 状态转换
-      if (request.status === "prefilling") {
-        request.status = "generating";
-        request.firstTokenAt = Date.now();
-      }
-
-      // 检查是否完成
-      const isComplete =
-        request.tokensGenerated >= request.maxTokens || token === "<|endoftext|>";
-
-      // 回调
-      request.callback(token, isComplete);
-
-      if (isComplete) {
-        request.status = "completed";
-      }
-
-      this.tokensGenerated++;
-    });
-
-    await Promise.all(generationPromises);
-
-    this.emit("batchExecuted", {
-      size: batchSize,
-      activeRequests: this.activeRequests.size,
-    });
-  }
-
-  /**
-   * 生成单个 token (模拟)
-   */
-  private generateToken(request: BatchRequest): string {
-    // 实际实现会调用模型
-    // 这里简化返回随机 token
-    const tokens = [" the", " a", " is", " of", " and", " to", " in", "<|endoftext|>"];
-    const weights = [0.3, 0.2, 0.15, 0.15, 0.1, 0.05, 0.04, 0.01];
-
-    const rand = Math.random();
-    let cumulative = 0;
-    for (let i = 0; i < tokens.length; i++) {
-      cumulative += weights[i];
-      if (rand <= cumulative) {
-        return tokens[i];
-      }
-    }
-    return tokens[0];
-  }
-
-  /**
-   * 动态拆分长请求
-   */
-  private splitLongRequest(request: BatchRequest): BatchRequest[] {
-    if (!this.config.dynamicSplitting) return [request];
-
-    const promptLength = request.prompt.length;
-    const avgChunkSize = 2048; // tokens
-
-    if (promptLength <= avgChunkSize * 4) return [request];
-
-    // 拆分成多个子请求
-    const chunks: string[] = [];
-    const words = request.prompt.split(" ");
-    let currentChunk: string[] = [];
-
-    for (const word of words) {
-      if (currentChunk.join(" ").length > avgChunkSize) {
-        chunks.push(currentChunk.join(" "));
-        currentChunk = [];
-      }
-      currentChunk.push(word);
-    }
-    if (currentChunk.length > 0) {
-      chunks.push(currentChunk.join(" "));
-    }
-
-    // 只创建第一个 chunk 的请求，后续 chunk 链式处理
-    return [
-      {
-        ...request,
-        prompt: chunks[0] + "\n[Continued...]",
-        maxTokens: Math.min(request.maxTokens, 512), // 减少每 chunk 的 token 数
-      },
-    ];
-  }
-
-  /**
-   * 更新统计
-   */
-  private updateStats(batchSize: number): void {
-    const n = this.stats.totalBatches;
-    this.stats.avgBatchSize =
-      (this.stats.avgBatchSize * (n - 1) + batchSize) / n;
-
-    // 计算吞吐量
-    const elapsed = (Date.now() - this.startTime) / 1000;
-    this.stats.throughput = this.tokensGenerated / elapsed;
-
-    // 估算 GPU 利用率
-    this.stats.gpuUtilization = Math.min(
-      100,
-      (this.activeRequests.size / this.config.maxBatchSize) * 100
-    );
-  }
-
-  /**
-   * 获取统计信息
-   */
-  getStats(): BatchStats & {
+  getStats(): BatchSchedulerStats & {
     queueLength: number;
     activeRequests: number;
-    totalTokens: number;
   } {
+    const elapsedSec = Math.max(0.001, (Date.now() - this.startedAt) / 1000);
     return {
       ...this.stats,
+      throughputRequestsPerSec: this.stats.totalCompleted / elapsedSec,
       queueLength: this.queue.length,
-      activeRequests: this.activeRequests.size,
-      totalTokens: this.tokensGenerated,
+      activeRequests: this.active.size,
     };
   }
 
-  /**
-   * 获取队列状态
-   */
   getQueueStatus(): {
+    waiting: number;
+    running: number;
+    total: number;
+    maxConcurrency: number;
+  } {
+    return {
+      waiting: this.queue.length,
+      running: this.active.size,
+      total: this.queue.length + this.active.size,
+      maxConcurrency: this.config.maxConcurrency,
+    };
+  }
+
+  /** 兼容旧 getQueueStatus 字段名 */
+  getQueueStatusLegacy(): {
     waiting: number;
     prefilling: number;
     generating: number;
     total: number;
   } {
-    const waiting = this.queue.length;
-    let prefilling = 0;
-    let generating = 0;
-
-    for (const req of this.activeRequests.values()) {
-      if (req.status === "prefilling") prefilling++;
-      if (req.status === "generating") generating++;
-    }
-
+    const status = this.getQueueStatus();
     return {
-      waiting,
-      prefilling,
-      generating,
-      total: waiting + prefilling + generating,
+      waiting: status.waiting,
+      prefilling: 0,
+      generating: status.running,
+      total: status.total,
     };
   }
 
-  /**
-   * 调整配置
-   */
-  updateConfig(config: Partial<BatchConfig>): void {
-    this.config = { ...this.config, ...config };
-    this.emit("configUpdated", this.config);
+  stop(): void {
+    this.running = false;
+    if (this.drainTimer) {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = undefined;
+    }
+    for (const job of this.queue.splice(0)) {
+      job.status = "cancelled";
+      this.stats.totalCancelled += 1;
+      job.reject(new Error("batch_scheduler_stopped"));
+    }
+    for (const id of this.abortControllers.keys()) {
+      this.abortControllers.get(id)?.abort();
+    }
+    this.emit("stopped");
   }
 
-  /**
-   * 停止批处理
-   */
-  stop(): void {
-    this.isRunning = false;
-    if (this.batchLoopTimer) {
-      clearTimeout(this.batchLoopTimer);
+  private scheduleDrain(): void {
+    if (this.drainTimer) {
+      return;
     }
+    const waitMs = this.shouldWaitToCoalesce() ? this.config.maxWaitingTime : 0;
+    this.drainTimer = setTimeout(() => {
+      this.drainTimer = undefined;
+      void this.drain();
+    }, waitMs);
+  }
 
-    // 取消所有请求
-    for (const request of this.queue) {
-      request.status = "cancelled";
+  private shouldWaitToCoalesce(): boolean {
+    if (this.config.maxWaitingTime <= 0) {
+      return false;
     }
-    for (const request of this.activeRequests.values()) {
-      request.status = "cancelled";
+    if (this.active.size > 0) {
+      return false;
     }
+    if (this.queue.length === 0 || this.queue.length >= this.config.maxConcurrency) {
+      return false;
+    }
+    const oldest = this.queue[0];
+    if (!oldest) {
+      return false;
+    }
+    return Date.now() - oldest.receivedAt < this.config.maxWaitingTime;
+  }
 
-    this.queue = [];
-    this.activeRequests.clear();
-    this.emit("stopped");
+  private async drain(): Promise<void> {
+    if (this.running) {
+      this.scheduleDrain();
+      return;
+    }
+    this.running = true;
+    try {
+      while (this.active.size < this.config.maxConcurrency && this.queue.length > 0) {
+        if (this.shouldWaitToCoalesce()) {
+          break;
+        }
+        const job = this.queue.shift();
+        if (!job) {
+          break;
+        }
+        void this.runJob(job);
+      }
+    } finally {
+      this.running = false;
+      if (this.queue.length > 0 && this.active.size < this.config.maxConcurrency) {
+        this.scheduleDrain();
+      }
+    }
+  }
+
+  private async runJob(job: BatchJob): Promise<void> {
+    job.status = "running";
+    job.startedAt = Date.now();
+    this.active.set(job.id, job);
+    this.stats.peakConcurrency = Math.max(this.stats.peakConcurrency, this.active.size);
+    this.emit("requestStarted", { id: job.id, active: this.active.size });
+
+    const controller = new AbortController();
+    this.abortControllers.set(job.id, controller);
+
+    try {
+      const result = await this.executor({
+        id: job.id,
+        prompt: job.prompt,
+        options: job.options,
+        signal: controller.signal,
+      });
+      // cancel() 会 abort controller 并改写 status；以 abort 为准避免 TS 窄化
+      if (controller.signal.aborted || this.active.get(job.id)?.status === "cancelled") {
+        job.status = "cancelled";
+        this.stats.totalCancelled += 1;
+        job.reject(new Error(`batch_scheduler_cancelled:${job.id}`));
+        return;
+      }
+      job.status = "completed";
+      job.completedAt = Date.now();
+      const latency = job.completedAt - job.receivedAt;
+      this.stats.totalCompleted += 1;
+      this.latencySumMs += latency;
+      this.stats.avgLatencyMs = this.latencySumMs / this.stats.totalCompleted;
+      job.resolve(result);
+      this.emit("requestCompleted", { id: job.id, latencyMs: latency });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        job.status = "cancelled";
+        this.stats.totalCancelled += 1;
+        job.reject(new Error(`batch_scheduler_cancelled:${job.id}`));
+        return;
+      }
+      job.status = "failed";
+      this.stats.totalFailed += 1;
+      const err = error instanceof Error ? error : new Error(String(error));
+      job.reject(err);
+      this.emit("requestFailed", { id: job.id, error: err.message });
+    } finally {
+      this.active.delete(job.id);
+      this.abortControllers.delete(job.id);
+      this.scheduleDrain();
+    }
   }
 }
 
-// 全局单例
-export const globalContinuousBatching = new ContinuousBatchingScheduler();
+/** 冷启动 / benchmark 用仿真执行器（不可作生产吞吐承诺） */
+export function createSimulatedTokenExecutor(options?: {
+  tokensPerRequest?: number;
+  delayMsPerToken?: number;
+}): CompletionExecutor {
+  const tokensPerRequest = Math.max(1, options?.tokensPerRequest ?? 8);
+  const delayMsPerToken = Math.max(0, options?.delayMsPerToken ?? 2);
+  return async (job) => {
+    const maxTokens = Math.max(1, job.options?.maxTokens ?? tokensPerRequest);
+    const parts: string[] = [];
+    for (let i = 0; i < maxTokens; i += 1) {
+      if (job.signal?.aborted) {
+        throw new Error("batch_scheduler_aborted");
+      }
+      if (delayMsPerToken > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMsPerToken));
+      }
+      parts.push(` t${i}`);
+    }
+    return {
+      text: parts.join("").trim(),
+      raw: {
+        simulated: true,
+        requestId: job.id,
+        tokens: maxTokens,
+      },
+    };
+  };
+}
+
+/** @deprecated 旧全局单例仍使用仿真 executor；生产请自建并 setExecutor */
+export const globalContinuousBatching = new ContinuousBatchingScheduler(
+  { maxConcurrency: 8, maxQueueLength: 100 },
+  createSimulatedTokenExecutor(),
+);
+
+/** 计算本次 tick 可准入的 prefill 数量（供 native 调度复用/单测） */
+export function computeAdmitLimit(params: {
+  activeCount: number;
+  pendingCount: number;
+  maxBatchSize: number;
+  maxPrefillsPerTick: number;
+}): number {
+  const capacity = Math.max(0, params.maxBatchSize - params.activeCount);
+  return Math.min(params.maxPrefillsPerTick, capacity, params.pendingCount);
+}

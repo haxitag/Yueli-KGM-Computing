@@ -15,6 +15,7 @@ import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import { playgroundRouter } from './playgroundApi.js';
 import { syncPlaygroundFromConfig } from '../playground/syncPlayground.js';
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from '../routing/routingService.js';
+import { createExpressCorsOptions } from "./corsPolicy.js";
 // 获取当前文件目录
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,8 +24,8 @@ export function createCombinedServer(params, port = 3000) {
     const server = http.createServer(app);
     const routingHistory = createRoutingHistoryStoreFromEnv();
     const responseStore = new OpenAiResponseStore();
-    // 中间件
-    app.use(cors());
+    // 中间件（CORS 与主服务同源策略）
+    app.use(cors(createExpressCorsOptions()));
     app.use(express.json({ limit: '50mb' }));
     app.use(createExpressKgmAccessMiddleware());
     app.use(express.urlencoded({ extended: true }));

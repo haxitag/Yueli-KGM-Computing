@@ -309,6 +309,13 @@ const defaultConfig = {
         upstreamPrefix: "/api",
         timeoutMs: 120_000,
     },
+    workers: {
+        llamaCpp: {
+            enabled: "auto",
+            command: "llama-server",
+            installHint: "Install llama.cpp llama-server; set workers.llamaCpp.command or KGM_LLAMA_SERVER_CMD; KGM_LLAMA_CPP_ENABLED=on|off|auto",
+        },
+    },
     playground: {
         skills: [
             {
@@ -404,7 +411,22 @@ function mergeConfig(base, patch) {
         routing: { ...base.routing, ...(patch.routing ?? {}) },
         autoRouting: mergeAutoRoutingConfig(base.autoRouting, patch.autoRouting),
         yueliai: mergeYueliAiGatewayConfig(base.yueliai, patch.yueliai),
+        workers: mergeWorkersConfig(base.workers, patch.workers),
         playground: mergePlaygroundConfig(base.playground, patch.playground),
+    };
+}
+function mergeWorkersConfig(base, patch) {
+    if (!patch?.llamaCpp) {
+        return base;
+    }
+    return {
+        llamaCpp: {
+            ...base.llamaCpp,
+            ...patch.llamaCpp,
+            enabled: patch.llamaCpp.enabled ?? base.llamaCpp.enabled,
+            command: patch.llamaCpp.command?.trim() || base.llamaCpp.command,
+            installHint: patch.llamaCpp.installHint ?? base.llamaCpp.installHint,
+        },
     };
 }
 function mergeYueliAiGatewayConfig(base, patch) {

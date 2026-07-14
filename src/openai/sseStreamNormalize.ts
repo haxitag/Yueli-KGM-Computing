@@ -1,9 +1,13 @@
+/**
+ * OpenAI 兼容 SSE 错误帧（headers 已发送后的中游失败语义）。
+ * 与同步路径 structuredErrorBody 对齐，便于客户端统一解析 error.code。
+ */
 import type { ServerResponse } from "node:http";
-
-/** Copilot / OpenAI 客户端识别的推理增量字段 */
-const REASONING_DELTA_KEYS = ["reasoning_content", "reasoning", "thinking", "thought"] as const;
+import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 
 export type SseReasoningNormalizeMode = "reasoning_content" | "merge_content" | "off";
+
+const REASONING_DELTA_KEYS = ["reasoning_content", "reasoning", "thinking", "thought"] as const;
 
 export function resolveSseReasoningNormalizeMode(): SseReasoningNormalizeMode {
   const raw = (process.env.KGM_SSE_REASONING_NORMALIZE ?? "reasoning_content").trim().toLowerCase();
@@ -12,9 +16,6 @@ export function resolveSseReasoningNormalizeMode(): SseReasoningNormalizeMode {
   return "reasoning_content";
 }
 
-/**
- * 将上游 SSE `data:` 行中的 `delta.reasoning` 等字段规范为 OpenAI 兼容形状。
- */
 export function normalizeOpenAiSseDataPayload(
   dataStr: string,
   mode: SseReasoningNormalizeMode = resolveSseReasoningNormalizeMode(),
@@ -77,32 +78,95 @@ export function parseStreamIdleMs(envValue?: string): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+/** 格式化为 SSE data 行（不含尾部分隔）；payload 已是 JSON 字符串或 [DONE]。 */
+export function formatSseDataLine(payload: string): string {
+  return `data: ${payload}\n\n`;
+}
+
+export function formatSseStructuredErrorPayload(error: unknown): string {
+  return JSON.stringify(structuredErrorBody(error));
+}
+
+/**
+ * 在已开启的 SSE 响应上写入结构化错误帧，并可选追加 [DONE]。
+ * 若连接已销毁则 no-op。
+ */
+export function writeSseStructuredError(
+  res: ServerResponse,
+  error: unknown,
+  opts?: { appendDone?: boolean },
+): void {
+  if (res.destroyed || res.writableEnded) {
+    return;
+  }
+  try {
+    res.write(formatSseDataLine(formatSseStructuredErrorPayload(error)));
+    if (opts?.appendDone !== false) {
+      res.write(formatSseDataLine("[DONE]"));
+    }
+  } catch {
+    /* ignore write failures on half-closed sockets */
+  }
+}
+
+export type RelayUpstreamSseOptions = {
+  idleMs?: number;
+  normalizeMode?: SseReasoningNormalizeMode;
+  /** 默认 true；Anthropic 原生流设为 false */
+  appendDone?: boolean;
+};
+
+/** Promise.race 空闲超时哨兵——绝不可与 reader.read() 的 {done:true} 混用 */
+export type StreamIdleTimeoutSentinel = { readonly __kgmIdleTimeout: true };
+export const STREAM_IDLE_TIMEOUT: StreamIdleTimeoutSentinel = { __kgmIdleTimeout: true };
+
+export function isStreamIdleTimeout(
+  value: unknown,
+): value is StreamIdleTimeoutSentinel {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as StreamIdleTimeoutSentinel).__kgmIdleTimeout === true
+  );
+}
+
 /**
  * 中继上游 SSE，并按行归一化 delta；支持空闲超时与客户端断开时 abort 上游。
+ * 中游失败 / 空闲超时：写入结构化错误帧 + 可选 [DONE]（不再静默截断）。
  */
 export async function relayUpstreamSseNormalized(
   res: ServerResponse,
   upstream: Response,
-  opts?: { idleMs?: number; normalizeMode?: SseReasoningNormalizeMode },
+  opts?: RelayUpstreamSseOptions,
 ): Promise<void> {
   const idleMs = opts?.idleMs ?? parseStreamIdleMs();
   const mode = opts?.normalizeMode ?? resolveSseReasoningNormalizeMode();
+  const appendDone = opts?.appendDone !== false;
 
-  res.writeHead(200, {
-    "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive",
-  });
+  if (!res.headersSent) {
+    res.writeHead(200, {
+      "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+  }
 
   const reader = upstream.body?.getReader();
   if (!reader) {
-    res.end();
+    writeSseStructuredError(
+      res,
+      toKgmStructuredError(new Error("upstream SSE has no response body")),
+      { appendDone },
+    );
+    if (!res.destroyed) res.end();
     return;
   }
 
   const decoder = new TextDecoder();
   let lineBuffer = "";
   let lastActivity = Date.now();
+  let endedWithError = false;
+  let sawDone = false;
 
   const upstreamAbort = new AbortController();
   const onClientClose = () => {
@@ -114,28 +178,58 @@ export async function relayUpstreamSseNormalized(
   try {
     while (true) {
       if (idleMs > 0 && Date.now() - lastActivity > idleMs) {
+        endedWithError = true;
+        writeSseStructuredError(
+          res,
+          toKgmStructuredError(new Error(`Stream idle timeout after ${idleMs}ms`)),
+          { appendDone },
+        );
         break;
       }
 
       const readPromise = reader.read();
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise =
         idleMs > 0
-          ? new Promise<{ done: true; value?: undefined }>((resolve) => {
+          ? new Promise<StreamIdleTimeoutSentinel>((resolve) => {
               const wait = idleMs - (Date.now() - lastActivity);
-              setTimeout(() => resolve({ done: true }), Math.max(1, wait));
+              idleTimer = setTimeout(
+                () => resolve(STREAM_IDLE_TIMEOUT),
+                Math.max(1, wait),
+              );
             })
           : null;
 
-      const result = timeoutPromise
-        ? await Promise.race([readPromise, timeoutPromise])
-        : await readPromise;
+      let result: ReadableStreamReadResult<Uint8Array> | StreamIdleTimeoutSentinel;
+      try {
+        result = timeoutPromise
+          ? await Promise.race([readPromise, timeoutPromise])
+          : await readPromise;
+      } catch (error) {
+        endedWithError = true;
+        writeSseStructuredError(res, error, { appendDone });
+        break;
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+      }
+
+      if (isStreamIdleTimeout(result)) {
+        endedWithError = true;
+        writeSseStructuredError(
+          res,
+          toKgmStructuredError(new Error(`Stream idle timeout after ${idleMs}ms`)),
+          { appendDone },
+        );
+        void reader.cancel().catch(() => undefined);
+        break;
+      }
 
       if (result.done) {
         break;
       }
 
       lastActivity = Date.now();
-      lineBuffer += decoder.decode(result.value!, { stream: true });
+      lineBuffer += decoder.decode(result.value, { stream: true });
 
       let newlineIndex = lineBuffer.indexOf("\n");
       while (newlineIndex !== -1) {
@@ -152,16 +246,21 @@ export async function relayUpstreamSseNormalized(
 
         const payload = line.startsWith("data: ") ? line.slice(6) : line.slice(5).trim();
         if (payload === "[DONE]") {
-          res.write("data: [DONE]\n\n");
+          sawDone = true;
+          res.write(formatSseDataLine("[DONE]"));
           continue;
         }
         const normalized = normalizeOpenAiSseDataPayload(payload, mode);
-        res.write(`data: ${normalized}\n\n`);
+        res.write(formatSseDataLine(normalized));
       }
     }
 
-    if (lineBuffer.trim()) {
+    if (!endedWithError && lineBuffer.trim()) {
       res.write(lineBuffer.endsWith("\n") ? lineBuffer : `${lineBuffer}\n`);
+    }
+    // OpenAI 兼容：上游干净 EOF 却未发 [DONE] 时，补齐终结帧（Anthropic appendDone=false 除外）
+    if (!endedWithError && appendDone && !sawDone && !res.destroyed && !res.writableEnded) {
+      res.write(formatSseDataLine("[DONE]"));
     }
   } finally {
     res.off("close", onClientClose);

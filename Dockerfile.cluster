@@ -1,54 +1,55 @@
-# 构建阶段
-FROM node:18-alpine AS builder
+# Cluster / 多节点镜像（与主 Dockerfile 对齐：Node 20）
+#
+# 构建：docker build -f Dockerfile.cluster -t yueli-kgm-cluster .
+# 说明：不依赖已删除的 config/cluster-config.js；入口与主镜像一致为 server/start。
 
+FROM node:20-bookworm AS build
 WORKDIR /app
 
-# 复制依赖文件
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json ./
-COPY tsconfig.json ./
+RUN npm ci
 
-# 复制源代码
-COPY src ./src
-
-# 安装依赖并构建
-RUN npm ci --only=production
+COPY . .
 RUN npm run build
+RUN npm prune --omit=dev
 
-# 生产阶段
-FROM node:18-alpine AS production
-
+FROM node:20-bookworm-slim
 WORKDIR /app
 
-# 安装必要的系统依赖
-RUN apk add --no-cache curl tzdata
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates netcat-openbsd \
+  && rm -rf /var/lib/apt/lists/*
 
-# 设置时区
-ENV TZ=Asia/Shanghai
+COPY --from=build /app/package.json /app/package-lock.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/frontstation-worker ./frontstation-worker
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+  && mkdir -p /app/data /home/kgm/.cache/huggingface \
+  && useradd --create-home --shell /bin/bash kgm \
+  && chown -R kgm:kgm /app /home/kgm
 
-# 复制构建产物
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/node_modules ./node_modules
-
-# 复制配置文件
-COPY docker-entrypoint.sh /usr/local/bin/
-COPY config/cluster-config.js ./config/
-
-# 创建数据目录
-RUN mkdir -p /app/data
-
-# 设置环境变量
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV TZ=Asia/Shanghai
+ENV KGM_FRONTSTATION_MODE=auto
+ENV KGM_FRONTSTATION_PREFER_ONNX=0
+ENV KGM_FRONTSTATION_ONNX_MODEL=Xenova/all-MiniLM-L6-v2
+ENV KGM_FRONTSTATION_TIMEOUT_MS=8000
+ENV KGM_FRONTSTATION_SUMMARY_MODE=local
+ENV TRANSFORMERS_CACHE=/home/kgm/.cache/huggingface
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:${PORT}/health || exit 1
+USER kgm
 
-# 暴露端口
-EXPOSE ${PORT}
-EXPOSE 9464  # Prometheus metrics port
+EXPOSE 3000
 
-# 启动脚本
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
+
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/server/start.js"]

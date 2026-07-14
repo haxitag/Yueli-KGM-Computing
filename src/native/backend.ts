@@ -12,6 +12,7 @@ import {
   type NativeCoreBindingBackend,
   type NativeCoreBindingSchedulerStats,
 } from "./bindings.js";
+import { computeAdmitLimit } from "../inference/continuousBatching.js";
 
 type PromptCacheEntry = {
   key: string;
@@ -477,7 +478,11 @@ class JsReferenceNativeServingBackend implements NativeServingBackend {
     this.promptCacheLimit = Math.max(1, options?.promptCacheLimit ?? 8);
     this.sessionCacheLimit = Math.max(1, options?.sessionCacheLimit ?? 64);
     this.schedulerMaxBatchSize = Math.max(1, options?.schedulerMaxBatchSize ?? 8);
-    this.schedulerMaxPrefillsPerTick = Math.max(1, options?.schedulerMaxPrefillsPerTick ?? 1);
+    // 默认按 batch 容量入队：允许多请求同拍 prefill，避免 maxPrefills=1 卡死并发爬坡
+    this.schedulerMaxPrefillsPerTick = Math.max(
+      1,
+      options?.schedulerMaxPrefillsPerTick ?? Math.min(4, this.schedulerMaxBatchSize),
+    );
     this.kvCacheMode = options?.kvCacheMode ?? "paged";
     this.kvPageSize = Math.max(1, options?.kvPageSize ?? 16);
     this.cachedKvPageBudget = options?.cachedKvPageBudget && options.cachedKvPageBudget > 0
@@ -622,7 +627,13 @@ class JsReferenceNativeServingBackend implements NativeServingBackend {
 
   private admitPendingRequests(): void {
     let admitted = 0;
-    while (this.pendingRequests.length > 0 && admitted < this.schedulerMaxPrefillsPerTick) {
+    const admitLimit = computeAdmitLimit({
+      activeCount: this.activeOrder.length,
+      pendingCount: this.pendingRequests.length,
+      maxBatchSize: this.schedulerMaxBatchSize,
+      maxPrefillsPerTick: this.schedulerMaxPrefillsPerTick,
+    });
+    while (this.pendingRequests.length > 0 && admitted < admitLimit) {
       const request = this.pendingRequests.shift()!;
       if (request.completed || request.cancelled) {
         continue;

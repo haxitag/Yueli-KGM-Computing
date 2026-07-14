@@ -1,5 +1,6 @@
 import { mergeOpenAiPassthroughBody } from "../llm/maas/openAiChatBody.js";
 import { relayUpstreamSseNormalized } from "./sseStreamNormalize.js";
+import { protectedFetch } from "../observability/circuitBreaker.js";
 export async function maybeProxyNativeOpenAiStream(params) {
     if (!canUseNativeOpenAiStreamPassthrough(params.payload)) {
         return false;
@@ -9,7 +10,7 @@ export async function maybeProxyNativeOpenAiStream(params) {
     const url = joinPath(upstream.baseUrl, upstream.path);
     let response;
     try {
-        response = await fetch(url, {
+        response = await protectedFetch(url, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
