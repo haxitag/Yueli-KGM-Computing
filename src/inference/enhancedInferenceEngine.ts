@@ -201,6 +201,13 @@ export class EnhancedInferenceEngine {
     maxTokens?: number;
     temperature?: number;
   }): Promise<EnhancedInferenceResult> {
+    if (process.env.KGM_ALLOW_SIMULATED_INFERENCE !== "1") {
+      throw new Error(
+        "simulated_inference_disabled: EnhancedInferenceEngine uses demo/sim paths; " +
+          "use ManagedModelManager with vLLM/SGLang/native for real inference, " +
+          "or set KGM_ALLOW_SIMULATED_INFERENCE=1 for explicit local demos only.",
+      );
+    }
     if (!this.initialized || !this.mainModel) {
       throw new Error("engine_not_initialized");
     }

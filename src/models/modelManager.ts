@@ -13,6 +13,8 @@ import { NativeRuntimeEngine } from "../native/engine.js";
 import { generateId } from "../utils/id.js";
 import { parseKgmfile, toModelRequests, type KgmfileSpec } from "./kgmfile.js";
 import { detectJangInModelDirectory } from "../native/jang.js";
+import { assessArtifactExecution, resolveRuntimeKind } from "../native/executionPolicy.js";
+import { assertLlamaCppCallable, resolveLlamaCppDeployConfig, type LlamaCppDeployConfig } from "../runtime/llamaCppDeploy.js";
 import {
   DEFAULT_CLOUD_MODEL_CATALOG,
   isProviderConfigured,
@@ -32,6 +34,12 @@ export type ManagedModelRuntimeKind =
 export type ManagedModelRuntimeStatus = "stopped" | "starting" | "running" | "error";
 export type ManagedRuntimeHealthStatus = "unknown" | "healthy" | "degraded" | "unavailable";
 export type ManagedRuntimeCircuitState = "closed" | "open" | "half_open";
+
+export type ManagedLoraAdapter = {
+  name: string;
+  path: string;
+  scale?: number;
+};
 
 export type ManagedModelArtifact = {
   id: string;
@@ -72,6 +80,8 @@ export type ManagedModelRuntime = {
   upstreamModel: string;
   command?: string;
   args?: string[];
+  /** LoRA adapters attached to worker spawn (vLLM / SGLang / llama.cpp) */
+  loraAdapters?: ManagedLoraAdapter[];
   pid?: number;
   maxConcurrentRequests?: number;
   maxQueueSize?: number;
@@ -153,7 +163,8 @@ export type ManagedModelPullRequest = {
 export type ManagedModelCreateRuntimeRequest = {
   name?: string;
   modelName?: string;
-  runtime: ManagedModelRuntimeKind;
+  /** Use "auto" to pick artifact.runtimeHints[0] (HF → worker closed-loop). */
+  runtime: ManagedModelRuntimeKind | "auto";
   artifactId?: string;
   host?: string;
   port?: number;
@@ -164,6 +175,7 @@ export type ManagedModelCreateRuntimeRequest = {
   upstreamModel?: string;
   command?: string;
   args?: string[];
+  loraAdapters?: ManagedLoraAdapter[];
   maxConcurrentRequests?: number;
   maxQueueSize?: number;
   retryMaxRetries?: number;
@@ -245,13 +257,20 @@ export class ManagedModelManager {
   private executionState = new Map<string, RuntimeExecutionState>();
   private healthIntervalMs: number;
   private healthTimer?: NodeJS.Timeout;
+  private llamaCppOverrides?: Partial<LlamaCppDeployConfig> | (() => Partial<LlamaCppDeployConfig>);
 
-  constructor(options?: { statePath?: string; artifactDir?: string }) {
+  constructor(options?: {
+    statePath?: string;
+    artifactDir?: string;
+    /** Deploy-time llama.cpp gate (from ConfigStore.workers.llamaCpp or env). */
+    llamaCpp?: Partial<LlamaCppDeployConfig> | (() => Partial<LlamaCppDeployConfig>);
+  }) {
     const configured = options?.statePath ?? process.env.KGM_MODEL_STATE_PATH ?? "data/models/store";
     const { stateRoot, legacyMonolithicCatalog } = resolveConfiguredModelStateRoot(configured);
     this.stateRoot = stateRoot;
     this.artifactDir = path.resolve(options?.artifactDir ?? process.env.KGM_MODEL_ARTIFACT_DIR ?? "data/model-artifacts");
     this.healthIntervalMs = parseNumber(process.env.KGM_MODEL_HEALTHCHECK_INTERVAL_MS) ?? 15000;
+    this.llamaCppOverrides = options?.llamaCpp;
     fs.mkdirSync(this.stateRoot, { recursive: true });
     fs.mkdirSync(this.artifactDir, { recursive: true });
     if (legacyMonolithicCatalog) {
@@ -270,6 +289,11 @@ export class ManagedModelManager {
     }
     this.persist();
     this.startHealthChecker();
+  }
+
+  private resolveLlamaCppConfig() {
+    const raw = typeof this.llamaCppOverrides === "function" ? this.llamaCppOverrides() : this.llamaCppOverrides;
+    return resolveLlamaCppDeployConfig(raw);
   }
 
   close(): void {
@@ -560,13 +584,16 @@ export class ManagedModelManager {
         };
 
     const artifact = await this.pull(requests.pull);
+    const requestedRuntime =
+      request.runtime?.runtime
+      ?? (requests.runtime.runtime === "openai-compatible" && artifact.runtimeHints.includes("native")
+        ? "native"
+        : requests.runtime.runtime === "openai-compatible" && !artifact.runtimeHints.includes("native")
+          ? "auto"
+          : requests.runtime.runtime);
     const runtime = this.createRuntime({
       ...requests.runtime,
-      runtime:
-        request.runtime?.runtime
-        ?? (requests.runtime.runtime === "openai-compatible" && artifact.runtimeHints.includes("native")
-          ? "native"
-          : requests.runtime.runtime),
+      runtime: requestedRuntime,
       artifactId: artifact.id,
     });
     if (request.autoStart) {
@@ -707,7 +734,16 @@ export class ManagedModelManager {
 
   createRuntime(request: ManagedModelCreateRuntimeRequest): ManagedModelRuntime {
     const artifact = request.artifactId ? this.requireArtifact(request.artifactId) : undefined;
-    const runtime = request.runtime;
+    const assessment = assessArtifactExecution(artifact);
+    const llamaCpp = this.resolveLlamaCppConfig();
+    const runtime = resolveRuntimeKind({
+      requested: request.runtime,
+      artifact,
+      llamaCpp,
+    });
+    if (runtime === "llama.cpp") {
+      assertLlamaCppCallable(llamaCpp);
+    }
     const host = request.host ?? "127.0.0.1";
     const port = request.port ?? defaultPort(runtime);
     const baseUrl = request.baseUrl ?? defaultBaseUrl(runtime, host, port);
@@ -734,6 +770,7 @@ export class ManagedModelManager {
       upstreamModel,
       command: request.command ?? defaultCommand(runtime),
       args: request.args,
+      loraAdapters: request.loraAdapters?.map((adapter) => ({ ...adapter })),
       maxConcurrentRequests: request.maxConcurrentRequests ?? defaultMaxConcurrent(runtime),
       maxQueueSize: request.maxQueueSize ?? defaultMaxQueueSize(runtime),
       retryMaxRetries: request.retryMaxRetries ?? defaultRetryMaxRetries(),
@@ -741,9 +778,19 @@ export class ManagedModelManager {
       circuitBreakerCooldownMs: request.circuitBreakerCooldownMs ?? defaultCircuitBreakerCooldownMs(),
       healthPath: request.healthPath ?? "/health",
       healthStatus: "unknown",
-      notes: runtimeNotes(runtime, artifact),
+      notes: [
+        ...runtimeNotes(runtime, artifact),
+        `execution_path:${assessment.path}`,
+        `weight_format:${assessment.format}`,
+        `execution_reason:${assessment.reason}`,
+        ...(request.runtime === "auto" ? ["runtime_resolved_from:auto"] : []),
+      ],
       tags: [],
-      metadata: artifact ? { artifactId: artifact.id, sourceType: artifact.sourceType } : {},
+      metadata: {
+        ...(artifact ? { artifactId: artifact.id, sourceType: artifact.sourceType } : {}),
+        executionPolicy: assessment,
+        resolvedFrom: request.runtime === "auto" ? "auto" : "explicit",
+      },
       createdAt,
       updatedAt: createdAt,
     };
@@ -771,6 +818,13 @@ export class ManagedModelManager {
 
     if (next.runtime === "native") {
       const artifact = next.artifactId ? this.requireArtifact(next.artifactId) : undefined;
+      const assessment = assessArtifactExecution(artifact);
+      if (!assessment.nativeAllowed) {
+        this.patchRuntime(id, { status: "error", lastError: assessment.reason });
+        throw new Error(
+          `native_runtime_not_allowed:${assessment.reason};use_via_worker:${assessment.recommendedRuntimes.join(",")}`,
+        );
+      }
       const modelPath = artifact?.localPath;
       if (!modelPath) {
         throw new Error("Yueli KGM Runtime requires local model artifact");
@@ -788,7 +842,9 @@ export class ManagedModelManager {
           ? "native-core"
           : process.env.KGM_NATIVE_SERVING_BACKEND === "js-reference"
             ? "js-reference"
-            : "auto",
+            : process.env.KGM_NATIVE_SERVING_BACKEND === "native-gpu"
+              ? "native-gpu"
+              : "auto",
         seed: parseValidatedNumber(process.env.KGM_NATIVE_RUNTIME_SEED, 1, 0, Number.MAX_SAFE_INTEGER, "KGM_NATIVE_RUNTIME_SEED"),
       });
       const manifest = engine.manifest();
@@ -846,7 +902,24 @@ export class ManagedModelManager {
       return this.requireRuntime(id);
     }
 
-    const spawnConfig = this.buildSpawnConfig(next);
+    if (next.runtime === "llama.cpp") {
+      try {
+        const status = assertLlamaCppCallable(this.resolveLlamaCppConfig());
+        if (status.resolvedCommand) {
+          this.patchRuntime(id, {
+            command: status.resolvedCommand,
+            notes: Array.from(
+              new Set([...(next.notes ?? []), `llama_cpp_binary:${status.resolvedCommand}`, ...(status.version ? [`llama_cpp_version:${status.version}`] : [])]),
+            ),
+          });
+        }
+      } catch (error) {
+        this.patchRuntime(id, { status: "error", lastError: String(error) });
+        throw error;
+      }
+    }
+
+    const spawnConfig = this.buildSpawnConfig(this.requireRuntime(id));
     const child = spawn(spawnConfig.command, spawnConfig.args, {
       cwd: spawnConfig.cwd,
       detached: false,
@@ -1424,6 +1497,7 @@ export class ManagedModelManager {
               runtime.host,
               "--port",
               String(runtime.port),
+              ...buildLoraSpawnArgs("llama.cpp", runtime.loraAdapters),
             ],
         };
       case "vllm":
@@ -1438,6 +1512,7 @@ export class ManagedModelManager {
               runtime.host,
               "--port",
               String(runtime.port),
+              ...buildLoraSpawnArgs("vllm", runtime.loraAdapters),
             ],
           env: runtime.apiKey ? { VLLM_API_KEY: runtime.apiKey } : undefined,
         };
@@ -1455,6 +1530,7 @@ export class ManagedModelManager {
               runtime.host,
               "--port",
               String(runtime.port),
+              ...buildLoraSpawnArgs("sglang", runtime.loraAdapters),
             ],
         };
       case "mlx":
@@ -1569,6 +1645,44 @@ export class ManagedModelManager {
       return;
     }
     throw new Error(`model_not_found:${id}`);
+  }
+
+  /**
+   * Attach LoRA adapters to a managed runtime (applied on next start/restart).
+   */
+  attachLoraAdapters(runtimeId: string, adapters: ManagedLoraAdapter[]): ManagedModelRuntime {
+    const runtime = this.requireRuntime(runtimeId);
+    if (runtime.runtime === "native" || runtime.runtime === "openai-compatible" || runtime.runtime === "ollama") {
+      throw new Error(`lora_not_supported_for_runtime:${runtime.runtime}`);
+    }
+    const normalized = adapters
+      .map((adapter) => ({
+        name: adapter.name.trim(),
+        path: adapter.path.trim(),
+        ...(typeof adapter.scale === "number" ? { scale: adapter.scale } : {}),
+      }))
+      .filter((adapter) => adapter.name && adapter.path);
+    if (normalized.length === 0) {
+      throw new Error("lora_adapters_required");
+    }
+    const merged = [...(runtime.loraAdapters ?? [])];
+    for (const adapter of normalized) {
+      const idx = merged.findIndex((item) => item.name === adapter.name);
+      if (idx >= 0) {
+        merged[idx] = adapter;
+      } else {
+        merged.push(adapter);
+      }
+    }
+    this.patchRuntime(runtimeId, {
+      loraAdapters: merged,
+      notes: Array.from(new Set([...(runtime.notes ?? []), "lora_adapters_attached"])),
+    });
+    return this.requireRuntime(runtimeId);
+  }
+
+  listLoraAdapters(runtimeId: string): ManagedLoraAdapter[] {
+    return [...(this.requireRuntime(runtimeId).loraAdapters ?? [])];
   }
 
   /**
@@ -2127,12 +2241,35 @@ function defaultApiPath(runtime: ManagedModelRuntimeKind): string {
   return "/chat/completions";
 }
 
+function buildLoraSpawnArgs(
+  runtime: Extract<ManagedModelRuntimeKind, "vllm" | "sglang" | "llama.cpp">,
+  adapters: ManagedLoraAdapter[] | undefined,
+): string[] {
+  if (!adapters?.length) return [];
+  switch (runtime) {
+    case "vllm":
+      return adapters.flatMap((adapter) => ["--lora-modules", `${adapter.name}=${adapter.path}`]);
+    case "sglang":
+      return adapters.flatMap((adapter) => ["--lora-path", adapter.path]);
+    case "llama.cpp":
+      return adapters.flatMap((adapter) =>
+        typeof adapter.scale === "number"
+          ? ["--lora", adapter.path, "--lora-scaled", String(adapter.scale)]
+          : ["--lora", adapter.path],
+      );
+    default: {
+      const _exhaustive: never = runtime;
+      return _exhaustive;
+    }
+  }
+}
+
 function defaultCommand(runtime: ManagedModelRuntimeKind): string {
   switch (runtime) {
     case "native":
       return process.execPath;
     case "llama.cpp":
-      return process.env.KGM_LLAMA_SERVER_CMD ?? "llama-server";
+      return resolveLlamaCppDeployConfig().command;
     case "ollama":
       return process.env.KGM_OLLAMA_CMD ?? "ollama";
     case "vllm":

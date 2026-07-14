@@ -66,6 +66,8 @@ export type GraphStore = {
     source?: string;
     namespace?: string;
   }): Promise<GraphEdge[]>;
+  /** 列举命名空间内全部边（开放格式导出用） */
+  listTriples?(params?: { namespace?: string }): Promise<GraphEdge[]>;
 };
 
 export class InMemoryGraphStore implements GraphStore {
@@ -306,6 +308,10 @@ export class InMemoryGraphStore implements GraphStore {
       }
     }
     return added;
+  }
+
+  async listTriples(params?: { namespace?: string }): Promise<GraphEdge[]> {
+    return Array.from(this.edgesFor(params?.namespace).values());
   }
 
   private edgesFor(namespace?: string): Map<string, GraphEdge> {

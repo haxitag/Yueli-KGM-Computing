@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { ConfigStore } from "../core/configStore.js";
+import { probeLlamaCppDeploy } from "./llamaCppDeploy.js";
 
 export type RuntimeIssue = {
   code: string;
@@ -45,6 +46,41 @@ export function collectRuntimeDiagnostics(configStore: ConfigStore): { issues: R
       suggestedFix: "Unset KGM_MOCK_MODE or set KGM_MOCK_MODE=0 for production deployments",
     });
   }
+
+  const llama = probeLlamaCppDeploy({
+    enabled: config.workers.llamaCpp.enabled,
+    command: config.workers.llamaCpp.command,
+    installHint: config.workers.llamaCpp.installHint,
+  });
+  if (config.workers.llamaCpp.enabled === "on" && !llama.installed) {
+    issues.push({
+      code: "LLAMA_CPP_REQUIRED_BUT_MISSING",
+      severity: "error",
+      stage: "workers.llama_cpp",
+      message: "llama.cpp is required by deploy config but llama-server was not found",
+      affectedFeatures: ["runtime.llama.cpp", "gguf_local_ops"],
+      suggestedFix: llama.remediation.join(" "),
+    });
+  } else if (config.workers.llamaCpp.enabled === "auto" && !llama.installed) {
+    issues.push({
+      code: "LLAMA_CPP_OPTIONAL_NOT_INSTALLED",
+      severity: "warning",
+      stage: "workers.llama_cpp",
+      message: "llama.cpp binary not found; GGUF via llama.cpp worker is unavailable until installed",
+      affectedFeatures: ["runtime.llama.cpp", "gguf_local_ops"],
+      suggestedFix: llama.remediation.join(" "),
+    });
+  } else if (config.workers.llamaCpp.enabled === "off") {
+    issues.push({
+      code: "LLAMA_CPP_DISABLED",
+      severity: "info",
+      stage: "workers.llama_cpp",
+      message: "llama.cpp worker is disabled by deploy config",
+      affectedFeatures: ["runtime.llama.cpp"],
+      suggestedFix: "Set workers.llamaCpp.enabled=auto|on or KGM_LLAMA_CPP_ENABLED=auto|on to allow local GGUF operators",
+    });
+  }
+
   return { issues };
 }
 

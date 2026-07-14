@@ -110,6 +110,23 @@ export type YueliAiGatewayConfig = {
 
 export type YueliAiGatewayConfigPatch = Partial<YueliAiGatewayConfig>;
 
+/** Optional local operator workers (deploy-time). */
+export type LlamaCppWorkerConfig = {
+  /** on | off | auto — see docs/算子几llamaCPP.md */
+  enabled: "on" | "off" | "auto";
+  /** llama-server binary or PATH name */
+  command: string;
+  installHint?: string;
+};
+
+export type WorkersConfig = {
+  llamaCpp: LlamaCppWorkerConfig;
+};
+
+export type WorkersConfigPatch = {
+  llamaCpp?: Partial<LlamaCppWorkerConfig>;
+};
+
 export type ModelPricingConfig = {
   inputPer1kTokens: number;
   outputPer1kTokens: number;
@@ -253,6 +270,7 @@ export type KgmConfig = {
   routing: BusinessRoutingConfig;
   autoRouting: AutoRoutingConfig;
   yueliai: YueliAiGatewayConfig;
+  workers: WorkersConfig;
   playground: PlaygroundConfig;
 };
 
@@ -267,6 +285,7 @@ export type KgmConfigPatch = {
   routing?: Partial<BusinessRoutingConfig>;
   autoRouting?: AutoRoutingConfigPatch;
   yueliai?: YueliAiGatewayConfigPatch;
+  workers?: WorkersConfigPatch;
   playground?: PlaygroundConfigPatch;
 };
 
@@ -578,6 +597,14 @@ const defaultConfig: KgmConfig = {
     upstreamPrefix: "/api",
     timeoutMs: 120_000,
   },
+  workers: {
+    llamaCpp: {
+      enabled: "auto",
+      command: "llama-server",
+      installHint:
+        "Install llama.cpp llama-server; set workers.llamaCpp.command or KGM_LLAMA_SERVER_CMD; KGM_LLAMA_CPP_ENABLED=on|off|auto",
+    },
+  },
   playground: {
     skills: [
       {
@@ -689,7 +716,23 @@ function mergeConfig(base: KgmConfig, patch: KgmConfigPatch): KgmConfig {
     routing: { ...base.routing, ...(patch.routing ?? {}) },
     autoRouting: mergeAutoRoutingConfig(base.autoRouting, patch.autoRouting),
     yueliai: mergeYueliAiGatewayConfig(base.yueliai, patch.yueliai),
+    workers: mergeWorkersConfig(base.workers, patch.workers),
     playground: mergePlaygroundConfig(base.playground, patch.playground),
+  };
+}
+
+function mergeWorkersConfig(base: WorkersConfig, patch?: WorkersConfigPatch): WorkersConfig {
+  if (!patch?.llamaCpp) {
+    return base;
+  }
+  return {
+    llamaCpp: {
+      ...base.llamaCpp,
+      ...patch.llamaCpp,
+      enabled: patch.llamaCpp.enabled ?? base.llamaCpp.enabled,
+      command: patch.llamaCpp.command?.trim() || base.llamaCpp.command,
+      installHint: patch.llamaCpp.installHint ?? base.llamaCpp.installHint,
+    },
   };
 }
 

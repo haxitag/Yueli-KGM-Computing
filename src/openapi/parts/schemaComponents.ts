@@ -284,6 +284,43 @@ export const openApiSchemaComponents: Record<string, unknown> = {
     },
   },
   GraphTriplesResult: { type: "object", properties: { status: { type: "string" }, count: { type: "integer" }, triples: { type: "array" } } },
+  GraphExportRequest: {
+    type: "object",
+    anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
+    properties: {
+      format: {
+        type: "string",
+        enum: ["jsonld", "ntriples", "turtle", "graphml", "json-triples"],
+        description: "开放导出格式；默认 jsonld",
+      },
+      userId: { type: "string" },
+      namespace: { type: "string" },
+    },
+  },
+  GraphExportResult: {
+    type: "object",
+    properties: {
+      status: { type: "string" },
+      format: { type: "string" },
+      contentType: { type: "string" },
+      body: { type: "string" },
+      tripleCount: { type: "integer" },
+      antiLockIn: { type: "object" },
+    },
+  },
+  GraphImportRequest: {
+    type: "object",
+    anyOf: [{ required: ["userId"] }, { required: ["namespace"] }],
+    properties: {
+      format: { type: "string" },
+      content: { type: "string" },
+      body: { type: "string" },
+      triples: { type: "array" },
+      source: { type: "string" },
+      userId: { type: "string" },
+      namespace: { type: "string" },
+    },
+  },
   ImageEmbed: {
     type: "object",
     description:

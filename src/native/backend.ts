@@ -131,8 +131,13 @@ export function createNativeServingBackend(
 
 /** Stable prefix for integration tests; trailing text explains remediation. */
 const NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG =
-  "native_gpu_backend_not_implemented: accelerated inference path is not shipped in this build; " +
-  "set KGM_NATIVE_GPU_SIMULATED=1 to delegate to js-reference for simulation, or choose servingBackend js-reference / native-core.";
+  "native_gpu_backend_not_implemented: accelerated inference kernels are not shipped; " +
+  "for production GPU throughput use managed vLLM/SGLang (createRuntime auto / gpu_throughput/plan); " +
+  "set KGM_NATIVE_GPU_SIMULATED=1 only to delegate to js-reference for labeled simulation.";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 class NativeGpuServingBackend implements NativeServingBackend {
   readonly kind = "native-gpu" as const;
@@ -169,14 +174,49 @@ class NativeGpuServingBackend implements NativeServingBackend {
 
   async complete(_prompt: string, _options?: CompletionOptions): Promise<CompletionResult> {
     if (this.simDelegate) {
-      return this.simDelegate.complete(_prompt, _options);
+      const result = await this.simDelegate.complete(_prompt, _options);
+      return {
+        text: result.text,
+        raw: {
+          ...(isRecord(result.raw) ? result.raw : { upstream: result.raw }),
+          nativeRuntime: {
+            ...(isRecord(result.raw) && isRecord((result.raw as { nativeRuntime?: unknown }).nativeRuntime)
+              ? ((result.raw as { nativeRuntime: Record<string, unknown> }).nativeRuntime)
+              : {}),
+            servingBackend: "native-gpu(sim→js-reference)",
+            simulated: true,
+            simulatedVia: "KGM_NATIVE_GPU_SIMULATED=1",
+            productionGpuKernels: false,
+          },
+        },
+      };
     }
     throw new Error(NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG);
   }
 
   async *streamComplete(_prompt: string, _options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
     if (this.simDelegate) {
-      yield* this.simDelegate.streamComplete(_prompt, _options);
+      for await (const event of this.simDelegate.streamComplete(_prompt, _options)) {
+        if (event.type === "finished") {
+          yield {
+            type: "finished",
+            result: {
+              text: event.result.text,
+              raw: {
+                ...(isRecord(event.result.raw) ? event.result.raw : { upstream: event.result.raw }),
+                nativeRuntime: {
+                  servingBackend: "native-gpu(sim→js-reference)",
+                  simulated: true,
+                  simulatedVia: "KGM_NATIVE_GPU_SIMULATED=1",
+                  productionGpuKernels: false,
+                },
+              },
+            },
+          };
+        } else {
+          yield event;
+        }
+      }
       return;
     }
     throw new Error(NATIVE_GPU_BACKEND_NOT_IMPLEMENTED_MSG);

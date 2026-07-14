@@ -5,6 +5,7 @@ import { InferenceDiscoveryService } from "../../runtime/discoveryService.js";
 import { collectRuntimeDiagnostics, inferConfigSource } from "../../runtime/diagnosticsCollector.js";
 import { resolveRuntimeTopology } from "../../runtime/topologyResolver.js";
 import { explainRuntimeRoute } from "../../runtime/routeExplainer.js";
+import { probeLlamaCppDeploy } from "../../runtime/llamaCppDeploy.js";
 
 export type RuntimeRouteParams = {
   method: string;
@@ -59,8 +60,27 @@ export async function handleRuntimeRoute(params: RuntimeRouteParams): Promise<bo
         source: inferConfigSource("embedding", embeddingDiscovered),
       },
       native: topology.paths.native,
+      workers: {
+        llamaCpp: probeLlamaCppDeploy({
+          enabled: config.workers.llamaCpp.enabled,
+          command: config.workers.llamaCpp.command,
+          installHint: config.workers.llamaCpp.installHint,
+        }),
+      },
       blockingIssues: diagnostics.issues.filter((issue) => issue.severity === "error"),
     });
+  }
+  if (method === "GET" && pathname === "/v1/runtime/workers/llama.cpp") {
+    const config = params.configStore.get();
+    return send(
+      params,
+      200,
+      probeLlamaCppDeploy({
+        enabled: config.workers.llamaCpp.enabled,
+        command: config.workers.llamaCpp.command,
+        installHint: config.workers.llamaCpp.installHint,
+      }),
+    );
   }
   if (method === "GET" && pathname === "/v1/runtime/topology") {
     return send(params, 200, topology);

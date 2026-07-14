@@ -66,7 +66,16 @@ export function createRuntime(params: {
   const sessionStore = new SessionStore(configStore.get().context.sessionDir);
   const graphStore = params.graphStore ?? new InMemoryGraphStore();
   const sandboxManager = new SandboxManager();
-  const modelManager = new ManagedModelManager();
+  const modelManager = new ManagedModelManager({
+    llamaCpp: () => {
+      const worker = configStore.get().workers.llamaCpp;
+      return {
+        enabled: worker.enabled,
+        command: worker.command,
+        installHint: worker.installHint,
+      };
+    },
+  });
   const autoRoutingAuditStore = new AutoRoutingAuditStore();
 
   const schemaRegistry = new SchemaRegistry();

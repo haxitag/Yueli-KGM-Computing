@@ -135,7 +135,9 @@ KGM 主包聚焦统一推理入口、模型与引擎生命周期、动态路由�
 - KGM 不做 multi-agent orchestration
 - KGM 不持有应用端 UI 状态
 
-Agent、Workflow、Evaluation、Skills registry 等高层能力建议以 plugin extension 形式挂载，避免主包承担应用编排职责。
+Agent、Workflow、Skills registry 等高层能力建议以 plugin extension 形式挂载，避免主包承担应用编排职责。
+
+**Evaluation / FDE**：Context 层选型评估框架（FDE）由**独立组件**承载，**不在 KGM 主包实现**。KGM 仅提供可运行的 ContextBuilder / YCB 汇合面，供外部 FDE 挂接评测。
 
 ---
 

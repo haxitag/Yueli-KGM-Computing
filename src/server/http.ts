@@ -66,7 +66,17 @@ import { validateEnv } from "../config/envValidation.js";
 import { setupGracefulShutdown } from "../observability/gracefulShutdown.js";
 import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
 import { handleRuntimeRoute } from "./routes/runtime.js";
+import { handleGraphRoute } from "./routes/graph.js";
 import { buildEffectiveModels, buildRawModels } from "../models/modelTypeAnnotator.js";
+import { getWeightCapabilityReport } from "../native/weightCapabilities.js";
+import {
+  assessArtifactExecution,
+  getNativeGpuClosedLoopStatus,
+  resolveRuntimeKind,
+} from "../native/executionPolicy.js";
+import { inferRuntimeHintsForModelPath } from "../models/modelManager.js";
+import { planGpuThroughput } from "../inference/gpuThroughputRouter.js";
+import type { ManagedLoraAdapter } from "../models/modelManager.js";
 import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
 import { appendHttpAccessLog, snapshotHttpAccessLog } from "./httpRequestRing.js";
 import { handleYueliaiRoute } from "../yueliai/routes.js";
@@ -96,7 +106,18 @@ export function createKgmRequestListener(
   const env = validateEnv();
   logger.info({ env: { NODE_ENV: env.NODE_ENV, PORT: env.PORT } }, 'Environment validated');
 
-  const modelManager = params.modelManager ?? new ManagedModelManager();
+  const modelManager =
+    params.modelManager ??
+    new ManagedModelManager({
+      llamaCpp: () => {
+        const worker = params.configStore.get().workers.llamaCpp;
+        return {
+          enabled: worker.enabled,
+          command: worker.command,
+          installHint: worker.installHint,
+        };
+      },
+    });
   const routingHistory = createRoutingHistoryStoreFromEnv();
   const responseStore = new OpenAiResponseStore();
   const access = new HttpRequestAccess(createHttpAccessConfigFromEnv());
@@ -661,6 +682,29 @@ export function createKgmRequestListener(
           modelManager,
           discoveryService,
           startedAt,
+        });
+        if (handled) return;
+      }
+
+      if (
+        req.method === "POST" &&
+        (url.pathname === "/v1/kgm/graph/export" ||
+          url.pathname === "/v1/kgm/graph/import" ||
+          url.pathname === "/v1/kgm/graph/query" ||
+          url.pathname === "/v1/kgm/graph/reason/dual_track")
+      ) {
+        const body = await readJson(req);
+        const handled = await handleGraphRoute({
+          method: req.method,
+          pathname: url.pathname,
+          body,
+          res,
+          sendJson,
+          graphStore: params.graphStore,
+          memoryStore: params.memoryStore,
+          embedder: params.embedder,
+          llm: params.llmClient,
+          requireGraphNamespace,
         });
         if (handled) return;
       }
@@ -1892,7 +1936,7 @@ export function createKgmRequestListener(
         const payload = (await readJson(req)) as {
           name?: string;
           modelName?: string;
-          runtime: "native" | "llama.cpp" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible";
+          runtime: "native" | "llama.cpp" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible" | "auto";
           artifactId?: string;
           host?: string;
           port?: number;
@@ -1903,13 +1947,111 @@ export function createKgmRequestListener(
           upstreamModel?: string;
           command?: string;
           args?: string[];
+          loraAdapters?: ManagedLoraAdapter[];
         };
-        const runtime = modelManager.createRuntime(payload);
-        return sendJson(res, 200, { runtime });
+        try {
+          const runtime = modelManager.createRuntime(payload);
+          return sendJson(res, 200, { runtime });
+        } catch (error) {
+          return sendJson(res, 400, kgmErrorBody("runtime_create_failed", String(error), 400));
+        }
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
+        url.pathname.endsWith("/lora")
+      ) {
+        const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
+        const payload = (await readJson(req)) as { adapters?: ManagedLoraAdapter[]; adapter?: ManagedLoraAdapter };
+        const adapters = payload.adapters ?? (payload.adapter ? [payload.adapter] : []);
+        try {
+          const runtime = modelManager.attachLoraAdapters(id, adapters);
+          return sendJson(res, 200, { runtime, loraAdapters: runtime.loraAdapters ?? [] });
+        } catch (error) {
+          return sendJson(res, 400, kgmErrorBody("lora_attach_failed", String(error), 400));
+        }
+      }
+
+      if (
+        req.method === "GET" &&
+        url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
+        url.pathname.endsWith("/lora")
+      ) {
+        const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
+        try {
+          return sendJson(res, 200, { loraAdapters: modelManager.listLoraAdapters(id) });
+        } catch {
+          return sendJson(res, 404, { error: "runtime_not_found" });
+        }
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/kgm/weights/capabilities") {
+        return sendJson(res, 200, getWeightCapabilityReport());
+      }
+
+      if (req.method === "POST" && url.pathname === "/v1/kgm/weights/resolve") {
+        const payload = (await readJson(req)) as {
+          artifactId?: string;
+          localPath?: string;
+          runtimeHints?: Array<"native" | "llama.cpp" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible">;
+          requestedRuntime?: "auto" | "native" | "llama.cpp" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible";
+        };
+        const artifact = payload.artifactId
+          ? modelManager.getArtifact(payload.artifactId)
+          : payload.localPath
+            ? {
+                id: "ephemeral",
+                name: "ephemeral",
+                modelName: "ephemeral",
+                sourceType: "local" as const,
+                sourceRef: payload.localPath,
+                localPath: payload.localPath,
+                status: "ready" as const,
+                runtimeHints: payload.runtimeHints ?? inferRuntimeHintsForModelPath(payload.localPath),
+                notes: [],
+                tags: [],
+                metadata: {},
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              }
+            : undefined;
+        const assessment = assessArtifactExecution(artifact);
+        let resolvedRuntime: string | undefined;
+        let resolveError: string | undefined;
+        try {
+          resolvedRuntime = resolveRuntimeKind({
+            requested: payload.requestedRuntime ?? "auto",
+            artifact,
+          });
+        } catch (error) {
+          resolveError = String(error);
+        }
+        return sendJson(res, 200, {
+          assessment,
+          resolvedRuntime,
+          resolveError,
+          nativeGpu: getNativeGpuClosedLoopStatus(),
+          closedLoop: getWeightCapabilityReport().closedLoop,
+        });
+      }
+
+      if (req.method === "POST" && url.pathname === "/v1/kgm/runtime/gpu_throughput/plan") {
+        const payload = (await readJson(req)) as {
+          preference?: "vllm" | "sglang" | "auto";
+          modelName?: string;
+        };
+        return sendJson(res, 200, planGpuThroughput({
+          modelManager,
+          preference: payload.preference,
+          modelName: payload.modelName,
+        }));
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
-        const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/(start|stop)$/, "");
+        const id = url.pathname
+          .replace("/v1/kgm/models/runtimes/", "")
+          .replace(/\/(start|stop|lora|metrics)$/, "");
         const runtime = modelManager.getRuntime(id);
         if (!runtime) {
           return sendJson(res, 404, { error: "runtime_not_found" });

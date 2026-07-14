@@ -203,6 +203,57 @@ export function buildOpenApiPathsV1(): Record<string, unknown> {
         responses: { "200": j200("GraphTriplesResult"), ...postWithBody() },
       },
     },
+    "/v1/kgm/graph/export": {
+      post: {
+        summary: "开放格式导出（JSON-LD / N-Triples / Turtle / GraphML）",
+        requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/GraphExportRequest" } } } },
+        responses: { "200": j200("GraphExportResult"), ...postWithBody() },
+      },
+    },
+    "/v1/kgm/graph/import": {
+      post: {
+        summary: "开放格式导入",
+        requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/GraphImportRequest" } } } },
+        responses: { "200": { description: "导入结果" }, ...postWithBody() },
+      },
+    },
+    "/v1/kgm/graph/query": {
+      post: {
+        summary: "子图查询",
+        requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+        responses: { "200": { description: "子图" }, ...postWithBody() },
+      },
+    },
+    "/v1/kgm/graph/reason/dual_track": {
+      post: {
+        summary: "形式化+统计双轨推理",
+        requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+        responses: { "200": { description: "双轨结果" }, ...postWithBody() },
+      },
+    },
+    "/v1/kgm/weights/capabilities": {
+      get: { summary: "权重/LoRA 能力面", responses: { "200": { description: "能力报告" }, ...getOnly() } },
+    },
+    "/v1/kgm/weights/resolve": {
+      post: {
+        summary: "权重执行策略解析（HF→worker / native 闸门）",
+        requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+        responses: { "200": { description: "assessment + resolvedRuntime" }, ...postWithBody() },
+      },
+    },
+    "/v1/kgm/runtime/gpu_throughput/plan": {
+      post: {
+        summary: "GPU 吞吐 Worker 规划（vLLM/SGLang）",
+        requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+        responses: { "200": { description: "规划" }, ...postWithBody() },
+      },
+    },
+    "/v1/runtime/workers/llama.cpp": {
+      get: {
+        summary: "llama.cpp 部署探测（是否安装/可调用）",
+        responses: { "200": { description: "LlamaCppDeployStatus" }, ...getOnly() },
+      },
+    },
     "/v1/kgm/multimodal/embed": {
       post: {
         summary: "多模态向量（KGM 经 KGM_MULTIMODAL_* 调上游；见 components.schemas 说明）",

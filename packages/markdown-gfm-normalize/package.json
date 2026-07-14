@@ -16,8 +16,12 @@
     "dist",
     "src"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "devDependencies": {
