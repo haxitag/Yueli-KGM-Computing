@@ -28,11 +28,22 @@ export class ContextBuilder {
   private reportContextQuality?: ContextQualityReporter;
   private embeddingVersion?: string;
   private contextConfig?: ContextConfig;
+  private getContextConfig?: () => ContextConfig | undefined;
   private artifactStore?: ArtifactStore;
   private sessionStore?: SessionStore;
   private graphStore?: GraphStore;
   private ycbClient?: YcbClient;
   private retrievalCache = new Map<string, { expires: number; evidence: Evidence[] }>();
+  private retrievalCacheHits = 0;
+  private retrievalCacheMisses = 0;
+  private lastBuildAt?: string;
+  private lastBuildSummary?: {
+    evidenceCount: number;
+    signalCount: number;
+    graphEnabled: boolean;
+    ycbEvidenceCount: number;
+    budgetTruncated: number;
+  };
 
   constructor(params: {
     memoryStore: MemoryStore;
@@ -41,10 +52,11 @@ export class ContextBuilder {
     reportContextQuality?: ContextQualityReporter;
     embeddingVersion?: string;
     contextConfig?: ContextConfig;
+    /** Live getter so Playground config patches apply without restart */
+    getContextConfig?: () => ContextConfig | undefined;
     artifactStore?: ArtifactStore;
     sessionStore?: SessionStore;
     graphStore?: GraphStore;
-    /** 可选：外置 YCB 上下文，与本地检索合并进 evidence（平面二 → Runtime 汇合） */
     ycbClient?: YcbClient;
   }) {
     this.memoryStore = params.memoryStore;
@@ -53,10 +65,15 @@ export class ContextBuilder {
     this.reportContextQuality = params.reportContextQuality;
     this.embeddingVersion = params.embeddingVersion;
     this.contextConfig = params.contextConfig;
+    this.getContextConfig = params.getContextConfig;
     this.artifactStore = params.artifactStore;
     this.sessionStore = params.sessionStore;
     this.graphStore = params.graphStore;
     this.ycbClient = params.ycbClient;
+  }
+
+  private resolvedContext(): ContextConfig | undefined {
+    return this.getContextConfig?.() ?? this.contextConfig;
   }
 
   async build(request: KgmRequest): Promise<ContextPack> {
@@ -83,11 +100,23 @@ export class ContextBuilder {
       memOpts,
     );
     let evidence = this.applyEvidenceBudget([...ycbEvidence, ...memoryEvidence]);
+    const budgetTruncated = [...ycbEvidence, ...memoryEvidence].filter(
+      (item, idx) => evidence[idx]?.text !== item.text || Boolean(evidence[idx]?.artifact_ref),
+    ).length;
     const toolPolicy = this.applyToolPolicy(request.toolPolicy, Boolean(request.kgm?.graph?.enabled));
     const rawSessionRef = this.sessionStore
-      ? this.sessionStore.getRef(sessionId, this.contextConfig?.sessionPreviewChars ?? 240)
+      ? this.sessionStore.getRef(sessionId, this.resolvedContext()?.sessionPreviewChars ?? 240)
       : undefined;
     const sessionRef = rawSessionRef && rawSessionRef.sizeBytes > 0 ? rawSessionRef : undefined;
+
+    this.lastBuildAt = new Date().toISOString();
+    this.lastBuildSummary = {
+      evidenceCount: evidence.length,
+      signalCount: signals.length,
+      graphEnabled: Boolean(request.kgm?.graph?.enabled),
+      ycbEvidenceCount: ycbEvidence.length,
+      budgetTruncated,
+    };
 
     if (this.reportContextQuality) {
       const hitRate = evidence.length
@@ -135,16 +164,19 @@ export class ContextBuilder {
     topK: number,
     memOpts: MemorySearchOptions | undefined,
   ): Promise<Evidence[]> {
-    const ttl = this.contextConfig?.retrievalCacheTtlMs ?? 0;
+    const ttl = this.resolvedContext()?.retrievalCacheTtlMs ?? 0;
     if (ttl <= 0) {
+      this.retrievalCacheMisses += 1;
       return this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
     }
     const key = this.makeMemoryCacheKey(userId, input, topK, memOpts);
     const hit = this.retrievalCache.get(key);
     const now = Date.now();
     if (hit && hit.expires > now) {
+      this.retrievalCacheHits += 1;
       return hit.evidence;
     }
+    this.retrievalCacheMisses += 1;
     const evidence = await this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
     if (this.retrievalCache.size > 300) {
       const first = this.retrievalCache.keys().next().value;
@@ -156,9 +188,57 @@ export class ContextBuilder {
     return evidence;
   }
 
+  getObservabilityStats(): {
+    retrievalCache: {
+      enabled: boolean;
+      ttlMs: number;
+      entries: number;
+      hits: number;
+      misses: number;
+      hitRate: number | null;
+    };
+    evidenceBudget: {
+      maxEvidenceChars: number;
+      artifactPreviewChars: number;
+    };
+    lastBuildAt?: string;
+    lastBuildSummary?: {
+      evidenceCount: number;
+      signalCount: number;
+      graphEnabled: boolean;
+      ycbEvidenceCount: number;
+      budgetTruncated: number;
+    };
+  } {
+    const ttl = this.resolvedContext()?.retrievalCacheTtlMs ?? 0;
+    const total = this.retrievalCacheHits + this.retrievalCacheMisses;
+    return {
+      retrievalCache: {
+        enabled: ttl > 0,
+        ttlMs: ttl,
+        entries: this.retrievalCache.size,
+        hits: this.retrievalCacheHits,
+        misses: this.retrievalCacheMisses,
+        hitRate: total > 0 ? Number((this.retrievalCacheHits / total).toFixed(4)) : null,
+      },
+      evidenceBudget: {
+        maxEvidenceChars: this.resolvedContext()?.maxEvidenceChars ?? 800,
+        artifactPreviewChars: this.resolvedContext()?.artifactPreviewChars ?? 240,
+      },
+      lastBuildAt: this.lastBuildAt,
+      lastBuildSummary: this.lastBuildSummary,
+    };
+  }
+
+  clearRetrievalCache(): number {
+    const n = this.retrievalCache.size;
+    this.retrievalCache.clear();
+    return n;
+  }
+
   private applyEvidenceBudget(evidence: Evidence[]): Evidence[] {
-    const maxChars = this.contextConfig?.maxEvidenceChars ?? 800;
-    const previewChars = this.contextConfig?.artifactPreviewChars ?? 240;
+    const maxChars = this.resolvedContext()?.maxEvidenceChars ?? 800;
+    const previewChars = this.resolvedContext()?.artifactPreviewChars ?? 240;
     const artifactStore = this.artifactStore;
     if (!artifactStore) {
       return evidence.map((item) => ({
@@ -186,15 +266,15 @@ export class ContextBuilder {
       allowed: toolPolicy?.allowed ?? DEFAULT_TOOL_POLICY.allowed,
     };
     const systemTools: string[] = [];
-    if (this.contextConfig?.enableArtifactTool) {
+    if (this.resolvedContext()?.enableArtifactTool) {
       systemTools.push("read_artifact");
     }
-    if (this.contextConfig?.enableSessionTool) {
+    if (this.resolvedContext()?.enableSessionTool) {
       systemTools.push("read_session");
     }
-    if (this.contextConfig?.enableToolCatalogTool) {
+    if (this.resolvedContext()?.enableToolCatalogTool) {
       systemTools.push("list_tools", "describe_tool");
-      if (this.contextConfig?.includeSkillNames) {
+      if (this.resolvedContext()?.includeSkillNames) {
         systemTools.push("list_skills", "describe_skill");
       }
     }

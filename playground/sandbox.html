@@ -15,7 +15,21 @@
 
     <main class="runtime-page-main">
         <section class="runtime-page-intro-block">
-            <p>虚拟计算机、浏览器、移动端沙箱的<strong>最小嵌入控制台</strong>。默认可为 simulated 模式，生产环境可替换为真实 adapter（见服务端配置）。</p>
+            <p>
+                虚拟计算机 / 浏览器 / 移动端沙箱的<strong>真实控制面</strong>（<code>/v1/kgm/sandboxes</code>）。
+                未配置 adapter 时实例为 <code>unconfigured</code>：可创建与列表，但<strong>启动会 503</strong>。
+                可在主页「配置 → 沙箱 adapter」写入 ConfigStore，或设置 <code>KGM_SANDBOX_*_USE_EMBEDDED=1</code> / START/STOP/STATUS 命令。
+            </p>
+        </section>
+
+        <section class="sandbox-adapter-panel">
+            <h2>Adapter 状态</h2>
+            <p class="helper-text">来源 <code>GET /v1/kgm/sandboxes/adapters</code>。改配置后点刷新，或回主页「配置」保存。</p>
+            <div id="sandbox-adapter-status"></div>
+            <div class="sandbox-actions" style="margin-top:10px">
+                <button type="button" id="refresh-adapters-btn" class="btn btn-secondary">刷新 adapter</button>
+                <a href="index.html" class="btn btn-secondary">打开 Playground 配置</a>
+            </div>
         </section>
 
         <section class="sandbox-panel">

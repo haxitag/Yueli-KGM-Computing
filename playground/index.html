@@ -40,6 +40,9 @@
             <button type="button" class="nav-item nav-workspace active" data-workspace="chat" role="tab" aria-selected="true" title="推理对话 (⌘1)">对话</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="routing" role="tab" aria-selected="false" title="自动调度与审计 (⌘2)">路由</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="models" role="tab" aria-selected="false" title="模型制品 (⌘3)">模型</button>
+            <button type="button" class="nav-item nav-workspace" data-workspace="config" role="tab" aria-selected="false" title="服务端默认 LLM / 记忆 / Worker / 沙箱 (⌘7)">配置</button>
+            <button type="button" class="nav-item nav-workspace" data-workspace="memory" role="tab" aria-selected="false" title="记忆 / Cache / KV / Token (⌘6)">记忆</button>
+            <button type="button" class="nav-item nav-workspace" data-workspace="ops" role="tab" aria-selected="false" title="用量 / 访问 / 预算 / 别名 (⌘5)">运维</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="integration" role="tab" aria-selected="false" title="KCE / 技能 / MCP (⌘4)">集成</button>
         </nav>
 
@@ -61,6 +64,13 @@
         </nav>
 
         <span class="nav-spacer" aria-hidden="true"></span>
+
+        <nav class="nav-extensions ops-subnav is-hidden" id="ops-subnav" aria-label="运维子模块" role="tablist">
+            <button type="button" class="nav-item nav-ops" data-ops-tab="usage" role="tab" aria-selected="true" title="用量账本">用量</button>
+            <button type="button" class="nav-item nav-ops" data-ops-tab="keys" role="tab" aria-selected="false" title="虚拟调用钥">访问</button>
+            <button type="button" class="nav-item nav-ops" data-ops-tab="budgets" role="tab" aria-selected="false" title="事前预算">预算</button>
+            <button type="button" class="nav-item nav-ops" data-ops-tab="aliases" role="tab" aria-selected="false" title="模型别名">别名</button>
+        </nav>
 
         <nav class="nav-extensions integration-subnav is-hidden" id="integration-subnav" aria-label="集成子模块" role="tablist">
             <button type="button" class="nav-item nav-integration" data-int-tab="tasks" role="tab" aria-selected="false" title="KCE 任务">任务</button>
@@ -228,13 +238,71 @@
             </div>
         </div>
     </div>
+
+    <section class="sandbox-howto page-section" id="sandbox-howto" aria-labelledby="sandbox-howto-title">
+        <div class="section-head">
+            <h2 class="section-title" id="sandbox-howto-title">沙箱调用</h2>
+            <p class="section-desc">
+                <code>sandbox.html</code> 与下方 API / 工具共用同一套 <code>/v1/kgm/sandboxes</code> 控制面，
+                <strong>创建 / 列表 / 停止</strong>始终有效；
+                <strong>启动</strong>需配置外部 adapter，否则返回 <code>503 sandbox_adapter_required</code>
+                （当前默认 <code>runtimeMode=unconfigured</code>，并非假启动的 simulated）。
+            </p>
+        </div>
+        <div class="sandbox-howto-grid">
+            <div class="sandbox-howto-card">
+                <h3>1. 控制台</h3>
+                <p>顶部导航「沙箱」打开独立页，可创建 computer / browser / mobile 并启停。</p>
+                <p><a class="sandbox-howto-link" href="sandbox.html" target="_blank" rel="noopener noreferrer">打开 sandbox.html →</a></p>
+                <p class="sandbox-howto-status" id="sandbox-howto-status">正在探测 adapter 状态…</p>
+            </div>
+            <div class="sandbox-howto-card">
+                <h3>2. HTTP API</h3>
+                <pre class="sandbox-howto-code" id="sandbox-howto-curl">curl http://127.0.0.1:3000/v1/kgm/sandboxes
+
+curl -X POST http://127.0.0.1:3000/v1/kgm/sandboxes \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"browser","name":"demo-browser"}'
+
+curl -X POST http://127.0.0.1:3000/v1/kgm/sandboxes/&lt;id&gt;/start
+curl -X POST http://127.0.0.1:3000/v1/kgm/sandboxes/&lt;id&gt;/stop</pre>
+            </div>
+            <div class="sandbox-howto-card">
+                <h3>3. 对话内置工具</h3>
+                <p>开启「内建能力」后，模型可调用：</p>
+                <ul>
+                    <li><code>list_sandboxes</code> — 列表与预览</li>
+                    <li><code>start_sandbox</code> — <code>{"id":"sbx_…"}</code></li>
+                    <li><code>stop_sandbox</code> — <code>{"id":"sbx_…"}</code></li>
+                </ul>
+                <p class="helper-text">未配置 adapter 时 <code>start_sandbox</code> 同样会失败并返回配置提示。</p>
+            </div>
+            <div class="sandbox-howto-card">
+                <h3>4. 启用真实 runtime</h3>
+                <pre class="sandbox-howto-code"># 浏览器（Playwright）
+export KGM_SANDBOX_BROWSER_USE_EMBEDDED=1
+# 或显式命令 / WS：
+# KGM_SANDBOX_BROWSER_START_CMD / STOP_CMD / STATUS_CMD
+# KGM_SANDBOX_BROWSER_WS_ENDPOINT
+
+# 虚拟机（QEMU）
+export KGM_SANDBOX_COMPUTER_USE_EMBEDDED=1
+export KGM_SANDBOX_VM_IMAGE="/abs/path/disk.qcow2"
+
+# 移动端（Android Emulator）
+export KGM_SANDBOX_MOBILE_USE_EMBEDDED=1
+export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
+                <p class="helper-text">详见 <code>docs/deployment-and-api.md</code> § Sandbox adapters。</p>
+            </div>
+        </div>
+    </section>
     </div>
 
     <div id="workspace-integration" class="workspace-view" data-workspace="integration" hidden>
     <section class="integration-section page-section" id="integration-section">
         <div class="section-head">
             <h2 class="section-title">扩展集成</h2>
-            <p class="section-desc">KCE 任务、技能、MCP 与输出模板统一写入服务端 <code>playground</code> 字段；顶部子 Tab 切换模块。</p>
+            <p class="section-desc">KCE 任务、技能、MCP 与输出模板统一写入服务端 <code>playground</code> 字段。技能 / MCP 须编辑下方 JSON 的 <code>activeSkillIds</code> / <code>activeMcpIds</code> 并<strong>保存</strong>后才生效；操作见各子页提示与 <code>docs/Playground-Web端配置与管理.md</code>。</p>
         </div>
         <div class="integration-tab-panels">
             <div id="int-panel-tasks" class="integration-panel" role="tabpanel" hidden>
@@ -279,7 +347,13 @@
                 </div>
             </div>
             <div id="int-panel-skills" class="integration-panel" role="tabpanel" hidden>
-                <p class="integration-desc">技能定义与 <code>playground.skills</code> 同步；激活项注入系统提示，模型可通过 JSON <code>invoke_skill</code> 执行步骤。</p>
+                <p class="integration-desc">技能定义在下方 JSON 的 <code>skills</code>；<strong>激活</strong>靠把技能 <code>id</code> 写入 <code>activeSkillIds</code> 后点「保存到服务端」。</p>
+                <ol class="integration-howto">
+                    <li>点「从服务端加载」，在 JSON 里找到目标技能的 <code>id</code>（默认演示：<code>skill-weather-demo</code>）。</li>
+                    <li>设置 <code>"activeSkillIds": ["skill-weather-demo"]</code>（可多个）。</li>
+                    <li>点「保存到服务端」→ 对话区开启「内建能力」；模型会收到技能提示，并通过 <code>invoke_skill</code> 执行步骤。</li>
+                    <li>演示天气技能另需环境变量 <code>OPENWEATHER_API_KEY</code>；纯提示型技能只需激活即可。</li>
+                </ol>
                 <div class="integration-actions">
                     <label class="file-import-label">从 SKILL.md 导入
                         <input type="file" id="skill-md-import" accept=".md,text/markdown" style="display:none">
@@ -289,7 +363,13 @@
                 </div>
             </div>
             <div id="int-panel-mcp" class="integration-panel" role="tabpanel" hidden>
-                <p class="integration-desc">MCP HTTP（JSON-RPC）连接器；激活项写入系统提示，通过工具 <code>mcp_call</code> 调用（需完整端点 URL）。</p>
+                <p class="integration-desc">MCP 连接器 = 本机或外网的 <strong>HTTP JSON-RPC 完整 URL</strong>（如 <code>http://127.0.0.1:3100/mcp</code>）。当前运行时<strong>仅支持 HTTP POST</strong>，不支持原生 SSE / stdio 传输。</p>
+                <ol class="integration-howto">
+                    <li>在 JSON 的 <code>mcpConnectors</code> 增加一项：<code>id</code>、<code>name</code>、<code>enabled: true</code>、<code>transport: "http"</code>、<code>url</code>（必填完整端点）。</li>
+                    <li>把该 <code>id</code> 写入 <code>activeMcpIds</code>，再点「保存到服务端」（保存按钮在「技能」子页也可）。</li>
+                    <li>对话开启「内建能力」后，模型通过工具 <code>mcp_call</code>（参数 <code>connectorId</code> / <code>toolName</code> / <code>arguments</code>）调用远端工具。</li>
+                    <li>若上游只有 SSE MCP，需先用网关转成可 POST 的 HTTP JSON-RPC；纯 SSE URL 填入会失败。</li>
+                </ol>
             </div>
             <div id="int-panel-output" class="integration-panel" role="tabpanel" hidden>
                 <p class="integration-desc">输出模版支持 <code>{{变量名}}</code> 插槽；常用 <code>{{content}}</code> 为模型原文。</p>
@@ -367,6 +447,283 @@
     </section>
     </div>
 
+    <div id="workspace-config" class="workspace-view" data-workspace="config" hidden>
+    <section class="kgm-config-panel page-section">
+        <div class="routing-header">
+            <div>
+                <h2 class="section-title">服务端配置（P0）</h2>
+                <p class="section-desc">
+                    写入 <code>POST /v1/kgm/config</code>（持久化见 <code>KGM_CONFIG_PATH</code>）。
+                    顺序：默认 LLM+Embedding → 记忆后端/TTL → Worker 门闩 → 沙箱 adapter。
+                    API Key / DB 密码留空表示不改写。
+                </p>
+            </div>
+            <div class="routing-actions">
+                <button type="button" id="kgm-config-reload-btn">重新加载</button>
+                <button type="button" id="kgm-config-save-btn" class="primary-config-btn">保存全部</button>
+            </div>
+        </div>
+        <p id="kgm-config-status" class="helper-text">尚未加载</p>
+
+        <div class="kgm-config-sections">
+            <article class="routing-card kgm-config-card" id="cfg-section-llm">
+                <h3>1. 默认 LLM + Embedding</h3>
+                <p class="helper-text">进程内 <code>ConfigurableLlmClient</code> / <code>ConfigurableEmbedder</code>；保存后即时生效。</p>
+                <div class="kgm-config-grid">
+                    <fieldset class="kgm-config-fieldset">
+                        <legend>LLM</legend>
+                        <label class="option-field"><span>provider</span>
+                            <select id="cfg-llm-provider">
+                                <option value="openai">openai</option>
+                                <option value="custom">custom</option>
+                                <option value="ollama">ollama</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>baseUrl</span><input id="cfg-llm-base-url" type="url" placeholder="https://api.openai.com/v1"></label>
+                        <label class="option-field"><span>model</span><input id="cfg-llm-model" type="text"></label>
+                        <label class="option-field"><span>path</span><input id="cfg-llm-path" type="text" placeholder="/completions"></label>
+                        <label class="option-field"><span>mode</span>
+                            <select id="cfg-llm-mode">
+                                <option value="completions">completions</option>
+                                <option value="chat">chat</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>temperature</span><input id="cfg-llm-temperature" type="number" step="0.1" min="0" max="2"></label>
+                        <label class="option-field"><span>maxTokens</span><input id="cfg-llm-max-tokens" type="number" min="1"></label>
+                        <label class="option-field"><span>timeoutMs</span><input id="cfg-llm-timeout" type="number" min="1000"></label>
+                        <label class="option-field"><span>apiKey（留空不改）</span><input id="cfg-llm-api-key" type="password" autocomplete="off" placeholder="••••"></label>
+                        <p id="cfg-llm-api-key-hint" class="helper-text">—</p>
+                    </fieldset>
+                    <fieldset class="kgm-config-fieldset">
+                        <legend>Embedding</legend>
+                        <label class="option-field"><span>provider</span>
+                            <select id="cfg-emb-provider">
+                                <option value="openai">openai</option>
+                                <option value="custom">custom</option>
+                                <option value="ollama">ollama</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>baseUrl</span><input id="cfg-emb-base-url" type="url"></label>
+                        <label class="option-field"><span>model</span><input id="cfg-emb-model" type="text"></label>
+                        <label class="option-field"><span>path</span><input id="cfg-emb-path" type="text" placeholder="/embeddings"></label>
+                        <label class="option-field"><span>version</span><input id="cfg-emb-version" type="text"></label>
+                        <label class="option-field"><span>timeoutMs</span><input id="cfg-emb-timeout" type="number" min="1000"></label>
+                        <label class="option-field"><span>apiKey（留空不改）</span><input id="cfg-emb-api-key" type="password" autocomplete="off" placeholder="••••"></label>
+                        <p id="cfg-emb-api-key-hint" class="helper-text">—</p>
+                    </fieldset>
+                </div>
+            </article>
+
+            <article class="routing-card kgm-config-card" id="cfg-section-memory">
+                <h3>2. 记忆后端 / 检索缓存 TTL</h3>
+                <p class="helper-text">
+                    <code>database</code> + <code>vector</code> 在进程启动时创建 Hybrid Memory；改后端后需<strong>重启服务</strong>。
+                    <code>context.retrievalCacheTtlMs</code> 即时生效（0=关闭）。
+                </p>
+                <div class="kgm-config-grid">
+                    <fieldset class="kgm-config-fieldset">
+                        <legend>Database</legend>
+                        <label class="option-field"><span>provider</span>
+                            <select id="cfg-db-provider">
+                                <option value="sqlite">sqlite</option>
+                                <option value="postgresql">postgresql</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>filePath (sqlite)</span><input id="cfg-db-file" type="text"></label>
+                        <label class="option-field"><span>journalMode</span>
+                            <select id="cfg-db-journal">
+                                <option value="WAL">WAL</option>
+                                <option value="DELETE">DELETE</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>host</span><input id="cfg-db-host" type="text"></label>
+                        <label class="option-field"><span>port</span><input id="cfg-db-port" type="number"></label>
+                        <label class="option-field"><span>database</span><input id="cfg-db-name" type="text"></label>
+                        <label class="option-field"><span>username</span><input id="cfg-db-user" type="text"></label>
+                        <label class="option-field"><span>password（留空不改）</span><input id="cfg-db-password" type="password" autocomplete="off"></label>
+                        <p id="cfg-db-password-hint" class="helper-text">—</p>
+                    </fieldset>
+                    <fieldset class="kgm-config-fieldset">
+                        <legend>Vector + TTL</legend>
+                        <label class="option-field"><span>backend</span>
+                            <select id="cfg-vector-backend">
+                                <option value="memory">memory</option>
+                                <option value="chroma">chroma</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>baseUrl</span><input id="cfg-vector-url" type="url"></label>
+                        <label class="option-field"><span>apiPath</span><input id="cfg-vector-path" type="text"></label>
+                        <label class="option-field"><span>collection</span><input id="cfg-vector-collection" type="text"></label>
+                        <label class="option-field"><span>distance</span>
+                            <select id="cfg-vector-distance">
+                                <option value="cosine">cosine</option>
+                                <option value="l2">l2</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>timeoutMs</span><input id="cfg-vector-timeout" type="number"></label>
+                        <label class="option-field"><span>retrievalCacheTtlMs</span><input id="cfg-retrieval-ttl" type="number" min="0" step="100"></label>
+                    </fieldset>
+                </div>
+            </article>
+
+            <article class="routing-card kgm-config-card" id="cfg-section-workers">
+                <h3>3. Worker 门闩（llama.cpp / ds4）</h3>
+                <p class="helper-text">
+                    ConfigStore 优先于环境变量。
+                    <code>on</code>=强制启用 · <code>off</code>=关闭 · <code>auto</code>=探测二进制。
+                    详见 <code>docs/ds4-worker.md</code>。
+                </p>
+                <div class="kgm-config-grid">
+                    <fieldset class="kgm-config-fieldset">
+                        <legend>llama.cpp</legend>
+                        <label class="option-field"><span>enabled</span>
+                            <select id="cfg-llama-enabled">
+                                <option value="auto">auto</option>
+                                <option value="on">on</option>
+                                <option value="off">off</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>command</span><input id="cfg-llama-command" type="text" placeholder="llama-server"></label>
+                        <label class="option-field"><span>installHint</span><input id="cfg-llama-hint" type="text"></label>
+                    </fieldset>
+                    <fieldset class="kgm-config-fieldset">
+                        <legend>ds4</legend>
+                        <label class="option-field"><span>enabled</span>
+                            <select id="cfg-ds4-enabled">
+                                <option value="auto">auto</option>
+                                <option value="on">on</option>
+                                <option value="off">off</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>command</span><input id="cfg-ds4-command" type="text" placeholder="ds4-server"></label>
+                        <label class="option-field"><span>chdir</span><input id="cfg-ds4-chdir" type="text" placeholder="可选工作目录"></label>
+                        <label class="option-field"><span>installHint</span><input id="cfg-ds4-hint" type="text"></label>
+                    </fieldset>
+                </div>
+            </article>
+
+            <article class="routing-card kgm-config-card" id="cfg-section-sandbox">
+                <h3>4. 沙箱 adapter 状态</h3>
+                <p class="helper-text">
+                    覆盖 <code>KGM_SANDBOX_*</code>；保存后立即 <code>reloadAdapters</code>。
+                    也可在独立页 <a href="sandbox.html" target="_blank" rel="noopener">sandbox.html</a> 查看实例。
+                </p>
+                <div class="route-editor-actions" style="margin-bottom:12px">
+                    <button type="button" id="kgm-config-refresh-adapters-btn">刷新 adapter 状态</button>
+                </div>
+                <div id="cfg-sandbox-status" class="kgm-config-adapter-status"></div>
+                <div class="kgm-config-grid kgm-config-grid--3">
+                    <fieldset class="kgm-config-fieldset" data-sbx-kind="computer">
+                        <legend>computer</legend>
+                        <label class="option-field"><span>useEmbedded</span>
+                            <select id="cfg-sbx-computer-embedded">
+                                <option value="env">跟随环境变量</option>
+                                <option value="true">强制 embedded</option>
+                                <option value="false">关闭 embedded</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>startCommand</span><input id="cfg-sbx-computer-start" type="text"></label>
+                        <label class="option-field"><span>stopCommand</span><input id="cfg-sbx-computer-stop" type="text"></label>
+                        <label class="option-field"><span>statusCommand</span><input id="cfg-sbx-computer-status" type="text"></label>
+                        <label class="option-field"><span>endpoint</span><input id="cfg-sbx-computer-endpoint" type="text"></label>
+                    </fieldset>
+                    <fieldset class="kgm-config-fieldset" data-sbx-kind="browser">
+                        <legend>browser</legend>
+                        <label class="option-field"><span>useEmbedded</span>
+                            <select id="cfg-sbx-browser-embedded">
+                                <option value="env">跟随环境变量</option>
+                                <option value="true">强制 embedded</option>
+                                <option value="false">关闭 embedded</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>startCommand</span><input id="cfg-sbx-browser-start" type="text"></label>
+                        <label class="option-field"><span>stopCommand</span><input id="cfg-sbx-browser-stop" type="text"></label>
+                        <label class="option-field"><span>statusCommand</span><input id="cfg-sbx-browser-status" type="text"></label>
+                        <label class="option-field"><span>endpoint</span><input id="cfg-sbx-browser-endpoint" type="text"></label>
+                    </fieldset>
+                    <fieldset class="kgm-config-fieldset" data-sbx-kind="mobile">
+                        <legend>mobile</legend>
+                        <label class="option-field"><span>useEmbedded</span>
+                            <select id="cfg-sbx-mobile-embedded">
+                                <option value="env">跟随环境变量</option>
+                                <option value="true">强制 embedded</option>
+                                <option value="false">关闭 embedded</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>startCommand</span><input id="cfg-sbx-mobile-start" type="text"></label>
+                        <label class="option-field"><span>stopCommand</span><input id="cfg-sbx-mobile-stop" type="text"></label>
+                        <label class="option-field"><span>statusCommand</span><input id="cfg-sbx-mobile-status" type="text"></label>
+                        <label class="option-field"><span>endpoint</span><input id="cfg-sbx-mobile-endpoint" type="text"></label>
+                    </fieldset>
+                </div>
+            </article>
+        </div>
+    </section>
+    </div>
+
+    <div id="workspace-memory" class="workspace-view" data-workspace="memory" hidden>
+    <section class="memory-obs-panel page-section">
+        <div class="routing-header">
+            <div>
+                <h2 class="section-title">记忆 · Cache · 动态上下文 · KV / Token</h2>
+                <p class="section-desc">
+                    记忆数据在 <code>MemoryStore</code>（默认进程内；可配 SQLite+Chroma hybrid）。
+                    Token 账本在运维用量；KV 字节在 managed runtime / <code>/metrics</code>。
+                    ds4 进程内 KV 命中率不由本页伪造。
+                </p>
+            </div>
+            <div class="routing-actions">
+                <button type="button" id="memory-obs-refresh-btn">刷新</button>
+                <button type="button" id="memory-obs-clear-retrieval-btn" class="btn btn-secondary">清空检索缓存</button>
+            </div>
+        </div>
+        <div class="memory-obs-toolbar">
+            <label class="option-field">
+                <span>按 userId 过滤</span>
+                <input id="memory-obs-user-id" type="text" placeholder="留空=全部">
+            </label>
+            <label class="option-field">
+                <span>记录条数</span>
+                <input id="memory-obs-limit" type="number" min="1" max="200" value="40">
+            </label>
+            <span id="memory-obs-updated" class="helper-text">尚未加载</span>
+        </div>
+        <div id="memory-obs-summary" class="routing-summary-cards"></div>
+        <div class="memory-obs-grid">
+            <div class="routing-card">
+                <h3>记忆数据记录</h3>
+                <div id="memory-obs-stats" class="helper-text">—</div>
+                <div id="memory-obs-records" class="managed-list"></div>
+            </div>
+            <div class="routing-card">
+                <h3>记忆压缩</h3>
+                <div id="memory-obs-compression"></div>
+            </div>
+            <div class="routing-card">
+                <h3>Cache</h3>
+                <div id="memory-obs-cache"></div>
+            </div>
+            <div class="routing-card">
+                <h3>动态上下文</h3>
+                <div id="memory-obs-context"></div>
+            </div>
+            <div class="routing-card">
+                <h3>KV Cache 用量</h3>
+                <p class="section-desc" style="margin-top:0">来源：runtime metrics · Prometheus <code>kgm_runtime_kv_resident_bytes</code></p>
+                <div id="memory-obs-kv"></div>
+            </div>
+            <div class="routing-card">
+                <h3>Token 用量</h3>
+                <p class="section-desc" style="margin-top:0">来源：运维用量账本（7 天）· 完整明细见「运维 → 用量」</p>
+                <div id="memory-obs-tokens"></div>
+                <div class="route-editor-actions">
+                    <button type="button" id="memory-obs-goto-ops-btn">打开用量账本</button>
+                </div>
+            </div>
+        </div>
+    </section>
+    </div>
+
     <div id="workspace-routing" class="workspace-view" data-workspace="routing" hidden>
     <section class="routing-panel page-section">
         <div class="routing-header">
@@ -397,7 +754,7 @@
                     </label>
                     <label class="option-field">
                         <span>允许动态选路</span>
-                        <input id="routing-dynamic" type="checkbox">
+                        <input id="routing-allow-dynamic" type="checkbox">
                     </label>
                     <label class="option-field">
                         <span>优先可验证任务</span>
@@ -411,6 +768,18 @@
                         <span>目标延迟(ms)</span>
                         <input id="routing-target-latency" type="number" step="50" min="0">
                     </label>
+                    <label class="option-field">
+                        <span>Failover 候选上限</span>
+                        <input id="routing-max-candidates" type="number" step="1" min="1" max="16" title="thresholds.maxCandidateCount">
+                    </label>
+                    <label class="option-field">
+                        <span>审计开关</span>
+                        <input id="routing-audit-enabled" type="checkbox" title="autoRouting.auditEnabled">
+                    </label>
+                </div>
+                <div class="routing-subsection">
+                    <h4>运行时健康（只读）</h4>
+                    <div id="routing-health-panel" class="routing-health-panel">加载中…</div>
                 </div>
                 <div class="routing-subsection">
                     <h4>Judge / Verifier 在线评估</h4>
@@ -515,9 +884,97 @@
             </div>
             <div class="routing-card">
                 <h3>审计、用量与成本</h3>
+                <p class="section-desc" style="margin-top:0">路由审计见下表；完整用量账本请切到「运维 → 用量」。</p>
                 <div id="routing-summary-cards" class="routing-summary-cards"></div>
                 <div id="routing-model-stats" class="routing-table"></div>
                 <div id="routing-recent-audit" class="routing-audit-list"></div>
+                <div class="route-editor-actions">
+                    <button type="button" id="goto-ops-usage-btn">打开用量账本</button>
+                </div>
+            </div>
+        </div>
+    </section>
+    </div>
+
+    <div id="workspace-ops" class="workspace-view" data-workspace="ops" hidden>
+    <section class="ops-panel page-section">
+        <div class="routing-header">
+            <div>
+                <h2 class="section-title">运维面板</h2>
+                <p class="section-desc">管理钥（KGM_HTTP_API_KEY）签发调用钥；用量账本、事前预算与模型别名。不引入外部网关组件。</p>
+            </div>
+            <div class="routing-actions">
+                <button type="button" id="ops-refresh-btn">刷新</button>
+            </div>
+        </div>
+
+        <div id="ops-panel-usage" class="ops-tab-panel">
+            <div class="routing-grid">
+                <div class="routing-card">
+                    <h3>用量概览（7 / 30 天）</h3>
+                    <div id="ops-usage-summary" class="routing-summary-cards"></div>
+                    <div id="ops-usage-by-model" class="routing-table"></div>
+                    <div id="ops-usage-by-day" class="ops-bar-chart" aria-label="按日成本"></div>
+                </div>
+                <div class="routing-card">
+                    <h3>最近请求</h3>
+                    <div id="ops-usage-list" class="routing-audit-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="ops-panel-keys" class="ops-tab-panel" hidden>
+            <div class="routing-card">
+                <h3>虚拟调用钥</h3>
+                <p class="section-desc">Master = 环境变量管理钥；Call = 下方签发的 <code>kgm_…</code>，仅显示一次。</p>
+                <div class="route-editor">
+                    <label class="option-field"><span>名称</span><input id="ops-key-name" type="text" placeholder="app-frontend"></label>
+                    <label class="option-field"><span>允许模型（逗号，空=全部）</span><input id="ops-key-models" type="text" placeholder="alias-a, gpt-4o-mini"></label>
+                    <label class="option-field"><span>备注</span><input id="ops-key-notes" type="text"></label>
+                </div>
+                <div class="route-editor-actions">
+                    <button type="button" id="ops-key-create-btn">签发调用钥</button>
+                </div>
+                <pre id="ops-key-once" class="ops-secret-once" hidden></pre>
+                <div id="ops-key-list" class="managed-list"></div>
+            </div>
+        </div>
+
+        <div id="ops-panel-budgets" class="ops-tab-panel" hidden>
+            <div class="routing-card">
+                <h3>事前预算</h3>
+                <div class="route-editor">
+                    <label class="option-field"><span>绑定 Key ID</span><input id="ops-budget-key" type="text" placeholder="vkey_… 或 master / *"></label>
+                    <label class="option-field"><span>名称</span><input id="ops-budget-name" type="text" placeholder="daily-cap"></label>
+                    <label class="option-field"><span>周期</span>
+                        <select id="ops-budget-period"><option value="day">day</option><option value="month">month</option><option value="total">total</option></select>
+                    </label>
+                    <label class="option-field"><span>上限 USD</span><input id="ops-budget-limit" type="number" step="0.01" min="0" value="10"></label>
+                    <label class="option-field"><span>模式</span>
+                        <select id="ops-budget-mode"><option value="hard">hard（拦截）</option><option value="soft">soft（仅状态）</option></select>
+                    </label>
+                </div>
+                <div class="route-editor-actions">
+                    <button type="button" id="ops-budget-save-btn">保存预算</button>
+                </div>
+                <div id="ops-budget-list" class="managed-list"></div>
+            </div>
+        </div>
+
+        <div id="ops-panel-aliases" class="ops-tab-panel" hidden>
+            <div class="routing-card">
+                <h3>模型别名</h3>
+                <p class="section-desc">客户端使用别名；网关解析为真实 model / provider / runtimeId。</p>
+                <div class="route-editor">
+                    <label class="option-field"><span>别名</span><input id="ops-alias-name" type="text" placeholder="chat-default"></label>
+                    <label class="option-field"><span>目标模型</span><input id="ops-alias-model" type="text" placeholder="gpt-4o-mini"></label>
+                    <label class="option-field"><span>Provider</span><input id="ops-alias-provider" type="text" placeholder="可选"></label>
+                    <label class="option-field"><span>Runtime ID</span><input id="ops-alias-runtime" type="text" placeholder="可选"></label>
+                </div>
+                <div class="route-editor-actions">
+                    <button type="button" id="ops-alias-save-btn">保存别名</button>
+                </div>
+                <div id="ops-alias-list" class="managed-list"></div>
             </div>
         </div>
     </section>
@@ -571,6 +1028,20 @@
 
     <script src="../src/kce/kce-engine.js"></script>
     <script src="kce-task-manager.js"></script>
+    <script src="ops-panel.js"></script>
+    <script src="memory-panel.js"></script>
+    <script src="config-panel.js"></script>
     <script src="script.js"></script>
+    <script>
+      window.addEventListener('kgm-switch-workspace', (ev) => {
+        const detail = ev.detail || {};
+        if (window.kgmPlaygroundInstance?.switchWorkspace) {
+          window.kgmPlaygroundInstance.switchWorkspace(detail.workspace || 'ops');
+        }
+        if (detail.opsTab) {
+          window.dispatchEvent(new CustomEvent('kgm-ops-activate', { detail: { opsTab: detail.opsTab } }));
+        }
+      });
+    </script>
 </body>
 </html>

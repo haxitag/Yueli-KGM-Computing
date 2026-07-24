@@ -2,7 +2,12 @@ import type { Evidence } from "../core/types.js";
 import type { Embedder } from "../embedding/canonical.js";
 import { applyMemoryRerank } from "../rerank/applyRerank.js";
 import { blendAndNormalize, bm25Scores } from "./lexicalRerank.js";
-import type { MemoryStore, MemorySearchOptions } from "./store.js";
+import type {
+  MemoryRecordView,
+  MemoryStore,
+  MemoryStoreStats,
+  MemorySearchOptions,
+} from "./store.js";
 import type { MetadataStore } from "./metadataStore.js";
 import type { VectorStore } from "./vectorStore.js";
 
@@ -109,5 +114,43 @@ export class HybridMemoryStore implements MemoryStore {
       // 元数据已删时仍尽量删向量；向量失败不阻断「已删 SQL 行」的语义
     }
     return metaDeleted;
+  }
+
+  async getMemoryStats(): Promise<MemoryStoreStats> {
+    if (typeof this.metadataStore.getStats === "function") {
+      const stats = await this.metadataStore.getStats();
+      return {
+        backend: "hybrid",
+        totalChunks: stats.totalChunks,
+        userCount: stats.userCount,
+        byUser: stats.byUser,
+        inspectable: true,
+      };
+    }
+    return {
+      backend: "hybrid",
+      totalChunks: 0,
+      userCount: 0,
+      byUser: [],
+      inspectable: false,
+    };
+  }
+
+  async listMemoryRecords(params?: {
+    userId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MemoryRecordView[]> {
+    if (typeof this.metadataStore.listRecent !== "function") {
+      return [];
+    }
+    const rows = await this.metadataStore.listRecent(params);
+    return rows.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      text: r.text,
+      source: r.source,
+      createdAt: r.createdAt,
+    }));
   }
 }

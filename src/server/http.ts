@@ -54,6 +54,11 @@ import {
   createHttpAccessConfigFromEnv,
   HttpRequestAccess,
 } from "./httpAccess.js";
+import { getOpsStore } from "../admin/opsStore.js";
+import { runWithOpsAuthAsync } from "../admin/opsAuthContext.js";
+import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
+import { handleObservabilityRoute } from "./routes/observability.js";
+import { resolveModelAlias } from "../admin/modelAliasResolve.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText } from "./httpJsonHelpers.js";
 import { getOptimizer } from "../optimization/optimizer.js";
@@ -128,18 +133,53 @@ export function createKgmRequestListener(
           installHint: worker.installHint,
         };
       },
+      ds4: () => {
+        const worker = params.configStore.get().workers.ds4;
+        return {
+          enabled: worker.enabled,
+          command: worker.command,
+          installHint: worker.installHint,
+          chdir: worker.chdir,
+        };
+      },
     });
   const routingHistory = createRoutingHistoryStoreFromEnv();
   const responseStore = new OpenAiResponseStore();
   const accessConfig = createHttpAccessConfigFromEnv();
   assertHttpAccessConfig(accessConfig);
-  const access = new HttpRequestAccess(accessConfig);
+  const access = new HttpRequestAccess(accessConfig, {
+    resolveVirtualKey: async (raw) => {
+      try {
+        const store = await getOpsStore();
+        return store.findVirtualKeyByRaw(raw);
+      } catch {
+        return undefined;
+      }
+    },
+    checkBudget: async (keyId) => {
+      try {
+        const store = await getOpsStore();
+        const result = store.assertBudgetAllows(keyId);
+        if (!result.ok) {
+          return {
+            ok: false as const,
+            status: 402,
+            message: `Budget exceeded (${result.status.budget.name}): spent $${result.status.spentUsd.toFixed(4)} / $${result.status.budget.limitUsd.toFixed(4)}`,
+          };
+        }
+        return { ok: true as const };
+      } catch {
+        return { ok: true as const };
+      }
+    },
+  });
   logger.info(
     {
       securityMode: accessConfig.securityMode,
       apiKeyEnabled: Boolean(accessConfig.apiKey),
       rateLimit: accessConfig.rateLimit,
       trustProxy: accessConfig.trustProxy,
+      virtualKeys: true,
     },
     "HTTP access policy ready",
   );
@@ -619,9 +659,11 @@ export function createKgmRequestListener(
       }
       
       const url = new URL(req.url ?? "", "http://localhost");
-      if (!access.check(req, res, url.pathname)) {
+      if (!(await access.checkAsync(req, res, url.pathname))) {
         return;
       }
+      const auth = access.getLastAuth();
+      await runWithOpsAuthAsync(auth, async () => {
       appendHttpAccessLog({
         ts: new Date().toISOString(),
         method: req.method ?? "?",
@@ -630,6 +672,55 @@ export function createKgmRequestListener(
 
       if (await handleYueliaiRoute(req, res, url.pathname, { configStore: params.configStore })) {
         return;
+      }
+
+      const isOpsAdminPath =
+        url.pathname === "/v1/kgm/ops/overview" ||
+        url.pathname.startsWith("/v1/kgm/keys") ||
+        url.pathname.startsWith("/v1/kgm/usage") ||
+        url.pathname.startsWith("/v1/kgm/budgets") ||
+        url.pathname.startsWith("/v1/kgm/aliases");
+      if (isOpsAdminPath) {
+        const queryObj = Object.fromEntries(url.searchParams.entries());
+        let body: unknown = { __query: queryObj };
+        if (req.method !== "GET" && req.method !== "DELETE" && req.method !== "HEAD") {
+          const parsed = await readJson(req);
+          body = { ...(parsed as object), __query: queryObj };
+        }
+        if (
+          await handleOpsAdminRoute({
+            method: req.method ?? "GET",
+            pathname: url.pathname,
+            body,
+            res,
+            sendJson,
+            isMaster: auth.kind === "master" || (!accessConfig.apiKey && auth.kind === "anonymous"),
+          })
+        ) {
+          return;
+        }
+      }
+
+      if (
+        url.pathname === "/v1/kgm/observability/context" ||
+        url.pathname === "/v1/kgm/memory/records" ||
+        url.pathname === "/v1/kgm/observability/retrieval-cache/clear"
+      ) {
+        if (
+          await handleObservabilityRoute({
+            method: req.method ?? "GET",
+            pathname: url.pathname,
+            url,
+            req,
+            res,
+            sendJson,
+            memoryStore: params.memoryStore,
+            contextBuilder: params.contextBuilder,
+            modelManager,
+          })
+        ) {
+          return;
+        }
       }
 
       if (req.method === "GET" && url.pathname === "/health") {
@@ -1469,7 +1560,26 @@ export function createKgmRequestListener(
       }
 
       if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
-        const payload = (await readJson(req)) as OpenAiChatCompletionRequest;
+        const payload = (await readJson(req)) as OpenAiChatCompletionRequest & { model?: string };
+        const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
+        const resolved = await resolveModelAlias(requestedModel);
+        if (resolved?.alias) {
+          payload.model = resolved.model;
+        }
+        if (auth.kind === "virtual" && auth.virtualKey?.allowedModels?.length) {
+          const allowed = auth.virtualKey.allowedModels;
+          const ok =
+            (requestedModel && allowed.includes(requestedModel)) ||
+            (payload.model && allowed.includes(String(payload.model))) ||
+            (resolved?.alias && allowed.includes(resolved.alias.alias));
+          if (!ok) {
+            return sendJson(
+              res,
+              403,
+              kgmErrorBody("model_not_allowed", "Virtual key is not allowed to call this model", 403),
+            );
+          }
+        }
         const requestHeaders = normalizeIncomingHttpHeaders(
           req.headers as Record<string, string | string[] | undefined>,
         );
@@ -1678,6 +1788,9 @@ export function createKgmRequestListener(
           routingEntry = buildUpdateEntry(nextRouting, payload.routingNote);
         }
         const updated = params.configStore.update(payload);
+        if (payload.sandboxAdapters) {
+          params.sandboxManager.reloadAdapters();
+        }
         if (params.skillRuntime) {
           syncPlaygroundFromConfig({
             skillRegistry: params.skillRuntime.getSkillRegistry(),
@@ -2016,7 +2129,7 @@ export function createKgmRequestListener(
         const payload = (await readJson(req)) as {
           name?: string;
           modelName?: string;
-          runtime: "native" | "llama.cpp" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible" | "auto";
+          runtime: "native" | "llama.cpp" | "ds4" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible" | "auto";
           artifactId?: string;
           host?: string;
           port?: number;
@@ -2074,8 +2187,8 @@ export function createKgmRequestListener(
         const payload = (await readJson(req)) as {
           artifactId?: string;
           localPath?: string;
-          runtimeHints?: Array<"native" | "llama.cpp" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible">;
-          requestedRuntime?: "auto" | "native" | "llama.cpp" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible";
+          runtimeHints?: Array<"native" | "llama.cpp" | "ds4" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible">;
+          requestedRuntime?: "auto" | "native" | "llama.cpp" | "ds4" | "ollama" | "vllm" | "sglang" | "mlx" | "openai-compatible";
         };
         const artifact = payload.artifactId
           ? modelManager.getArtifact(payload.artifactId)
@@ -2151,8 +2264,18 @@ export function createKgmRequestListener(
         return sendJson(res, 200, { runtime });
       }
 
+      if (req.method === "GET" && url.pathname === "/v1/kgm/sandboxes/adapters") {
+        return sendJson(res, 200, {
+          adapters: params.sandboxManager.adapterStatus(),
+          config: params.configStore.get().sandboxAdapters,
+        });
+      }
+
       if (req.method === "GET" && url.pathname === "/v1/kgm/sandboxes") {
-        return sendJson(res, 200, { sandboxes: params.sandboxManager.list() });
+        return sendJson(res, 200, {
+          sandboxes: params.sandboxManager.list(),
+          adapters: params.sandboxManager.adapterStatus(),
+        });
       }
 
       if (req.method === "POST" && url.pathname === "/v1/kgm/sandboxes") {
@@ -2373,6 +2496,7 @@ export function createKgmRequestListener(
       }
 
       return sendJson(res, 404, { error: "not_found" });
+      }); // runWithOpsAuthAsync
     } catch (error) {
       if (error instanceof KgmJsonParseError) {
         return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));

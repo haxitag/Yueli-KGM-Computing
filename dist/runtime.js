@@ -46,6 +46,15 @@ export function createRuntime(params) {
                 installHint: worker.installHint,
             };
         },
+        ds4: () => {
+            const worker = configStore.get().workers.ds4;
+            return {
+                enabled: worker.enabled,
+                command: worker.command,
+                installHint: worker.installHint,
+                chdir: worker.chdir,
+            };
+        },
     });
     const autoRoutingAuditStore = new AutoRoutingAuditStore();
     const schemaRegistry = new SchemaRegistry();

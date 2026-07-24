@@ -1,15 +1,49 @@
-import type { SandboxInstance, SandboxKind, SandboxPreview, SandboxStatus } from "../core/types.js";
+import type { SandboxInstance, SandboxKind, SandboxPreview } from "../core/types.js";
 import { createDefaultSandboxAdapters } from "./adapters.js";
 import type { SandboxAdapter } from "./adapters.js";
+import type { SandboxAdaptersConfig } from "../core/configStore.js";
 import { generateId } from "../utils/id.js";
 
 export class SandboxManager {
   private sandboxes = new Map<string, SandboxInstance>();
   private adapters: Record<SandboxKind, SandboxAdapter>;
+  private getOverlay?: () => SandboxAdaptersConfig | undefined;
 
-  constructor() {
-    this.adapters = createDefaultSandboxAdapters();
+  constructor(options?: { getOverlay?: () => SandboxAdaptersConfig | undefined }) {
+    this.getOverlay = options?.getOverlay;
+    this.adapters = createDefaultSandboxAdapters(this.overlayAsAdapterConfig());
     this.ensureDefaults();
+  }
+
+  /** Rebuild adapters after ConfigStore.sandboxAdapters changes (keeps instance records). */
+  reloadAdapters(): void {
+    this.adapters = createDefaultSandboxAdapters(this.overlayAsAdapterConfig());
+    for (const [id, sandbox] of this.sandboxes) {
+      const adapter = this.adapters[sandbox.kind];
+      this.sandboxes.set(id, {
+        ...sandbox,
+        runtimeMode: adapter.isConfigured() ? "external" : "unconfigured",
+        adapterHint: adapter.adapterHint(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  adapterStatus(): Array<{
+    kind: SandboxKind;
+    label: string;
+    configured: boolean;
+    hint: string;
+  }> {
+    return (["computer", "browser", "mobile"] as SandboxKind[]).map((kind) => {
+      const adapter = this.adapters[kind];
+      return {
+        kind,
+        label: adapter.label,
+        configured: adapter.isConfigured(),
+        hint: adapter.adapterHint(),
+      };
+    });
   }
 
   list(): SandboxInstance[] {
@@ -57,7 +91,7 @@ export class SandboxManager {
     adapter.start(sandbox);
     const updated: SandboxInstance = {
       ...sandbox,
-      status: "running" as SandboxStatus,
+      status: "running",
       runtimeMode: "external",
       updatedAt: new Date().toISOString(),
     };
@@ -70,11 +104,23 @@ export class SandboxManager {
     this.adapters[sandbox.kind].stop(sandbox);
     const updated: SandboxInstance = {
       ...sandbox,
-      status: "stopped" as SandboxStatus,
+      status: "stopped",
       updatedAt: new Date().toISOString(),
     };
     this.sandboxes.set(id, updated);
     return this.withPreview(updated);
+  }
+
+  private overlayAsAdapterConfig() {
+    const overlay = this.getOverlay?.();
+    if (!overlay) {
+      return undefined;
+    }
+    return {
+      computer: toAdapterConfig(overlay.computer),
+      browser: toAdapterConfig(overlay.browser),
+      mobile: toAdapterConfig(overlay.mobile),
+    };
   }
 
   private require(id: string): SandboxInstance {
@@ -121,6 +167,27 @@ export class SandboxConfigurationError extends Error {
   }
 }
 
+function toAdapterConfig(kindCfg: {
+  useEmbedded?: boolean;
+  startCommand?: string;
+  stopCommand?: string;
+  statusCommand?: string;
+  endpoint?: string;
+  hint?: string;
+}) {
+  if (!kindCfg || Object.keys(kindCfg).length === 0) {
+    return undefined;
+  }
+  return {
+    useEmbedded: kindCfg.useEmbedded,
+    startCommand: kindCfg.startCommand,
+    stopCommand: kindCfg.stopCommand,
+    statusCommand: kindCfg.statusCommand,
+    endpoint: kindCfg.endpoint,
+    hint: kindCfg.hint,
+  };
+}
+
 function buildPreview(instance: SandboxInstance): SandboxPreview {
   const now = Date.now();
   const updatedAt = new Date(instance.updatedAt).getTime();
@@ -137,7 +204,7 @@ function buildPreview(instance: SandboxInstance): SandboxPreview {
   };
 }
 
-function emptyPreview(kind: SandboxKind, status: SandboxStatus): SandboxPreview {
+function emptyPreview(kind: SandboxKind, status: SandboxInstance["status"]): SandboxPreview {
   return {
     cpuPercent: 0,
     memoryMb: 0,
@@ -149,11 +216,11 @@ function emptyPreview(kind: SandboxKind, status: SandboxStatus): SandboxPreview 
   };
 }
 
-function previewTitle(kind: SandboxKind, status: SandboxStatus): string {
+function previewTitle(kind: SandboxKind, status: string): string {
   return `${kind.toUpperCase()} sandbox ${status}`;
 }
 
-function previewDetail(kind: SandboxKind, status: SandboxStatus): string {
+function previewDetail(kind: SandboxKind, status: string): string {
   if (status !== "running") {
     return "Sandbox is idle. Start it to expose runtime preview metrics.";
   }
@@ -180,12 +247,4 @@ function defaultNotes(kind: SandboxKind): string[] {
     return ["Use this sandbox to stage app/mobile-agent workflows behind an emulator adapter."];
   }
   return ["Use this sandbox to stage code execution and desktop-like workflows behind a VM adapter."];
-}
-
-function hash(input: string): number {
-  let result = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    result = (result * 31 + input.charCodeAt(index)) >>> 0;
-  }
-  return result;
 }

@@ -27,11 +27,9 @@ export function resolveHttpSecurityMode(env = process.env) {
 }
 /**
  * 从环境变量构建访问策略。
- * - KGM_HTTP_API_KEY：非空则启用校验；strict 模式强制要求
+ * - KGM_HTTP_API_KEY：管理钥（master）；非空则启用校验；strict 模式强制要求
+ * - 调用钥：服务端签发的 `kgm_…` 虚拟 Key（见 /v1/kgm/keys）
  * - KGM_HTTP_AUTH_EXEMPT：逗号分隔路径前缀，默认 `/health,/metrics,/openapi.json`
- * - KGM_HTTP_RATE_LIMIT_MAX：滑动窗口上限；未设置时 strict 默认 120，permissive 默认关闭(0)；显式 `0` 关闭
- * - KGM_HTTP_RATE_LIMIT_WINDOW_MS：窗口长度，默认 60000
- * - KGM_HTTP_TRUST_PROXY：`1/true` 时使用 X-Forwarded-For 首跳作为限流键
  */
 export function createHttpAccessConfigFromEnv(env = process.env) {
     const securityMode = resolveHttpSecurityMode(env);
@@ -49,7 +47,7 @@ export function createHttpAccessConfigFromEnv(env = process.env) {
     return {
         securityMode,
         apiKey: key.length > 0 ? key : null,
-        exemptPathPrefixes: parseCsvPrefixes(env.KGM_HTTP_AUTH_EXEMPT, "/health,/metrics,/openapi.json"),
+        exemptPathPrefixes: parseCsvPrefixes(env.KGM_HTTP_AUTH_EXEMPT, "/health,/ready,/metrics,/openapi.json"),
         rateLimit: max > 0 && windowMs > 0 ? { max, windowMs } : null,
         trustProxy,
     };
@@ -76,7 +74,7 @@ function getClientKey(req, trustProxy) {
     }
     return `ip:${req.socket.remoteAddress ?? "unknown"}`;
 }
-function readRequestApiKey(req) {
+export function readRequestApiKey(req) {
     const x = req.headers["x-api-key"];
     if (typeof x === "string" && x) {
         return x.trim();
@@ -123,7 +121,6 @@ export class InMemorySlidingWindowRateLimiter {
         this.state.set(key, entry);
         return { ok: true };
     }
-    /** 清理窗口外空桶，避免长跑 Map 膨胀 */
     sweep(now = Date.now()) {
         const cutoff = now - this.windowMs;
         let removed = 0;
@@ -143,14 +140,26 @@ export class InMemorySlidingWindowRateLimiter {
         return this.state.size;
     }
 }
+const INFERENCE_BUDGET_PREFIXES = [
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/responses",
+    "/v1/messages",
+    "/v1/embeddings",
+];
 export class HttpRequestAccess {
     config;
     limiter;
-    constructor(config, existingLimiter) {
+    resolveVirtualKey;
+    checkBudget;
+    lastAuth = { kind: "anonymous", keyId: "anonymous" };
+    constructor(config, options) {
         this.config = config;
+        this.resolveVirtualKey = options?.resolveVirtualKey;
+        this.checkBudget = options?.checkBudget;
         if (config.rateLimit) {
             this.limiter =
-                existingLimiter ??
+                options?.existingLimiter ??
                     new InMemorySlidingWindowRateLimiter({
                         max: config.rateLimit.max,
                         windowMs: config.rateLimit.windowMs,
@@ -160,27 +169,90 @@ export class HttpRequestAccess {
             this.limiter = null;
         }
     }
-    /**
-     * @returns true 表示可继续处理；已写入响应时返回 false
-     */
+    getLastAuth() {
+        return this.lastAuth;
+    }
+    /** Sync check — prefers master; for virtual keys use checkAsync */
     check(req, res, pathname) {
+        const got = readRequestApiKey(req);
+        if (got && this.config.apiKey && timingSafeEqualString(got, this.config.apiKey)) {
+            this.lastAuth = { kind: "master", keyId: "master", keyName: "master", rawKeyPrefix: got.slice(0, 8) };
+        }
+        else if (!got) {
+            this.lastAuth = { kind: "anonymous", keyId: "anonymous" };
+        }
+        else if (got.startsWith("kgm_") && !this.resolveVirtualKey) {
+            // virtual key present but resolver not wired yet — reject if master required
+            this.lastAuth = { kind: "anonymous", keyId: "anonymous", rawKeyPrefix: got.slice(0, 8) };
+        }
+        else if (!got.startsWith("kgm_")) {
+            this.lastAuth = { kind: "anonymous", keyId: "anonymous", rawKeyPrefix: got.slice(0, 8) };
+        }
+        return this.finishCheck(req, res, pathname, this.lastAuth, got);
+    }
+    async checkAsync(req, res, pathname) {
+        const got = readRequestApiKey(req);
+        let auth = { kind: "anonymous", keyId: "anonymous" };
+        if (got && this.config.apiKey && timingSafeEqualString(got, this.config.apiKey)) {
+            auth = { kind: "master", keyId: "master", keyName: "master", rawKeyPrefix: got.slice(0, 8) };
+        }
+        else if (got && this.resolveVirtualKey) {
+            const vk = await this.resolveVirtualKey(got);
+            if (vk) {
+                auth = {
+                    kind: "virtual",
+                    keyId: vk.id,
+                    keyName: vk.name,
+                    virtualKey: vk,
+                    rawKeyPrefix: got.slice(0, 8),
+                };
+            }
+            else {
+                auth = { kind: "anonymous", keyId: "anonymous", rawKeyPrefix: got.slice(0, 8) };
+            }
+        }
+        else if (!got) {
+            auth = { kind: "anonymous", keyId: "anonymous" };
+        }
+        else {
+            auth = { kind: "anonymous", keyId: "anonymous", rawKeyPrefix: got.slice(0, 8) };
+        }
+        this.lastAuth = auth;
+        if (!this.finishCheck(req, res, pathname, auth, got)) {
+            return false;
+        }
+        if (this.checkBudget && (auth.kind === "virtual" || auth.kind === "master")) {
+            if (INFERENCE_BUDGET_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
+                const result = await this.checkBudget(auth.keyId, pathname);
+                if (!result.ok) {
+                    const status = result.status ?? 402;
+                    const body = kgmErrorBody("budget_exceeded", result.message, status);
+                    res.setHeader("x-kgm-error", body.error.code);
+                    this.writeJson(res, status, body);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    finishCheck(req, res, pathname, auth, got) {
         if (isExemptPath(pathname, this.config.exemptPathPrefixes)) {
             return true;
         }
-        // 鉴权优先于限流：避免未鉴权流量占满匿名桶；凭据通过后按身份限流更可运维
         if (this.config.apiKey) {
-            const got = readRequestApiKey(req);
-            if (!got || !timingSafeEqualString(got, this.config.apiKey)) {
-                const body = kgmErrorBody("unauthorized", "Valid API key or Bearer token required", 401);
+            if (!got || auth.kind === "anonymous") {
+                const body = kgmErrorBody("unauthorized", "Valid master or virtual API key required", 401);
                 res.setHeader("x-kgm-error", body.error.code);
                 this.writeJson(res, 401, body);
                 return false;
             }
         }
         if (this.limiter) {
-            const identity = this.config.apiKey
-                ? `key:${this.config.apiKey.slice(0, 8)}`
-                : getClientKey(req, this.config.trustProxy);
+            const identity = auth.kind === "master"
+                ? "key:master"
+                : auth.kind === "virtual"
+                    ? `key:${auth.keyId}`
+                    : getClientKey(req, this.config.trustProxy);
             const { ok, retryAfterSec } = this.limiter.allow(identity);
             if (!ok) {
                 const body = kgmErrorBody("rate_limited", "Too many requests", 429);

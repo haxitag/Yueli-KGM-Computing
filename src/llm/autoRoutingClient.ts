@@ -25,6 +25,7 @@ import { streamCompletion } from "./client.js";
 import type { CompletionOptions, CompletionResult, CompletionStreamEvent, LlmClient } from "./client.js";
 import { createPricingService, type PricingService } from "./pricingService.js";
 import { classifyIntent, classifyIntentSync, intentToRoutingTaskType } from "../frontstation/index.js";
+import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 
 type RoutingCandidate = {
   routeKey: string;
@@ -1162,6 +1163,25 @@ export class AutoRoutingLlmClient implements LlmClient {
       error?: string;
     },
   ) {
+    void recordOpsUsage({
+      requestId: options?.requestId,
+      model: selection.selected.model,
+      provider: selection.selected.provider,
+      runtimeId: selection.selected.runtimeId,
+      profile: selection.profile,
+      taskType: selection.taskType,
+      success: outcome.success,
+      latencyMs: Math.max(0, elapsedMs),
+      promptTokens: outcome.promptTokens,
+      completionTokens: outcome.completionTokens,
+      totalTokens: outcome.totalTokens,
+      costUsd: outcome.actualCost + outcome.evaluationCost,
+      source: "auto_routing",
+      meta: {
+        routeKey: selection.selected.routeKey,
+        qualityScore: outcome.qualityScore,
+      },
+    });
     if (!this.configStore.get().autoRouting.auditEnabled) {
       return;
     }

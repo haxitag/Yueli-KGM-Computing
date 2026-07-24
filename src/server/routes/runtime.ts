@@ -6,6 +6,8 @@ import { collectRuntimeDiagnostics, inferConfigSource } from "../../runtime/diag
 import { resolveRuntimeTopology } from "../../runtime/topologyResolver.js";
 import { explainRuntimeRoute } from "../../runtime/routeExplainer.js";
 import { probeLlamaCppDeploy } from "../../runtime/llamaCppDeploy.js";
+import { probeDs4Deploy } from "../../runtime/ds4Deploy.js";
+import { resolveDs4ServingHints } from "../../runtime/ds4SessionKv.js";
 
 export type RuntimeRouteParams = {
   method: string;
@@ -66,6 +68,15 @@ export async function handleRuntimeRoute(params: RuntimeRouteParams): Promise<bo
           command: config.workers.llamaCpp.command,
           installHint: config.workers.llamaCpp.installHint,
         }),
+        ds4: {
+          ...probeDs4Deploy({
+            enabled: config.workers.ds4.enabled,
+            command: config.workers.ds4.command,
+            installHint: config.workers.ds4.installHint,
+            chdir: config.workers.ds4.chdir,
+          }),
+          servingHints: resolveDs4ServingHints(),
+        },
       },
       blockingIssues: diagnostics.issues.filter((issue) => issue.severity === "error"),
     });
@@ -81,6 +92,18 @@ export async function handleRuntimeRoute(params: RuntimeRouteParams): Promise<bo
         installHint: config.workers.llamaCpp.installHint,
       }),
     );
+  }
+  if (method === "GET" && pathname === "/v1/runtime/workers/ds4") {
+    const config = params.configStore.get();
+    return send(params, 200, {
+      ...probeDs4Deploy({
+        enabled: config.workers.ds4.enabled,
+        command: config.workers.ds4.command,
+        installHint: config.workers.ds4.installHint,
+        chdir: config.workers.ds4.chdir,
+      }),
+      servingHints: resolveDs4ServingHints(),
+    });
   }
   if (method === "GET" && pathname === "/v1/runtime/topology") {
     return send(params, 200, topology);

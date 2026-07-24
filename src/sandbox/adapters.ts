@@ -26,10 +26,22 @@ type SandboxAdapterConfig = {
   endpoint?: string;
   hint?: string;
   note?: string;
+  /** From ConfigStore.sandboxAdapters.*.useEmbedded or env USE_EMBEDDED */
+  useEmbedded?: boolean;
 };
 
-export function createDefaultSandboxAdapters(): Record<SandboxKind, SandboxAdapter> {
-  const config = loadSandboxAdapterConfig();
+export function createDefaultSandboxAdapters(
+  overlay?: Partial<Record<SandboxKind, SandboxAdapterConfig>>,
+): Record<SandboxKind, SandboxAdapter> {
+  const fileConfig = loadSandboxAdapterConfig();
+  const mergeKind = (kind: SandboxKind): SandboxAdapterConfig | undefined => {
+    const fromFile = fileConfig[kind];
+    const fromOverlay = overlay?.[kind];
+    if (!fromFile && !fromOverlay) {
+      return undefined;
+    }
+    return normalizeConfig({ ...(fromFile ?? {}), ...(fromOverlay ?? {}) });
+  };
   return {
     computer: new CommandSandboxAdapter({
       kind: "computer",
@@ -43,7 +55,7 @@ export function createDefaultSandboxAdapters(): Record<SandboxKind, SandboxAdapt
       embeddedScript: "qemu-vm-adapter.sh",
       hint: "Wire this to QEMU, Firecracker, or another VM runtime command. Set KGM_SANDBOX_COMPUTER_USE_EMBEDDED=1 to use the bundled QEMU adapter.",
       note: "If commands are configured, the sandbox manager will start and stop a real VM-side process.",
-      config: config.computer,
+      config: mergeKind("computer"),
     }),
     browser: new CommandSandboxAdapter({
       kind: "browser",
@@ -57,7 +69,7 @@ export function createDefaultSandboxAdapters(): Record<SandboxKind, SandboxAdapt
       embeddedScript: "playwright-browser-adapter.mjs",
       hint: "Wire this to a Playwright worker, browser pool, or browser WebSocket endpoint. Set KGM_SANDBOX_BROWSER_USE_EMBEDDED=1 to use the bundled Playwright adapter.",
       note: "Recommended: point start command at a Playwright adapter process or provide a WS endpoint.",
-      config: config.browser,
+      config: mergeKind("browser"),
     }),
     mobile: new CommandSandboxAdapter({
       kind: "mobile",
@@ -71,7 +83,7 @@ export function createDefaultSandboxAdapters(): Record<SandboxKind, SandboxAdapt
       embeddedScript: "android-emulator-adapter.sh",
       hint: "Wire this to Android Emulator, ADB-managed devices, or another mobile simulator. Set KGM_SANDBOX_MOBILE_USE_EMBEDDED=1 to use the bundled emulator adapter.",
       note: "Recommended: use emulator start/stop commands or an adapter service that fronts the device runtime.",
-      config: config.mobile,
+      config: mergeKind("mobile"),
     }),
   };
 }
@@ -227,20 +239,29 @@ class CommandSandboxAdapter implements SandboxAdapter {
       };
     }
     const pid = this.processes.get(instance.id);
-    const embedded = this.usingEmbeddedAdapter();
-    const result: Partial<SandboxPreview> = {
-      detail: pid
-        ? `${this.label} process pid=${pid}`
-        : embedded
-          ? `${this.label} configured via bundled adapter`
-          : `${this.label} configured`,
-    };
     if (pid) {
-      Object.assign(result, this.getProcessMetrics(pid));
-    } else {
-      Object.assign(result, this.getSystemMetrics());
+      return {
+        detail: `${this.label} process pid=${pid}`,
+        ...this.getProcessMetrics(pid),
+      };
     }
-    return result;
+    if (!this.isConfigured()) {
+      return {
+        detail: `${this.label} not configured — start unavailable until adapter env is set`,
+        cpuPercent: 0,
+        memoryMb: 0,
+        networkKbps: 0,
+      };
+    }
+    const embedded = this.usingEmbeddedAdapter();
+    return {
+      detail: embedded
+        ? `${this.label} ready (bundled adapter); start to launch process`
+        : `${this.label} ready (commands configured); start to launch process`,
+      cpuPercent: 0,
+      memoryMb: 0,
+      networkKbps: 0,
+    };
   }
 
   private getSystemMetrics(): Partial<Pick<SandboxPreview, "cpuPercent" | "memoryMb">> {
@@ -312,6 +333,9 @@ class CommandSandboxAdapter implements SandboxAdapter {
   }
 
   private usingEmbeddedAdapter(): boolean {
+    if (typeof this.config?.useEmbedded === "boolean") {
+      return this.config.useEmbedded;
+    }
     return parseBoolEnv(this.embeddedFlagEnv);
   }
 

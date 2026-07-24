@@ -3,12 +3,14 @@
  * Documents executable vs metadata-only paths without claiming false coverage.
  */
 
+import { getDs4QualityGates, resolveDs4ServingHints } from "../runtime/ds4SessionKv.js";
+
 export type WeightFormatKind = "gguf" | "safetensors" | "kgm-json" | "hf-config" | "pytorch-index" | "onnx" | "unknown";
 
 export type WeightCapability = {
   format: WeightFormatKind;
   executable: "full" | "partial" | "metadata_only" | "via_worker";
-  backends: Array<"js-reference" | "native-core" | "native-gpu" | "llama.cpp" | "vllm" | "sglang" | "ollama" | "mlx">;
+  backends: Array<"js-reference" | "native-core" | "native-gpu" | "llama.cpp" | "ds4" | "vllm" | "sglang" | "ollama" | "mlx">;
   loraSupported: boolean;
   notes: string[];
 };
@@ -38,20 +40,28 @@ export type WeightCapabilityReport = {
       note: string;
     }>;
   };
+  /** DeepSeek V4 / GLM via ds4 worker — quality gates + serving hints (P1/P2) */
+  ds4?: {
+    role: "managed_worker_not_native_gpu_kernels";
+    qualityGates: ReturnType<typeof getDs4QualityGates>;
+    servingHints: ReturnType<typeof resolveDs4ServingHints>;
+    notes: string[];
+  };
 };
 
 export function getWeightCapabilityReport(): WeightCapabilityReport {
+  const ds4Hints = resolveDs4ServingHints();
   return {
     generatedAt: new Date().toISOString(),
     formats: [
       {
         format: "gguf",
         executable: "partial",
-        backends: ["js-reference", "native-core", "llama.cpp", "ollama"],
+        backends: ["js-reference", "native-core", "llama.cpp", "ds4", "ollama"],
         loraSupported: false,
         notes: [
-          "Executable under native/gguf_layout whitelist (decoder-only, dtype/tensor constraints).",
-          "Prefer llama.cpp / Ollama workers for production GGUF serving.",
+          "Executable under native/gguf_layout whitelist (decoder-only, dtype/tensor constraints) for light local reference.",
+          "Prefer llama.cpp / Ollama for generic GGUF; DeepSeek V4 / GLM specialized GGUF → runtime ds4 (via_worker, never native-gpu).",
         ],
       },
       {
@@ -93,7 +103,9 @@ export function getWeightCapabilityReport(): WeightCapabilityReport {
         executable: "metadata_only",
         backends: [],
         loraSupported: false,
-        notes: ["Recognized for manifest routing; ONNX runtime not shipped in KGM core."],
+        notes: [
+          "Recognized for manifest routing; ONNX runtime not shipped in KGM core (frontstation MiniLM is separate).",
+        ],
       },
     ],
     lora: {
@@ -106,6 +118,7 @@ export function getWeightCapabilityReport(): WeightCapabilityReport {
       },
       notes: [
         "LoRA adapters are attached to managed worker runtimes; native js-reference does not merge LoRA tensors in-process.",
+        "ds4 path focuses on DeepSeek/GLM specialized quants; LoRA attach is not assumed.",
       ],
     },
     antiLockIn: {
@@ -124,11 +137,30 @@ export function getWeightCapabilityReport(): WeightCapabilityReport {
         {
           layer: "Kernels on device",
           status: "not_shipped",
-          note: "KGM does not self-build; reuse llama.cpp / vLLM / SGLang",
+          note: "KGM does not self-build; reuse llama.cpp / ds4 / vLLM / SGLang",
         },
         { layer: "Serving native-gpu", status: "not_shipped", note: "default not_implemented; SIM→js-reference only" },
-        { layer: "Operators (product)", status: "ready", note: "via llama.cpp worker (GGUF) or vLLM/SGLang (HF)" },
+        {
+          layer: "Operators (product)",
+          status: "ready",
+          note: "via llama.cpp (generic GGUF), ds4 (DeepSeek V4/GLM), or vLLM/SGLang (HF)",
+        },
         { layer: "HF full execute", status: "ready", note: "createRuntime(auto) → worker closed-loop" },
+        {
+          layer: "ds4 DeepSeek/GLM",
+          status: "ready",
+          note: "managed worker only; SSD streaming / batched-session / disk KV configured by KGM, executed by ds4-server",
+        },
+      ],
+    },
+    ds4: {
+      role: "managed_worker_not_native_gpu_kernels",
+      qualityGates: getDs4QualityGates(),
+      servingHints: ds4Hints,
+      notes: [
+        "Prefer imatrix GGUFs and continuation-golden scoring from antirez/ds4 quality-testing.",
+        `Micro-batch label: ${ds4Hints.microBatchLabel}; token interleave owner: ${ds4Hints.tokenInterleaveOwner}.`,
+        "SSD streaming / disk KV are worker flags (KGM_DS4_SSD_STREAMING, KGM_DS4_KV_DISK_DIR).",
       ],
     },
   };

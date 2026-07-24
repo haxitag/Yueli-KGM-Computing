@@ -1,5 +1,6 @@
 import { generateId } from "../utils/id.js";
 import { fuseDualTrackConfidence } from "./confidenceFusion.js";
+import { getFrontStation } from "../frontstation/factory.js";
 export class KceExecutionFailure extends Error {
     code = "kce_execution_failed";
     status = 500;
@@ -21,6 +22,7 @@ export class KceEngine {
             ["retrieve_graph", this.retrieveGraphOperator.bind(this)],
             ["retrieve_memory", this.retrieveMemoryOperator.bind(this)],
             ["reason_over_graph", this.reasonOverGraphOperator.bind(this)],
+            ["extractive_summary", this.extractiveSummaryOperator.bind(this)],
             ["synthesize_answer", this.synthesizeAnswerOperator.bind(this)],
             ["validate_answer", this.validateAnswerOperator.bind(this)],
         ]);
@@ -83,7 +85,7 @@ export class KceEngine {
         });
     }
     async parse(request) {
-        const heuristic = buildHeuristicLogicalForm(request);
+        const heuristic = await buildHeuristicLogicalForm(request);
         const llmEnabled = request.kce?.llm?.enabled === true;
         if (!llmEnabled || !this.deps.llmClient) {
             return heuristic;
@@ -105,7 +107,7 @@ export class KceEngine {
             return heuristic;
         }
         const merged = mergeLogicalForms(heuristic, parsed);
-        merged.parser = "heuristic+llm";
+        merged.parser = heuristic.parser === "frontstation" ? "frontstation+llm" : "heuristic+llm";
         merged.confidence = Math.max(merged.confidence, 0.8);
         return merged;
     }
@@ -210,6 +212,17 @@ export class KceEngine {
                 operator: "reason_over_graph",
                 depends_on: ["graph_retrieval"],
                 required: logicalForm.intent === "path_analysis",
+                timeout_ms: 4000,
+            });
+        }
+        // 摘要意图：前站 extractive 原子算子（encoder 轨，不进 decoder-only Native）
+        if (logicalForm.intent === "summary") {
+            nodes.push({
+                id: "extractive_summary",
+                type: "frontstation_op",
+                operator: "extractive_summary",
+                depends_on: nodes.map((node) => node.id),
+                required: true,
                 timeout_ms: 4000,
             });
         }
@@ -418,10 +431,53 @@ export class KceEngine {
             triples: state.subgraph.graph.triples.slice(0, 6).map(serializeGraphEdge),
         };
     }
+    async extractiveSummaryOperator(state) {
+        const memoryResult = state.dependencies.memory_retrieval;
+        const graphResult = state.dependencies.graph_retrieval;
+        const evidenceBits = [];
+        if (Array.isArray(memoryResult?.evidence)) {
+            for (const item of memoryResult.evidence) {
+                if (typeof item.text === "string" && item.text.trim()) {
+                    evidenceBits.push(item.text.trim());
+                }
+            }
+        }
+        if (Array.isArray(graphResult?.triples)) {
+            for (const triple of graphResult.triples) {
+                evidenceBits.push(`${triple.subject} ${triple.predicate} ${triple.object}`);
+            }
+        }
+        const corpus = [state.request.input, ...evidenceBits].filter(Boolean).join("\n");
+        const summarized = await getFrontStation().summarizer.summarize(corpus, {
+            maxSentences: 4,
+            maxChars: 600,
+            languageHint: state.request.constraints?.language,
+        });
+        return {
+            summary: summarized.summary,
+            sentences: summarized.sentences.slice(0, 8),
+            backend: summarized.backend,
+            latency_ms: summarized.latencyMs,
+            track: "encoder_frontstation",
+        };
+    }
     async synthesizeAnswerOperator(state) {
         const graphResult = state.dependencies.graph_retrieval;
         const memoryResult = state.dependencies.memory_retrieval;
         const reasoningResult = state.dependencies.graph_reasoning;
+        const extractive = state.dependencies.extractive_summary;
+        // 前站抽取式摘要优先作为答案（summary 意图），不调用生成式 decoder
+        if (state.logicalForm.intent === "summary" && typeof extractive?.summary === "string" && extractive.summary.trim()) {
+            return {
+                answer: extractive.summary,
+                citations: {
+                    graph_triples: state.subgraph.graph.triples.length,
+                    memory_items: state.subgraph.evidence.length,
+                    extractive_backend: extractive.backend,
+                    track: "encoder_frontstation",
+                },
+            };
+        }
         // Quality mode with evidence compression enabled
         let compressedEvidence = memoryResult;
         if (state.request.kce?.mode === "quality" &&
@@ -614,9 +670,10 @@ function clamp01(value) {
         return 0;
     return Math.min(1, Math.max(0, value));
 }
-function buildHeuristicLogicalForm(request) {
+async function buildHeuristicLogicalForm(request) {
     const input = request.input ?? "";
-    const intent = detectIntent(input);
+    const classified = await getFrontStation().intent.classify(input);
+    const intent = classified.kceIntent;
     const entityMap = new Map();
     const relationSet = new Set();
     for (const entity of request.kgm?.graph?.entities ?? []) {
@@ -674,13 +731,14 @@ function buildHeuristicLogicalForm(request) {
     if (request.constraints?.riskLevel) {
         constraints.push({ type: "risk", value: request.constraints.riskLevel });
     }
+    const baseConf = entityMap.size > 0 || relationSet.size > 0 ? 0.72 : 0.58;
     return {
         intent,
         entities: Array.from(entityMap.values()),
         relations: Array.from(relationSet),
         constraints,
-        parser: "heuristic",
-        confidence: entityMap.size > 0 || relationSet.size > 0 ? 0.72 : 0.58,
+        parser: classified.backend === "heuristic" ? "heuristic" : "frontstation",
+        confidence: Math.max(baseConf, classified.confidence * 0.85 + 0.15),
     };
 }
 function mergeLogicalForms(base, parsed) {
@@ -760,19 +818,6 @@ function stripCodeFence(text) {
         return text;
     }
     return text.replace(/^```[a-zA-Z]*\n/, "").replace(/```$/, "").trim();
-}
-function detectIntent(input) {
-    const lower = input.toLowerCase();
-    if (lower.includes("path") || input.includes("路径") || input.includes("关系链")) {
-        return "path_analysis";
-    }
-    if (lower.includes("summary") || input.includes("总结") || input.includes("概括")) {
-        return "summary";
-    }
-    if (lower.includes("risk") || input.includes("风险")) {
-        return "risk_analysis";
-    }
-    return "knowledge_query";
 }
 function extractQuotedTerms(input) {
     const matches = input.match(/["'“”‘’]([^"'“”‘’]{1,40})["'“”‘’]/g) ?? [];

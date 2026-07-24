@@ -119,12 +119,58 @@ export type LlamaCppWorkerConfig = {
   installHint?: string;
 };
 
+/** antirez/ds4 (DwarfStar) — DeepSeek V4 / GLM specialized worker */
+export type Ds4WorkerConfig = {
+  /** on | off | auto */
+  enabled: "on" | "off" | "auto";
+  /** ds4-server binary or PATH name */
+  command: string;
+  installHint?: string;
+  /** Optional working directory for ds4 --chdir */
+  chdir?: string;
+};
+
 export type WorkersConfig = {
   llamaCpp: LlamaCppWorkerConfig;
+  ds4: Ds4WorkerConfig;
 };
 
 export type WorkersConfigPatch = {
   llamaCpp?: Partial<LlamaCppWorkerConfig>;
+  ds4?: Partial<Ds4WorkerConfig>;
+};
+
+/** Playground-configurable sandbox adapter overlays (merged with KGM_SANDBOX_* env). */
+export type SandboxKindAdapterConfig = {
+  /** Prefer bundled adapter scripts when no explicit start command */
+  useEmbedded?: boolean;
+  startCommand?: string;
+  stopCommand?: string;
+  statusCommand?: string;
+  endpoint?: string;
+  hint?: string;
+};
+
+export type SandboxAdaptersConfig = {
+  computer: SandboxKindAdapterConfig;
+  browser: SandboxKindAdapterConfig;
+  mobile: SandboxKindAdapterConfig;
+};
+
+/** Patch may set useEmbedded to null to clear the ConfigStore override (fall back to env). */
+export type SandboxKindAdapterConfigPatch = {
+  useEmbedded?: boolean | null;
+  startCommand?: string;
+  stopCommand?: string;
+  statusCommand?: string;
+  endpoint?: string;
+  hint?: string;
+};
+
+export type SandboxAdaptersConfigPatch = {
+  computer?: SandboxKindAdapterConfigPatch;
+  browser?: SandboxKindAdapterConfigPatch;
+  mobile?: SandboxKindAdapterConfigPatch;
 };
 
 export type ModelPricingConfig = {
@@ -271,6 +317,7 @@ export type KgmConfig = {
   autoRouting: AutoRoutingConfig;
   yueliai: YueliAiGatewayConfig;
   workers: WorkersConfig;
+  sandboxAdapters: SandboxAdaptersConfig;
   playground: PlaygroundConfig;
 };
 
@@ -286,6 +333,7 @@ export type KgmConfigPatch = {
   autoRouting?: AutoRoutingConfigPatch;
   yueliai?: YueliAiGatewayConfigPatch;
   workers?: WorkersConfigPatch;
+  sandboxAdapters?: SandboxAdaptersConfigPatch;
   playground?: PlaygroundConfigPatch;
 };
 
@@ -604,6 +652,17 @@ const defaultConfig: KgmConfig = {
       installHint:
         "Install llama.cpp llama-server; set workers.llamaCpp.command or KGM_LLAMA_SERVER_CMD; KGM_LLAMA_CPP_ENABLED=on|off|auto",
     },
+    ds4: {
+      enabled: "auto",
+      command: "ds4-server",
+      installHint:
+        "Build antirez/ds4 ds4-server; set workers.ds4.command or KGM_DS4_SERVER_CMD; KGM_DS4_ENABLED=on|off|auto. Kernels stay in ds4 — not KGM native-gpu.",
+    },
+  },
+  sandboxAdapters: {
+    computer: {},
+    browser: {},
+    mobile: {},
   },
   playground: {
     skills: [
@@ -717,22 +776,72 @@ function mergeConfig(base: KgmConfig, patch: KgmConfigPatch): KgmConfig {
     autoRouting: mergeAutoRoutingConfig(base.autoRouting, patch.autoRouting),
     yueliai: mergeYueliAiGatewayConfig(base.yueliai, patch.yueliai),
     workers: mergeWorkersConfig(base.workers, patch.workers),
+    sandboxAdapters: mergeSandboxAdaptersConfig(base.sandboxAdapters, patch.sandboxAdapters),
     playground: mergePlaygroundConfig(base.playground, patch.playground),
   };
 }
 
-function mergeWorkersConfig(base: WorkersConfig, patch?: WorkersConfigPatch): WorkersConfig {
-  if (!patch?.llamaCpp) {
+function mergeSandboxAdaptersConfig(
+  base: SandboxAdaptersConfig,
+  patch?: SandboxAdaptersConfigPatch,
+): SandboxAdaptersConfig {
+  if (!patch) {
     return base;
   }
   return {
-    llamaCpp: {
-      ...base.llamaCpp,
-      ...patch.llamaCpp,
-      enabled: patch.llamaCpp.enabled ?? base.llamaCpp.enabled,
-      command: patch.llamaCpp.command?.trim() || base.llamaCpp.command,
-      installHint: patch.llamaCpp.installHint ?? base.llamaCpp.installHint,
-    },
+    computer: mergeSandboxKindConfig(base.computer, patch.computer),
+    browser: mergeSandboxKindConfig(base.browser, patch.browser),
+    mobile: mergeSandboxKindConfig(base.mobile, patch.mobile),
+  };
+}
+
+function mergeSandboxKindConfig(
+  base: SandboxKindAdapterConfig,
+  patch?: SandboxKindAdapterConfigPatch | null,
+): SandboxKindAdapterConfig {
+  if (!patch) {
+    return base;
+  }
+  const next: SandboxKindAdapterConfig = { ...base };
+  if (patch.startCommand !== undefined) next.startCommand = patch.startCommand;
+  if (patch.stopCommand !== undefined) next.stopCommand = patch.stopCommand;
+  if (patch.statusCommand !== undefined) next.statusCommand = patch.statusCommand;
+  if (patch.endpoint !== undefined) next.endpoint = patch.endpoint;
+  if (patch.hint !== undefined) next.hint = patch.hint;
+  if (Object.prototype.hasOwnProperty.call(patch, "useEmbedded")) {
+    if (patch.useEmbedded == null) {
+      delete next.useEmbedded;
+    } else {
+      next.useEmbedded = patch.useEmbedded;
+    }
+  }
+  return next;
+}
+
+function mergeWorkersConfig(base: WorkersConfig, patch?: WorkersConfigPatch): WorkersConfig {
+  if (!patch?.llamaCpp && !patch?.ds4) {
+    return base;
+  }
+  return {
+    llamaCpp: patch?.llamaCpp
+      ? {
+          ...base.llamaCpp,
+          ...patch.llamaCpp,
+          enabled: patch.llamaCpp.enabled ?? base.llamaCpp.enabled,
+          command: patch.llamaCpp.command?.trim() || base.llamaCpp.command,
+          installHint: patch.llamaCpp.installHint ?? base.llamaCpp.installHint,
+        }
+      : base.llamaCpp,
+    ds4: patch?.ds4
+      ? {
+          ...base.ds4,
+          ...patch.ds4,
+          enabled: patch.ds4.enabled ?? base.ds4.enabled,
+          command: patch.ds4.command?.trim() || base.ds4.command,
+          installHint: patch.ds4.installHint ?? base.ds4.installHint,
+          chdir: patch.ds4.chdir?.trim() || base.ds4.chdir,
+        }
+      : base.ds4,
   };
 }
 

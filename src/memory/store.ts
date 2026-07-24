@@ -43,6 +43,44 @@ export type MemoryStore = {
   deleteByChunkId(chunkId: string): Promise<boolean>;
 };
 
+/** 可观测：列表与统计（InMemory / Hybrid 已实现；其它后端按需扩展） */
+export type MemoryRecordView = {
+  id: string;
+  userId: string;
+  text: string;
+  source: string;
+  createdAt: string;
+  lastAccessedAt?: string;
+};
+
+export type MemoryStoreStats = {
+  backend: string;
+  totalChunks: number;
+  userCount: number;
+  byUser: Array<{ userId: string; chunks: number }>;
+  maxChunksPerUser?: number;
+  maxTotalChunks?: number;
+  evictionPolicy?: string;
+  inspectable: boolean;
+};
+
+export type InspectableMemoryStore = MemoryStore & {
+  getMemoryStats(): Promise<MemoryStoreStats>;
+  listMemoryRecords(params?: {
+    userId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MemoryRecordView[]>;
+};
+
+export function isInspectableMemoryStore(store: MemoryStore): store is InspectableMemoryStore {
+  const candidate = store as Partial<InspectableMemoryStore>;
+  return (
+    typeof candidate.getMemoryStats === "function" &&
+    typeof candidate.listMemoryRecords === "function"
+  );
+}
+
 export type MemoryStoreConfig = {
   maxChunksPerUser?: number;
   maxTotalChunks?: number;
@@ -204,6 +242,51 @@ export class InMemoryStore implements MemoryStore {
       }
     });
     return removed;
+  }
+
+  async getMemoryStats(): Promise<MemoryStoreStats> {
+    const byUser: Array<{ userId: string; chunks: number }> = [];
+    this.store.forEach((list, userId) => {
+      byUser.push({ userId, chunks: list.length });
+    });
+    byUser.sort((a, b) => b.chunks - a.chunks);
+    return {
+      backend: "in_memory",
+      totalChunks: this.getTotalChunks(),
+      userCount: this.store.size,
+      byUser,
+      maxChunksPerUser: this.maxChunksPerUser,
+      maxTotalChunks: this.maxTotalChunks,
+      evictionPolicy: this.evictionPolicy,
+      inspectable: true,
+    };
+  }
+
+  async listMemoryRecords(params?: {
+    userId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MemoryRecordView[]> {
+    const limit = Math.max(1, Math.min(200, params?.limit ?? 50));
+    const offset = Math.max(0, params?.offset ?? 0);
+    const rows: MemoryRecordView[] = [];
+    this.store.forEach((list, userId) => {
+      if (params?.userId && userId !== params.userId) {
+        return;
+      }
+      for (const chunk of list) {
+        rows.push({
+          id: chunk.id,
+          userId: chunk.userId,
+          text: chunk.text,
+          source: chunk.source,
+          createdAt: chunk.createdAt,
+          lastAccessedAt: chunk.lastAccessedAt,
+        });
+      }
+    });
+    rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return rows.slice(offset, offset + limit);
   }
 }
 

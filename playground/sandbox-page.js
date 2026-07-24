@@ -6,6 +6,8 @@
     const kindSelect = document.getElementById('sandbox-kind-select');
     const createBtn = document.getElementById('create-sandbox-btn');
     const refreshBtn = document.getElementById('refresh-sandbox-btn');
+    const adapterStatusEl = document.getElementById('sandbox-adapter-status');
+    const refreshAdaptersBtn = document.getElementById('refresh-adapters-btn');
 
     function escapeHtml(value) {
         return String(value ?? '')
@@ -19,6 +21,44 @@
         window.alert(message);
     }
 
+    function renderAdapters(adapters) {
+        if (!adapterStatusEl) {
+            return;
+        }
+        if (!adapters?.length) {
+            adapterStatusEl.innerHTML = '<p class="helper-text">无 adapter 状态</p>';
+            return;
+        }
+        adapterStatusEl.innerHTML = adapters
+            .map((a) => {
+                const tone = a.configured ? 'ok' : 'warn';
+                return `<div class="memory-obs-row">
+                    <strong>${escapeHtml(a.kind)}</strong>
+                    <span class="cfg-adapter-pill cfg-adapter-pill--${tone}">${
+                      a.configured ? 'configured' : 'unconfigured'
+                    }</span>
+                    <div class="helper-text">${escapeHtml(a.label)} · ${escapeHtml(a.hint)}</div>
+                </div>`;
+            })
+            .join('');
+    }
+
+    async function loadAdapters() {
+        if (!adapterStatusEl) {
+            return;
+        }
+        try {
+            const response = await fetch('/v1/kgm/sandboxes/adapters');
+            if (!response.ok) {
+                throw new Error(`adapter status ${response.status}`);
+            }
+            const payload = await response.json();
+            renderAdapters(payload.adapters || []);
+        } catch (error) {
+            adapterStatusEl.innerHTML = `<p class="helper-text is-warn">${escapeHtml(error.message)}</p>`;
+        }
+    }
+
     async function loadSandboxes() {
         try {
             const response = await fetch('/v1/kgm/sandboxes');
@@ -27,6 +67,11 @@
             }
             const payload = await response.json();
             renderSandboxes(payload.sandboxes || []);
+            if (payload.adapters?.length) {
+                renderAdapters(payload.adapters);
+            } else {
+                await loadAdapters();
+            }
         } catch (error) {
             if (listEl) {
                 listEl.innerHTML = `<div class="sandbox-empty">Sandbox 状态加载失败: ${escapeHtml(error.message)}</div>`;
@@ -88,9 +133,24 @@
             body: JSON.stringify({ kind }),
         });
         if (!response.ok) {
-            throw new Error(`create sandbox failed: ${response.status}`);
+            throw new Error(await readErrorMessage(response, `create sandbox failed: ${response.status}`));
         }
         await loadSandboxes();
+    }
+
+    async function readErrorMessage(response, fallback) {
+        try {
+            const body = await response.json();
+            const err = body?.error;
+            if (typeof err === 'string') return err;
+            if (err && typeof err.message === 'string') {
+                return `${err.code ? `${err.code}: ` : ''}${err.message}`;
+            }
+            if (typeof body?.message === 'string') return body.message;
+        } catch {
+            // ignore parse errors
+        }
+        return fallback;
     }
 
     async function controlSandbox(id, action) {
@@ -98,7 +158,11 @@
             method: 'POST',
         });
         if (!response.ok) {
-            throw new Error(`${action} sandbox failed: ${response.status}`);
+            const detail = await readErrorMessage(
+                response,
+                `${action} sandbox failed: ${response.status}`,
+            );
+            throw new Error(detail);
         }
         await loadSandboxes();
     }
@@ -108,6 +172,9 @@
     });
     refreshBtn?.addEventListener('click', () => {
         loadSandboxes().catch((err) => showError(String(err.message || err)));
+    });
+    refreshAdaptersBtn?.addEventListener('click', () => {
+        loadAdapters().catch((err) => showError(String(err.message || err)));
     });
 
     loadSandboxes();

@@ -49,13 +49,16 @@ export function resolveLlamaCppDeployConfig(overrides?: Partial<LlamaCppDeployCo
   const envEnabled = process.env.KGM_LLAMA_CPP_ENABLED;
   const envCmd = process.env.KGM_LLAMA_SERVER_CMD;
   const envHint = process.env.KGM_LLAMA_CPP_INSTALL_HINT;
+  // ConfigStore / UI overrides win over env so Playground 门闩可即时生效
   return {
     enabled:
-      envEnabled !== undefined && String(envEnabled).trim() !== ""
-        ? parseLlamaCppEnableMode(envEnabled)
-        : (overrides?.enabled ?? "auto"),
-    command: (envCmd?.trim() || overrides?.command?.trim() || "llama-server"),
-    installHint: (envHint?.trim() || overrides?.installHint?.trim() || DEFAULT_INSTALL_HINT),
+      overrides?.enabled !== undefined
+        ? overrides.enabled
+        : envEnabled !== undefined && String(envEnabled).trim() !== ""
+          ? parseLlamaCppEnableMode(envEnabled)
+          : "auto",
+    command: (overrides?.command?.trim() || envCmd?.trim() || "llama-server"),
+    installHint: (overrides?.installHint?.trim() || envHint?.trim() || DEFAULT_INSTALL_HINT),
   };
 }
 

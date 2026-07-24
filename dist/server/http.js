@@ -14,6 +14,10 @@ import { SandboxConfigurationError } from "../sandbox/manager.js";
 import { ManagedModelManager } from "../models/modelManager.js";
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from "../routing/routingService.js";
 import { assertHttpAccessConfig, createHttpAccessConfigFromEnv, HttpRequestAccess, } from "./httpAccess.js";
+import { getOpsStore } from "../admin/opsStore.js";
+import { runWithOpsAuthAsync } from "../admin/opsAuthContext.js";
+import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
+import { resolveModelAlias } from "../admin/modelAliasResolve.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText } from "./httpJsonHelpers.js";
 import { getOptimizer } from "../optimization/optimizer.js";
@@ -25,6 +29,8 @@ import { generateId } from "../utils/id.js";
 import { logger } from "../observability/logger.js";
 import { validateEnv } from "../config/envValidation.js";
 import { setupGracefulShutdown } from "../observability/gracefulShutdown.js";
+import { evaluateReadiness } from "./readiness.js";
+import { resolveRequestTraceIds, traceResponseHeaders } from "../observability/requestTrace.js";
 import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
 import { handleRuntimeRoute } from "./routes/runtime.js";
 import { handleGraphRoute } from "./routes/graph.js";
@@ -52,17 +58,54 @@ export function createKgmRequestListener(params) {
                     installHint: worker.installHint,
                 };
             },
+            ds4: () => {
+                const worker = params.configStore.get().workers.ds4;
+                return {
+                    enabled: worker.enabled,
+                    command: worker.command,
+                    installHint: worker.installHint,
+                    chdir: worker.chdir,
+                };
+            },
         });
     const routingHistory = createRoutingHistoryStoreFromEnv();
     const responseStore = new OpenAiResponseStore();
     const accessConfig = createHttpAccessConfigFromEnv();
     assertHttpAccessConfig(accessConfig);
-    const access = new HttpRequestAccess(accessConfig);
+    const access = new HttpRequestAccess(accessConfig, {
+        resolveVirtualKey: async (raw) => {
+            try {
+                const store = await getOpsStore();
+                return store.findVirtualKeyByRaw(raw);
+            }
+            catch {
+                return undefined;
+            }
+        },
+        checkBudget: async (keyId) => {
+            try {
+                const store = await getOpsStore();
+                const result = store.assertBudgetAllows(keyId);
+                if (!result.ok) {
+                    return {
+                        ok: false,
+                        status: 402,
+                        message: `Budget exceeded (${result.status.budget.name}): spent $${result.status.spentUsd.toFixed(4)} / $${result.status.budget.limitUsd.toFixed(4)}`,
+                    };
+                }
+                return { ok: true };
+            }
+            catch {
+                return { ok: true };
+            }
+        },
+    });
     logger.info({
         securityMode: accessConfig.securityMode,
         apiKeyEnabled: Boolean(accessConfig.apiKey),
         rateLimit: accessConfig.rateLimit,
         trustProxy: accessConfig.trustProxy,
+        virtualKeys: true,
     }, "HTTP access policy ready");
     const startedAt = Date.now();
     const discoveryService = new InferenceDiscoveryService();
@@ -399,768 +442,867 @@ export function createKgmRequestListener(params) {
                 return;
             }
             const url = new URL(req.url ?? "", "http://localhost");
-            if (!access.check(req, res, url.pathname)) {
+            if (!(await access.checkAsync(req, res, url.pathname))) {
                 return;
             }
-            appendHttpAccessLog({
-                ts: new Date().toISOString(),
-                method: req.method ?? "?",
-                pathname: url.pathname,
-            });
-            if (await handleYueliaiRoute(req, res, url.pathname, { configStore: params.configStore })) {
-                return;
-            }
-            if (req.method === "GET" && url.pathname === "/health") {
-                const health = {
-                    status: "ok",
-                    timestamp: new Date().toISOString(),
-                    uptime: process.uptime(),
-                    environment: env.NODE_ENV,
-                    version: process.env.npm_package_version || "0.2.0",
-                    checks: {
-                        memory: {
-                            used: process.memoryUsage().heapUsed / 1024 / 1024,
-                            total: process.memoryUsage().heapTotal / 1024 / 1024,
-                            rss: process.memoryUsage().rss / 1024 / 1024,
+            const auth = access.getLastAuth();
+            await runWithOpsAuthAsync(auth, async () => {
+                appendHttpAccessLog({
+                    ts: new Date().toISOString(),
+                    method: req.method ?? "?",
+                    pathname: url.pathname,
+                });
+                if (await handleYueliaiRoute(req, res, url.pathname, { configStore: params.configStore })) {
+                    return;
+                }
+                const isOpsAdminPath = url.pathname === "/v1/kgm/ops/overview" ||
+                    url.pathname.startsWith("/v1/kgm/keys") ||
+                    url.pathname.startsWith("/v1/kgm/usage") ||
+                    url.pathname.startsWith("/v1/kgm/budgets") ||
+                    url.pathname.startsWith("/v1/kgm/aliases");
+                if (isOpsAdminPath) {
+                    const queryObj = Object.fromEntries(url.searchParams.entries());
+                    let body = { __query: queryObj };
+                    if (req.method !== "GET" && req.method !== "DELETE" && req.method !== "HEAD") {
+                        const parsed = await readJson(req);
+                        body = { ...parsed, __query: queryObj };
+                    }
+                    if (await handleOpsAdminRoute({
+                        method: req.method ?? "GET",
+                        pathname: url.pathname,
+                        body,
+                        res,
+                        sendJson,
+                        isMaster: auth.kind === "master" || (!accessConfig.apiKey && auth.kind === "anonymous"),
+                    })) {
+                        return;
+                    }
+                }
+                if (req.method === "GET" && url.pathname === "/health") {
+                    const health = {
+                        status: "ok",
+                        timestamp: new Date().toISOString(),
+                        uptime: process.uptime(),
+                        environment: env.NODE_ENV,
+                        version: process.env.npm_package_version || "0.2.0",
+                        checks: {
+                            memory: {
+                                used: process.memoryUsage().heapUsed / 1024 / 1024,
+                                total: process.memoryUsage().heapTotal / 1024 / 1024,
+                                rss: process.memoryUsage().rss / 1024 / 1024,
+                            },
+                            cpu: process.cpuUsage(),
                         },
-                        cpu: process.cpuUsage(),
-                    },
-                };
-                return sendJson(res, 200, health);
-            }
-            /** OpenAI-adjacent / 文稿常用路径：与 `/health` 互补，便于负载均衡与控制台探测统一走 `/v1/*`。 */
-            if (req.method === "GET" && url.pathname === "/v1/status") {
-                return sendJson(res, 200, {
-                    status: "ok",
-                    service: "yueli-kgm-computing",
-                    timestamp: new Date().toISOString(),
-                    uptime_seconds: process.uptime(),
-                    version: process.env.npm_package_version || "0.2.0",
-                    node: process.version,
-                    environment: env.NODE_ENV,
-                    endpoints: {
-                        health: "/health",
-                        metrics: "/metrics",
-                        openapi: "/openapi.json",
-                        runtime_status: "/v1/runtime/status",
-                    },
-                });
-            }
-            if (req.method === "GET" && url.pathname === "/metrics") {
-                return sendText(res, 200, modelManager.getPrometheusMetrics());
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/optimize/stats") {
-                const optimizer = getOptimizer();
-                return sendJson(res, 200, {
-                    optimizer: optimizer.getStats(),
-                    timestamp: new Date().toISOString(),
-                });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/optimize/clear-cache") {
-                const optimizer = getOptimizer();
-                optimizer.clearCache();
-                return sendJson(res, 200, { cleared: true, timestamp: new Date().toISOString() });
-            }
-            if (req.method === "GET" && (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json")) {
-                return sendJson(res, 200, getKgmOpenApiV1());
-            }
-            if (url.pathname.startsWith("/v1/runtime/")) {
-                const body = req.method === "POST" ? await readJson(req) : undefined;
-                const handled = await handleRuntimeRoute({
-                    method: req.method ?? "GET",
-                    pathname: url.pathname,
-                    body,
-                    res,
-                    sendJson,
-                    configStore: params.configStore,
-                    modelManager,
-                    discoveryService,
-                    startedAt,
-                });
-                if (handled)
-                    return;
-            }
-            if (req.method === "POST" &&
-                (url.pathname === "/v1/kgm/graph/export" ||
-                    url.pathname === "/v1/kgm/graph/import" ||
-                    url.pathname === "/v1/kgm/graph/query" ||
-                    url.pathname === "/v1/kgm/graph/reason/dual_track")) {
-                const body = await readJson(req);
-                const handled = await handleGraphRoute({
-                    method: req.method,
-                    pathname: url.pathname,
-                    body,
-                    res,
-                    sendJson,
-                    graphStore: params.graphStore,
-                    memoryStore: params.memoryStore,
-                    embedder: params.embedder,
-                    llm: params.llmClient,
-                    requireGraphNamespace,
-                });
-                if (handled)
-                    return;
-            }
-            if (req.method === "GET" && url.pathname === "/v1/models") {
-                const configuredOnly = url.searchParams.get("configured") === "true" ||
-                    url.searchParams.get("configured_only") === "1";
-                let configuredProviders;
-                if (configuredOnly) {
-                    const pcm = new ProviderConfigurationManager(process.env.KGM_PROVIDER_CONFIG_PATH ?? "config/model-providers.json");
-                    await pcm.loadConfiguration();
-                    pcm.updateFromEnvironment();
-                    configuredProviders = pcm.getActiveProviderConfigs().filter((p) => p.apiKey || p.apiKeys?.length);
+                        probes: {
+                            liveness: "/health",
+                            readiness: "/ready",
+                        },
+                    };
+                    return sendJson(res, 200, health);
                 }
-                return sendJson(res, 200, buildOpenAiModelList(params.configStore, modelManager, {
-                    configuredOnly,
-                    configuredProviders,
-                }));
-            }
-            if (req.method === "GET" && url.pathname === "/v1/admin/model-providers") {
-                return handleGetModelProviders(res);
-            }
-            if (req.method === "PUT" && url.pathname === "/v1/admin/model-providers") {
-                return handlePutModelProviders(req, res, params.configStore);
-            }
-            if (req.method === "GET" && url.pathname === "/v1/models/effective") {
-                const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
-                return sendJson(res, 200, buildEffectiveModels({ configStore: params.configStore, modelManager, discovery }));
-            }
-            if (req.method === "GET" && url.pathname === "/v1/models/raw") {
-                const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
-                return sendJson(res, 200, buildRawModels({ configStore: params.configStore, modelManager, discovery }));
-            }
-            // 模型管理 API: 扫描/发现本地模型
-            if (req.method === "POST" && url.pathname === "/v1/kgm/models/discover") {
-                const payload = (await readJson(req));
-                const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
-                const models = await globalModelDiscovery.discoverAll(payload);
-                return sendJson(res, 200, { models, discoveredAt: new Date().toISOString() });
-            }
-            // 模型管理 API: 获取已发现的模型
-            if (req.method === "GET" && url.pathname === "/v1/kgm/models/discovered") {
-                const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
-                return sendJson(res, 200, { models: globalModelDiscovery.getDiscoveredModels() });
-            }
-            // 模型管理 API: 导入已发现的模型
-            if (req.method === "POST" && url.pathname.startsWith("/v1/kgm/models/discovered/")) {
-                const modelId = url.pathname.substring("/v1/kgm/models/discovered/".length);
-                const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
-                const discovered = globalModelDiscovery.getModel(modelId);
-                if (!discovered) {
-                    return sendJson(res, 404, kgmErrorBody("model_not_found", `Model not found: ${modelId}`, 404));
-                }
-                const payload = (await readJson(req));
-                const result = await modelManager.createModel({
-                    pull: {
-                        sourceType: discovered.source,
-                        localPath: discovered.path,
-                        modelName: discovered.id,
-                    },
-                    runtime: payload.runtime ? { runtime: payload.runtime } : undefined,
-                    autoStart: payload.autoStart ?? false,
-                });
-                return sendJson(res, 200, result);
-            }
-            // 模型管理 API: 上传本地模型
-            if (req.method === "POST" && url.pathname === "/v1/kgm/models/upload") {
-                const payload = (await readJson(req));
-                const result = await modelManager.createModel({
-                    pull: {
-                        sourceType: "local",
-                        localPath: payload.localPath,
-                        name: payload.name,
-                        modelName: payload.modelName,
-                    },
-                    runtime: payload.runtime ? { runtime: payload.runtime } : undefined,
-                    autoStart: payload.autoStart ?? false,
-                });
-                return sendJson(res, 200, result);
-            }
-            // 模型管理 API: 列出所有模型（详细）
-            if (req.method === "GET" && url.pathname === "/v1/kgm/models") {
-                return sendJson(res, 200, {
-                    artifacts: modelManager.listArtifacts(),
-                    runtimes: modelManager.listRuntimes(),
-                    models: modelManager.listModels(),
-                });
-            }
-            // 模型管理 API: 删除模型
-            if (req.method === "DELETE" && url.pathname.startsWith("/v1/kgm/models/")) {
-                const modelId = url.pathname.substring("/v1/kgm/models/".length);
-                const result = modelManager.deleteManagedEntity(modelId);
-                return sendJson(res, 200, { success: true, result });
-            }
-            // 模型管理 API: 标签管理 - 添加标签
-            if (req.method === "POST" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/add$/)) {
-                const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/add$/);
-                if (!match)
-                    return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
-                const modelId = match[1];
-                const payload = (await readJson(req));
-                modelManager.addTags(modelId, payload.tags);
-                return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
-            }
-            // 模型管理 API: 标签管理 - 移除标签
-            if (req.method === "POST" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/remove$/)) {
-                const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/remove$/);
-                if (!match)
-                    return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
-                const modelId = match[1];
-                const payload = (await readJson(req));
-                modelManager.removeTags(modelId, payload.tags);
-                return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
-            }
-            // 模型管理 API: 标签管理 - 设置标签
-            if (req.method === "PUT" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags$/)) {
-                const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags$/);
-                if (!match)
-                    return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
-                const modelId = match[1];
-                const payload = (await readJson(req));
-                modelManager.setTags(modelId, payload.tags);
-                return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
-            }
-            if (req.method === "POST" && (url.pathname === "/v1/embeddings" || url.pathname === "/v1/embed")) {
-                const payload = (await readJson(req));
-                const inputs = Array.isArray(payload.input) ? payload.input : [payload.input];
-                const embeddings = await Promise.all(inputs.map((text) => params.embedder.embed(text)));
-                const results = embeddings.map((embedding, index) => ({
-                    object: "embedding",
-                    index,
-                    embedding: payload.encoding_format === "base64" ? Buffer.from(embedding).toString("base64") : embedding,
-                }));
-                return sendJson(res, 200, {
-                    object: "list",
-                    data: results,
-                    model: payload.model || params.configStore.get().embedding.model,
-                    usage: {
-                        prompt_tokens: inputs.reduce((acc, text) => acc + Math.ceil(text.length / 4), 0),
-                        total_tokens: inputs.reduce((acc, text) => acc + Math.ceil(text.length / 4), 0),
-                    },
-                });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/search") {
-                const payload = (await readJson(req));
-                const topK = Math.max(1, Math.min(payload.top_k ?? 10, 50));
-                const mode = payload.mode ?? "hybrid";
-                const results = [];
-                if (mode === "lexical") {
-                    if (payload.userId) {
-                        const memResults = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, { lexicalWeight: 0.95, overFetch: 5 });
-                        results.push(...memResults.map((r) => ({
-                            id: r.id,
-                            type: "memory",
-                            title: r.text.substring(0, 50) + "...",
-                            snippet: r.text.substring(0, 200) + "...",
-                            score: r.score ?? 0.5,
-                        })));
+                /** 就绪探针：可否接流量；与 /health 存活探针分层（K8s readinessProbe 用此路径） */
+                if (req.method === "GET" && url.pathname === "/ready") {
+                    const cfg = params.configStore.get();
+                    const llmConfigured = Boolean((cfg.llm?.baseUrl && String(cfg.llm.baseUrl).trim()) ||
+                        params.autoRoutingClient ||
+                        params.llmClient);
+                    const runtimes = modelManager.listRuntimes();
+                    let running = 0;
+                    let error = 0;
+                    let degraded = 0;
+                    for (const rt of runtimes) {
+                        if (rt.status === "running")
+                            running += 1;
+                        else if (rt.status === "error")
+                            error += 1;
+                        if (rt.healthStatus === "degraded")
+                            degraded += 1;
                     }
+                    const report = evaluateReadiness({
+                        env: process.env,
+                        processStartedAtMs: startedAt,
+                        llmConfigured,
+                        workers: {
+                            running,
+                            error,
+                            degraded,
+                            total: runtimes.length,
+                        },
+                    });
+                    return sendJson(res, report.status === "ready" ? 200 : 503, report);
                 }
-                if (mode === "vector" || mode === "hybrid") {
-                    if (payload.userId) {
-                        const memOpts = memorySearchOptionsFromKgm({});
-                        const memResults = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, memOpts);
-                        results.push(...memResults.map((r) => ({
-                            id: r.id,
-                            type: "memory",
-                            title: r.text.substring(0, 50) + "...",
-                            snippet: r.text.substring(0, 200) + "...",
-                            score: r.score ?? 0.5,
-                        })));
+                /** OpenAI-adjacent / 文稿常用路径：与 `/health` 互补，便于负载均衡与控制台探测统一走 `/v1/*`。 */
+                if (req.method === "GET" && url.pathname === "/v1/status") {
+                    return sendJson(res, 200, {
+                        status: "ok",
+                        service: "yueli-kgm-computing",
+                        timestamp: new Date().toISOString(),
+                        uptime_seconds: process.uptime(),
+                        version: process.env.npm_package_version || "0.2.0",
+                        node: process.version,
+                        environment: env.NODE_ENV,
+                        endpoints: {
+                            health: "/health",
+                            ready: "/ready",
+                            metrics: "/metrics",
+                            openapi: "/openapi.json",
+                            runtime_status: "/v1/runtime/status",
+                        },
+                    });
+                }
+                if (req.method === "GET" && url.pathname === "/metrics") {
+                    return sendText(res, 200, modelManager.getPrometheusMetrics());
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/optimize/stats") {
+                    const optimizer = getOptimizer();
+                    return sendJson(res, 200, {
+                        optimizer: optimizer.getStats(),
+                        timestamp: new Date().toISOString(),
+                    });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/optimize/clear-cache") {
+                    const optimizer = getOptimizer();
+                    optimizer.clearCache();
+                    return sendJson(res, 200, { cleared: true, timestamp: new Date().toISOString() });
+                }
+                if (req.method === "GET" && (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json")) {
+                    return sendJson(res, 200, getKgmOpenApiV1());
+                }
+                if (url.pathname.startsWith("/v1/runtime/")) {
+                    const body = req.method === "POST" ? await readJson(req) : undefined;
+                    const handled = await handleRuntimeRoute({
+                        method: req.method ?? "GET",
+                        pathname: url.pathname,
+                        body,
+                        res,
+                        sendJson,
+                        configStore: params.configStore,
+                        modelManager,
+                        discoveryService,
+                        startedAt,
+                    });
+                    if (handled)
+                        return;
+                }
+                if (req.method === "POST" &&
+                    (url.pathname === "/v1/kgm/graph/export" ||
+                        url.pathname === "/v1/kgm/graph/import" ||
+                        url.pathname === "/v1/kgm/graph/query" ||
+                        url.pathname === "/v1/kgm/graph/reason/dual_track")) {
+                    const body = await readJson(req);
+                    const handled = await handleGraphRoute({
+                        method: req.method,
+                        pathname: url.pathname,
+                        body,
+                        res,
+                        sendJson,
+                        graphStore: params.graphStore,
+                        memoryStore: params.memoryStore,
+                        embedder: params.embedder,
+                        llm: params.llmClient,
+                        requireGraphNamespace,
+                    });
+                    if (handled)
+                        return;
+                }
+                if (req.method === "GET" && url.pathname === "/v1/models") {
+                    const configuredOnly = url.searchParams.get("configured") === "true" ||
+                        url.searchParams.get("configured_only") === "1";
+                    let configuredProviders;
+                    if (configuredOnly) {
+                        const pcm = new ProviderConfigurationManager(process.env.KGM_PROVIDER_CONFIG_PATH ?? "config/model-providers.json");
+                        await pcm.loadConfiguration();
+                        pcm.updateFromEnvironment();
+                        configuredProviders = pcm.getActiveProviderConfigs().filter((p) => p.apiKey || p.apiKeys?.length);
                     }
+                    return sendJson(res, 200, buildOpenAiModelList(params.configStore, modelManager, {
+                        configuredOnly,
+                        configuredProviders,
+                    }));
                 }
-                if (mode === "kg" || mode === "hybrid") {
-                    const namespace = payload.namespace || payload.userId;
-                    if (namespace) {
-                        try {
-                            const kgSubgraph = await params.graphStore.querySubgraph({
-                                query: payload.query,
-                                namespace,
-                                limit: topK,
-                            });
-                            results.push(...kgSubgraph.triples.map((r, idx) => ({
+                if (req.method === "GET" && url.pathname === "/v1/admin/model-providers") {
+                    return handleGetModelProviders(res);
+                }
+                if (req.method === "PUT" && url.pathname === "/v1/admin/model-providers") {
+                    return handlePutModelProviders(req, res, params.configStore);
+                }
+                if (req.method === "GET" && url.pathname === "/v1/models/effective") {
+                    const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+                    return sendJson(res, 200, buildEffectiveModels({ configStore: params.configStore, modelManager, discovery }));
+                }
+                if (req.method === "GET" && url.pathname === "/v1/models/raw") {
+                    const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+                    return sendJson(res, 200, buildRawModels({ configStore: params.configStore, modelManager, discovery }));
+                }
+                // 模型管理 API: 扫描/发现本地模型
+                if (req.method === "POST" && url.pathname === "/v1/kgm/models/discover") {
+                    const payload = (await readJson(req));
+                    const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
+                    const models = await globalModelDiscovery.discoverAll(payload);
+                    return sendJson(res, 200, { models, discoveredAt: new Date().toISOString() });
+                }
+                // 模型管理 API: 获取已发现的模型
+                if (req.method === "GET" && url.pathname === "/v1/kgm/models/discovered") {
+                    const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
+                    return sendJson(res, 200, { models: globalModelDiscovery.getDiscoveredModels() });
+                }
+                // 模型管理 API: 导入已发现的模型
+                if (req.method === "POST" && url.pathname.startsWith("/v1/kgm/models/discovered/")) {
+                    const modelId = url.pathname.substring("/v1/kgm/models/discovered/".length);
+                    const { globalModelDiscovery } = await import("../inference/modelDiscovery.js");
+                    const discovered = globalModelDiscovery.getModel(modelId);
+                    if (!discovered) {
+                        return sendJson(res, 404, kgmErrorBody("model_not_found", `Model not found: ${modelId}`, 404));
+                    }
+                    const payload = (await readJson(req));
+                    const result = await modelManager.createModel({
+                        pull: {
+                            sourceType: discovered.source,
+                            localPath: discovered.path,
+                            modelName: discovered.id,
+                        },
+                        runtime: payload.runtime ? { runtime: payload.runtime } : undefined,
+                        autoStart: payload.autoStart ?? false,
+                    });
+                    return sendJson(res, 200, result);
+                }
+                // 模型管理 API: 上传本地模型
+                if (req.method === "POST" && url.pathname === "/v1/kgm/models/upload") {
+                    const payload = (await readJson(req));
+                    const result = await modelManager.createModel({
+                        pull: {
+                            sourceType: "local",
+                            localPath: payload.localPath,
+                            name: payload.name,
+                            modelName: payload.modelName,
+                        },
+                        runtime: payload.runtime ? { runtime: payload.runtime } : undefined,
+                        autoStart: payload.autoStart ?? false,
+                    });
+                    return sendJson(res, 200, result);
+                }
+                // 模型管理 API: 列出所有模型（详细）
+                if (req.method === "GET" && url.pathname === "/v1/kgm/models") {
+                    return sendJson(res, 200, {
+                        artifacts: modelManager.listArtifacts(),
+                        runtimes: modelManager.listRuntimes(),
+                        models: modelManager.listModels(),
+                    });
+                }
+                // 模型管理 API: 删除模型
+                if (req.method === "DELETE" && url.pathname.startsWith("/v1/kgm/models/")) {
+                    const modelId = url.pathname.substring("/v1/kgm/models/".length);
+                    const result = modelManager.deleteManagedEntity(modelId);
+                    return sendJson(res, 200, { success: true, result });
+                }
+                // 模型管理 API: 标签管理 - 添加标签
+                if (req.method === "POST" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/add$/)) {
+                    const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/add$/);
+                    if (!match)
+                        return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
+                    const modelId = match[1];
+                    const payload = (await readJson(req));
+                    modelManager.addTags(modelId, payload.tags);
+                    return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
+                }
+                // 模型管理 API: 标签管理 - 移除标签
+                if (req.method === "POST" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/remove$/)) {
+                    const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags\/remove$/);
+                    if (!match)
+                        return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
+                    const modelId = match[1];
+                    const payload = (await readJson(req));
+                    modelManager.removeTags(modelId, payload.tags);
+                    return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
+                }
+                // 模型管理 API: 标签管理 - 设置标签
+                if (req.method === "PUT" && url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags$/)) {
+                    const match = url.pathname.match(/^\/v1\/kgm\/models\/([^/]+)\/tags$/);
+                    if (!match)
+                        return sendJson(res, 404, kgmErrorBody("not_found", "Not found", 404));
+                    const modelId = match[1];
+                    const payload = (await readJson(req));
+                    modelManager.setTags(modelId, payload.tags);
+                    return sendJson(res, 200, { success: true, modelId, tags: payload.tags });
+                }
+                if (req.method === "POST" && (url.pathname === "/v1/embeddings" || url.pathname === "/v1/embed")) {
+                    const payload = (await readJson(req));
+                    const inputs = Array.isArray(payload.input) ? payload.input : [payload.input];
+                    const embeddings = await Promise.all(inputs.map((text) => params.embedder.embed(text)));
+                    const results = embeddings.map((embedding, index) => ({
+                        object: "embedding",
+                        index,
+                        embedding: payload.encoding_format === "base64" ? Buffer.from(embedding).toString("base64") : embedding,
+                    }));
+                    return sendJson(res, 200, {
+                        object: "list",
+                        data: results,
+                        model: payload.model || params.configStore.get().embedding.model,
+                        usage: {
+                            prompt_tokens: inputs.reduce((acc, text) => acc + Math.ceil(text.length / 4), 0),
+                            total_tokens: inputs.reduce((acc, text) => acc + Math.ceil(text.length / 4), 0),
+                        },
+                    });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/search") {
+                    const payload = (await readJson(req));
+                    const topK = Math.max(1, Math.min(payload.top_k ?? 10, 50));
+                    const mode = payload.mode ?? "hybrid";
+                    const results = [];
+                    if (mode === "lexical") {
+                        if (payload.userId) {
+                            const memResults = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, { lexicalWeight: 0.95, overFetch: 5 });
+                            results.push(...memResults.map((r) => ({
                                 id: r.id,
-                                type: "kg",
-                                title: `${r.subject} ${r.predicate} ${r.object}`,
-                                snippet: `${r.subject} ${r.predicate} ${r.object}`,
-                                score: 0.3 - (idx * 0.01),
+                                type: "memory",
+                                title: r.text.substring(0, 50) + "...",
+                                snippet: r.text.substring(0, 200) + "...",
+                                score: r.score ?? 0.5,
                             })));
                         }
-                        catch {
-                            // Graph search not available
+                    }
+                    if (mode === "vector" || mode === "hybrid") {
+                        if (payload.userId) {
+                            const memOpts = memorySearchOptionsFromKgm({});
+                            const memResults = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, memOpts);
+                            results.push(...memResults.map((r) => ({
+                                id: r.id,
+                                type: "memory",
+                                title: r.text.substring(0, 50) + "...",
+                                snippet: r.text.substring(0, 200) + "...",
+                                score: r.score ?? 0.5,
+                            })));
                         }
                     }
-                }
-                if (mode === "web" || mode === "hybrid") {
-                    const searchTool = params.toolRegistry.getDefinition("search_web");
-                    if (searchTool) {
-                        try {
-                            const webResult = await params.toolRegistry.execute("search_web", { query: payload.query, top_k: topK });
-                            if (webResult && webResult.results) {
-                                results.push(...webResult.results.map((r) => ({
-                                    id: r.url || `web_${results.length}`,
-                                    type: "web",
-                                    title: r.title || "Untitled",
-                                    snippet: r.snippet || "",
-                                    url: r.url,
-                                    score: 0.7,
+                    if (mode === "kg" || mode === "hybrid") {
+                        const namespace = payload.namespace || payload.userId;
+                        if (namespace) {
+                            try {
+                                const kgSubgraph = await params.graphStore.querySubgraph({
+                                    query: payload.query,
+                                    namespace,
+                                    limit: topK,
+                                });
+                                results.push(...kgSubgraph.triples.map((r, idx) => ({
+                                    id: r.id,
+                                    type: "kg",
+                                    title: `${r.subject} ${r.predicate} ${r.object}`,
+                                    snippet: `${r.subject} ${r.predicate} ${r.object}`,
+                                    score: 0.3 - (idx * 0.01),
                                 })));
                             }
-                        }
-                        catch {
-                            // Web search not available
+                            catch {
+                                // Graph search not available
+                            }
                         }
                     }
+                    if (mode === "web" || mode === "hybrid") {
+                        const searchTool = params.toolRegistry.getDefinition("search_web");
+                        if (searchTool) {
+                            try {
+                                const webResult = await params.toolRegistry.execute("search_web", { query: payload.query, top_k: topK });
+                                if (webResult && webResult.results) {
+                                    results.push(...webResult.results.map((r) => ({
+                                        id: r.url || `web_${results.length}`,
+                                        type: "web",
+                                        title: r.title || "Untitled",
+                                        snippet: r.snippet || "",
+                                        url: r.url,
+                                        score: 0.7,
+                                    })));
+                                }
+                            }
+                            catch {
+                                // Web search not available
+                            }
+                        }
+                    }
+                    results.sort((a, b) => b.score - a.score);
+                    return sendJson(res, 200, {
+                        query: payload.query,
+                        mode,
+                        top_k: topK,
+                        results: results.slice(0, topK),
+                        total: results.length,
+                    });
                 }
-                results.sort((a, b) => b.score - a.score);
-                return sendJson(res, 200, {
-                    query: payload.query,
-                    mode,
-                    top_k: topK,
-                    results: results.slice(0, topK),
-                    total: results.length,
-                });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/agents") {
-                return sendJson(res, 200, { agents: agentStore.list() });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/agents") {
-                const payload = (await readJson(req));
-                const agent = agentStore.create({
-                    name: payload.name,
-                    model: payload.model || params.configStore.get().llm.model,
-                    systemPrompt: payload.system_prompt || "",
-                    tools: payload.tools || [],
-                    memory: payload.memory?.enabled ?? true,
-                });
-                return sendJson(res, 201, { agent });
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/agents/")) {
-                const id = url.pathname.replace("/v1/agents/", "");
-                const agent = agentStore.get(id);
-                if (!agent) {
-                    return sendJson(res, 404, { error: "agent_not_found" });
+                if (req.method === "GET" && url.pathname === "/v1/agents") {
+                    return sendJson(res, 200, { agents: agentStore.list() });
                 }
-                return sendJson(res, 200, { agent });
-            }
-            if (req.method === "DELETE" && url.pathname.startsWith("/v1/agents/")) {
-                const id = url.pathname.replace("/v1/agents/", "");
-                const deleted = agentStore.delete(id);
-                return sendJson(res, 200, { deleted });
-            }
-            if (req.method === "POST" && url.pathname.match(/^\/v1\/agents\/[^/]+\/execute$/)) {
-                const match = url.pathname.match(/^\/v1\/agents\/([^/]+)\/execute$/);
-                if (!match) {
-                    return sendJson(res, 404, { error: "invalid_agent_path" });
+                if (req.method === "POST" && url.pathname === "/v1/agents") {
+                    const payload = (await readJson(req));
+                    const agent = agentStore.create({
+                        name: payload.name,
+                        model: payload.model || params.configStore.get().llm.model,
+                        systemPrompt: payload.system_prompt || "",
+                        tools: payload.tools || [],
+                        memory: payload.memory?.enabled ?? true,
+                    });
+                    return sendJson(res, 201, { agent });
                 }
-                const agentId = match[1];
-                const agent = agentStore.get(agentId);
-                if (!agent) {
-                    return sendJson(res, 404, { error: "agent_not_found" });
+                if (req.method === "GET" && url.pathname.startsWith("/v1/agents/")) {
+                    const id = url.pathname.replace("/v1/agents/", "");
+                    const agent = agentStore.get(id);
+                    if (!agent) {
+                        return sendJson(res, 404, { error: "agent_not_found" });
+                    }
+                    return sendJson(res, 200, { agent });
                 }
-                const payload = (await readJson(req));
-                if (payload.async) {
-                    const taskId = taskStore.create({
-                        type: "agent_execute",
-                        agentId,
+                if (req.method === "DELETE" && url.pathname.startsWith("/v1/agents/")) {
+                    const id = url.pathname.replace("/v1/agents/", "");
+                    const deleted = agentStore.delete(id);
+                    return sendJson(res, 200, { deleted });
+                }
+                if (req.method === "POST" && url.pathname.match(/^\/v1\/agents\/[^/]+\/execute$/)) {
+                    const match = url.pathname.match(/^\/v1\/agents\/([^/]+)\/execute$/);
+                    if (!match) {
+                        return sendJson(res, 404, { error: "invalid_agent_path" });
+                    }
+                    const agentId = match[1];
+                    const agent = agentStore.get(agentId);
+                    if (!agent) {
+                        return sendJson(res, 404, { error: "agent_not_found" });
+                    }
+                    const payload = (await readJson(req));
+                    if (payload.async) {
+                        const taskId = taskStore.create({
+                            type: "agent_execute",
+                            agentId,
+                            input: payload.input,
+                            sessionId: payload.session_id,
+                            status: "queued",
+                        });
+                        return sendJson(res, 202, { task_id: taskId, status: "queued" });
+                    }
+                    const kgmRequest = {
+                        userId: payload.session_id || "anonymous",
                         input: payload.input,
+                        sessionId: payload.session_id,
+                        model: agent.model,
+                        metadata: { agentId, tools: agent.tools, mode: agent.systemPrompt ? "reasoning" : "chat" },
+                    };
+                    const response = await params.scheduler.run(kgmRequest);
+                    return sendJson(res, 200, response);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/tasks") {
+                    const payload = (await readJson(req));
+                    const taskId = taskStore.create({
+                        type: payload.type || "inference",
+                        input: payload.input,
+                        agentId: payload.agent_id,
                         sessionId: payload.session_id,
                         status: "queued",
                     });
                     return sendJson(res, 202, { task_id: taskId, status: "queued" });
                 }
-                const kgmRequest = {
-                    userId: payload.session_id || "anonymous",
-                    input: payload.input,
-                    sessionId: payload.session_id,
-                    model: agent.model,
-                    metadata: { agentId, tools: agent.tools, mode: agent.systemPrompt ? "reasoning" : "chat" },
-                };
-                const response = await params.scheduler.run(kgmRequest);
-                return sendJson(res, 200, response);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/tasks") {
-                const payload = (await readJson(req));
-                const taskId = taskStore.create({
-                    type: payload.type || "inference",
-                    input: payload.input,
-                    agentId: payload.agent_id,
-                    sessionId: payload.session_id,
-                    status: "queued",
-                });
-                return sendJson(res, 202, { task_id: taskId, status: "queued" });
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/tasks/")) {
-                const id = url.pathname.replace("/v1/tasks/", "");
-                const task = taskStore.get(id);
-                if (!task) {
-                    return sendJson(res, 404, { error: "task_not_found" });
+                if (req.method === "GET" && url.pathname.startsWith("/v1/tasks/")) {
+                    const id = url.pathname.replace("/v1/tasks/", "");
+                    const task = taskStore.get(id);
+                    if (!task) {
+                        return sendJson(res, 404, { error: "task_not_found" });
+                    }
+                    return sendJson(res, 200, { task });
                 }
-                return sendJson(res, 200, { task });
-            }
-            if (req.method === "POST" && url.pathname.match(/^\/v1\/tasks\/[^/]+\/cancel$/)) {
-                const match = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/cancel$/);
-                if (!match) {
-                    return sendJson(res, 404, { error: "invalid_task_path" });
+                if (req.method === "POST" && url.pathname.match(/^\/v1\/tasks\/[^/]+\/cancel$/)) {
+                    const match = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/cancel$/);
+                    if (!match) {
+                        return sendJson(res, 404, { error: "invalid_task_path" });
+                    }
+                    const taskId = match[1];
+                    const cancelled = taskStore.cancel(taskId);
+                    return sendJson(res, 200, { cancelled, task_id: taskId });
                 }
-                const taskId = match[1];
-                const cancelled = taskStore.cancel(taskId);
-                return sendJson(res, 200, { cancelled, task_id: taskId });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/tasks") {
-                const status = url.searchParams.get("status");
-                let tasks = taskStore.list();
-                if (status) {
-                    tasks = tasks.filter((t) => t.status === status);
+                if (req.method === "GET" && url.pathname === "/v1/tasks") {
+                    const status = url.searchParams.get("status");
+                    let tasks = taskStore.list();
+                    if (status) {
+                        tasks = tasks.filter((t) => t.status === status);
+                    }
+                    return sendJson(res, 200, { tasks });
                 }
-                return sendJson(res, 200, { tasks });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/workflows") {
-                const state = url.searchParams.get("state");
-                let workflows = workflowStore.list();
-                if (state) {
-                    workflows = workflows.filter((w) => w.state === state);
+                if (req.method === "GET" && url.pathname === "/v1/workflows") {
+                    const state = url.searchParams.get("state");
+                    let workflows = workflowStore.list();
+                    if (state) {
+                        workflows = workflows.filter((w) => w.state === state);
+                    }
+                    return sendJson(res, 200, { workflows });
                 }
-                return sendJson(res, 200, { workflows });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/workflows") {
-                const payload = (await readJson(req));
-                const workflow = workflowStore.create({
-                    name: payload.name,
-                    description: payload.description,
-                    nodes: payload.nodes,
-                    edges: payload.edges,
-                    state: payload.state || "draft",
-                });
-                return sendJson(res, 201, { workflow });
-            }
-            if (req.method === "GET" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
-                const id = url.pathname.replace("/v1/workflows/", "");
-                const workflow = workflowStore.get(id);
-                if (!workflow) {
-                    return sendJson(res, 404, { error: "workflow_not_found" });
-                }
-                return sendJson(res, 200, { workflow });
-            }
-            if (req.method === "PUT" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
-                const id = url.pathname.replace("/v1/workflows/", "");
-                const payload = (await readJson(req));
-                const updated = workflowStore.update(id, payload);
-                if (!updated) {
-                    return sendJson(res, 404, { error: "workflow_not_found" });
-                }
-                const workflow = workflowStore.get(id);
-                return sendJson(res, 200, { workflow });
-            }
-            if (req.method === "DELETE" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
-                const id = url.pathname.replace("/v1/workflows/", "");
-                const deleted = workflowStore.delete(id);
-                if (!deleted) {
-                    return sendJson(res, 404, { error: "workflow_not_found" });
-                }
-                return sendJson(res, 200, { deleted: true, workflow_id: id });
-            }
-            if (req.method === "POST" && url.pathname.match(/^\/v1\/workflows\/[^/]+\/execute$/)) {
-                const match = url.pathname.match(/^\/v1\/workflows\/([^/]+)\/execute$/);
-                if (!match) {
-                    return sendJson(res, 404, { error: "invalid_workflow_path" });
-                }
-                const workflowId = match[1];
-                const workflow = workflowStore.get(workflowId);
-                if (!workflow) {
-                    return sendJson(res, 404, { error: "workflow_not_found" });
-                }
-                const payload = (await readJson(req));
-                const execution = workflowExecutionStore.create({
-                    workflowId,
-                    input: payload.input,
-                    status: "queued",
-                });
-                return sendJson(res, 202, { execution });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/workflow-executions") {
-                const workflowId = url.searchParams.get("workflow_id");
-                let executions = workflowExecutionStore.list();
-                if (workflowId) {
-                    executions = executions.filter((e) => e.workflowId === workflowId);
-                }
-                return sendJson(res, 200, { executions });
-            }
-            if (req.method === "GET" && url.pathname.match(/^\/v1\/workflow-executions\/[^/]+$/)) {
-                const id = url.pathname.replace("/v1/workflow-executions/", "");
-                const execution = workflowExecutionStore.get(id);
-                if (!execution) {
-                    return sendJson(res, 404, { error: "execution_not_found" });
-                }
-                return sendJson(res, 200, { execution });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/evaluations") {
-                const type = url.searchParams.get("type");
-                const status = url.searchParams.get("status");
-                let evaluations = evaluationStore.list();
-                if (type) {
-                    evaluations = evaluations.filter((e) => e.type === type);
-                }
-                if (status) {
-                    evaluations = evaluations.filter((e) => e.status === status);
-                }
-                return sendJson(res, 200, { evaluations });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/evaluations") {
-                const payload = (await readJson(req));
-                const evaluation = evaluationStore.create({
-                    name: payload.name,
-                    type: payload.type,
-                    targetId: payload.target_id,
-                    benchmark: payload.benchmark,
-                    config: payload.config || {},
-                    status: "queued",
-                });
-                return sendJson(res, 201, { evaluation });
-            }
-            if (req.method === "GET" && url.pathname.match(/^\/v1\/evaluations\/[^/]+$/)) {
-                const id = url.pathname.replace("/v1/evaluations/", "");
-                const evaluation = evaluationStore.get(id);
-                if (!evaluation) {
-                    return sendJson(res, 404, { error: "evaluation_not_found" });
-                }
-                const runs = evaluationStore.getRuns(id);
-                return sendJson(res, 200, { evaluation, runs });
-            }
-            if (req.method === "POST" && url.pathname.match(/^\/v1\/evaluations\/[^/]+\/runs$/)) {
-                const match = url.pathname.match(/^\/v1\/evaluations\/([^/]+)\/runs$/);
-                if (!match) {
-                    return sendJson(res, 404, { error: "invalid_evaluation_path" });
-                }
-                const evaluationId = match[1];
-                const evaluation = evaluationStore.get(evaluationId);
-                if (!evaluation) {
-                    return sendJson(res, 404, { error: "evaluation_not_found" });
-                }
-                const payload = (await readJson(req));
-                const run = evaluationStore.addRun(evaluationId, payload);
-                return sendJson(res, 201, { run });
-            }
-            if (req.method === "DELETE" && url.pathname.match(/^\/v1\/evaluations\/[^/]+$/)) {
-                const id = url.pathname.replace("/v1/evaluations/", "");
-                const deleted = evaluationStore.delete(id);
-                if (!deleted) {
-                    return sendJson(res, 404, { error: "evaluation_not_found" });
-                }
-                return sendJson(res, 200, { deleted: true, evaluation_id: id });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/skills") {
-                const tools = params.toolRegistry.listDefinitions();
-                if (params.skillRuntime) {
-                    const skillRegistry = params.skillRuntime.getSkillRegistry();
-                    const skillNames = skillRegistry.listNames();
-                    const skills = skillNames.map(name => {
-                        const skill = skillRegistry.get(name);
-                        return skill || { name, description: "", steps: [] };
-                    });
-                    return sendJson(res, 200, { tools, skills });
-                }
-                return sendJson(res, 200, { tools, skills: [] });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/skills") {
-                const payload = (await readJson(req));
-                if (payload.type === "skill" && params.skillRuntime) {
-                    const skillRegistry = params.skillRuntime.getSkillRegistry();
-                    const skill = {
+                if (req.method === "POST" && url.pathname === "/v1/workflows") {
+                    const payload = (await readJson(req));
+                    const workflow = workflowStore.create({
                         name: payload.name,
                         description: payload.description,
-                        steps: [],
-                    };
-                    skillRegistry.register(skill);
-                    return sendJson(res, 201, { skill });
+                        nodes: payload.nodes,
+                        edges: payload.edges,
+                        state: payload.state || "draft",
+                    });
+                    return sendJson(res, 201, { workflow });
                 }
-                else {
-                    const toolDef = {
+                if (req.method === "GET" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
+                    const id = url.pathname.replace("/v1/workflows/", "");
+                    const workflow = workflowStore.get(id);
+                    if (!workflow) {
+                        return sendJson(res, 404, { error: "workflow_not_found" });
+                    }
+                    return sendJson(res, 200, { workflow });
+                }
+                if (req.method === "PUT" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
+                    const id = url.pathname.replace("/v1/workflows/", "");
+                    const payload = (await readJson(req));
+                    const updated = workflowStore.update(id, payload);
+                    if (!updated) {
+                        return sendJson(res, 404, { error: "workflow_not_found" });
+                    }
+                    const workflow = workflowStore.get(id);
+                    return sendJson(res, 200, { workflow });
+                }
+                if (req.method === "DELETE" && url.pathname.match(/^\/v1\/workflows\/[^/]+$/)) {
+                    const id = url.pathname.replace("/v1/workflows/", "");
+                    const deleted = workflowStore.delete(id);
+                    if (!deleted) {
+                        return sendJson(res, 404, { error: "workflow_not_found" });
+                    }
+                    return sendJson(res, 200, { deleted: true, workflow_id: id });
+                }
+                if (req.method === "POST" && url.pathname.match(/^\/v1\/workflows\/[^/]+\/execute$/)) {
+                    const match = url.pathname.match(/^\/v1\/workflows\/([^/]+)\/execute$/);
+                    if (!match) {
+                        return sendJson(res, 404, { error: "invalid_workflow_path" });
+                    }
+                    const workflowId = match[1];
+                    const workflow = workflowStore.get(workflowId);
+                    if (!workflow) {
+                        return sendJson(res, 404, { error: "workflow_not_found" });
+                    }
+                    const payload = (await readJson(req));
+                    const execution = workflowExecutionStore.create({
+                        workflowId,
+                        input: payload.input,
+                        status: "queued",
+                    });
+                    return sendJson(res, 202, { execution });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/workflow-executions") {
+                    const workflowId = url.searchParams.get("workflow_id");
+                    let executions = workflowExecutionStore.list();
+                    if (workflowId) {
+                        executions = executions.filter((e) => e.workflowId === workflowId);
+                    }
+                    return sendJson(res, 200, { executions });
+                }
+                if (req.method === "GET" && url.pathname.match(/^\/v1\/workflow-executions\/[^/]+$/)) {
+                    const id = url.pathname.replace("/v1/workflow-executions/", "");
+                    const execution = workflowExecutionStore.get(id);
+                    if (!execution) {
+                        return sendJson(res, 404, { error: "execution_not_found" });
+                    }
+                    return sendJson(res, 200, { execution });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/evaluations") {
+                    const type = url.searchParams.get("type");
+                    const status = url.searchParams.get("status");
+                    let evaluations = evaluationStore.list();
+                    if (type) {
+                        evaluations = evaluations.filter((e) => e.type === type);
+                    }
+                    if (status) {
+                        evaluations = evaluations.filter((e) => e.status === status);
+                    }
+                    return sendJson(res, 200, { evaluations });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/evaluations") {
+                    const payload = (await readJson(req));
+                    const evaluation = evaluationStore.create({
                         name: payload.name,
-                        kind: "tool",
-                        description: payload.description,
-                        inputSchema: payload.schema || {},
-                        outputSchema: {},
-                    };
-                    params.toolRegistry.register(toolDef, async () => ({ status: "not_implemented" }));
-                    return sendJson(res, 201, { tool: toolDef });
-                }
-            }
-            if (req.method === "GET" && url.pathname.match(/^\/v1\/models\/[^/]+$/)) {
-                const modelId = url.pathname.replace("/v1/models/", "");
-                const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
-                const effectiveModels = buildEffectiveModels({ configStore: params.configStore, modelManager, discovery });
-                const model = effectiveModels.data.find((m) => m.id === modelId);
-                if (!model) {
-                    return sendJson(res, 404, { error: "model_not_found" });
-                }
-                return sendJson(res, 200, model);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/models/pull") {
-                const payload = (await readJson(req));
-                const artifact = await modelManager.pull({ name: payload.model });
-                return sendJson(res, 200, { artifact });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/logs") {
-                const limit = parseNumber(url.searchParams.get("limit")) ?? 100;
-                const type = url.searchParams.get("type");
-                const logs = snapshotHttpAccessLog(limit);
-                return sendJson(res, 200, {
-                    logs,
-                    limit,
-                    type,
-                    total: logs.length,
-                    note: "Recent HTTP paths after auth (ring buffer); not full application audit logs.",
-                });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/admin/config") {
-                return sendJson(res, 200, params.configStore.get());
-            }
-            if (req.method === "GET" && url.pathname === "/v1/admin/versions") {
-                return sendJson(res, 200, {
-                    version: process.env.npm_package_version || "0.2.1",
-                    nodeVersion: process.version,
-                });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/admin/reload") {
-                const reloaded = params.configStore.reloadFromDisk();
-                if (reloaded && params.skillRuntime) {
-                    syncPlaygroundFromConfig({
-                        skillRegistry: params.skillRuntime.getSkillRegistry(),
-                        toolRegistry: params.toolRegistry,
-                        configStore: params.configStore,
+                        type: payload.type,
+                        targetId: payload.target_id,
+                        benchmark: payload.benchmark,
+                        config: payload.config || {},
+                        status: "queued",
                     });
+                    return sendJson(res, 201, { evaluation });
                 }
-                return sendJson(res, 200, {
-                    status: "ok",
-                    reloaded: Boolean(reloaded),
-                    message: reloaded ? "Config reloaded from disk" : "No persistPath or config file to reload",
-                });
-            }
-            if (req.method === "DELETE" && url.pathname.startsWith("/v1/memory/")) {
-                const id = url.pathname.replace("/v1/memory/", "");
-                const deleted = await params.memoryStore.deleteByChunkId(id);
-                if (!deleted) {
-                    return sendJson(res, 404, { error: "memory_not_found", deleted: false });
-                }
-                return sendJson(res, 200, { deleted: true, id });
-            }
-            if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
-                const payload = (await readJson(req));
-                const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
-                if (payload.stream) {
-                    const proxied = await maybeProxyNativeOpenAiStream({
-                        configStore: params.configStore,
-                        modelManager,
-                        protocol: "chat",
-                        payload,
-                        send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
-                    });
-                    if (proxied) {
-                        return;
+                if (req.method === "GET" && url.pathname.match(/^\/v1\/evaluations\/[^/]+$/)) {
+                    const id = url.pathname.replace("/v1/evaluations/", "");
+                    const evaluation = evaluationStore.get(id);
+                    if (!evaluation) {
+                        return sendJson(res, 404, { error: "evaluation_not_found" });
                     }
-                    const events = streamOpenAiChatCompletion({
-                        request: payload,
-                        contextBuilder: params.contextBuilder,
-                        llmClient: params.llmClient,
-                        toolRegistry: params.toolRegistry,
-                        configStore: params.configStore,
-                        outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
-                        responseStore,
-                        skillRuntime: params.skillRuntime,
-                        requestHeaders,
-                    });
-                    return await sendSse(res, events);
+                    const runs = evaluationStore.getRuns(id);
+                    return sendJson(res, 200, { evaluation, runs });
                 }
-                const response = await createOpenAiChatCompletion({
-                    request: payload,
-                    contextBuilder: params.contextBuilder,
-                    llmClient: params.llmClient,
-                    toolRegistry: params.toolRegistry,
-                    configStore: params.configStore,
-                    outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
-                    responseStore,
-                    skillRuntime: params.skillRuntime,
-                    requestHeaders,
-                });
-                return sendJson(res, 200, response);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/responses") {
-                const payload = (await readJson(req));
-                const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
-                if (payload.stream) {
-                    const proxied = await maybeProxyNativeOpenAiStream({
-                        configStore: params.configStore,
-                        modelManager,
-                        protocol: "responses",
-                        payload,
-                        send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
-                    });
-                    if (proxied) {
-                        return;
+                if (req.method === "POST" && url.pathname.match(/^\/v1\/evaluations\/[^/]+\/runs$/)) {
+                    const match = url.pathname.match(/^\/v1\/evaluations\/([^/]+)\/runs$/);
+                    if (!match) {
+                        return sendJson(res, 404, { error: "invalid_evaluation_path" });
                     }
-                    const events = streamOpenAiResponse({
-                        request: payload,
-                        contextBuilder: params.contextBuilder,
-                        llmClient: params.llmClient,
-                        toolRegistry: params.toolRegistry,
-                        configStore: params.configStore,
-                        outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
-                        responseStore,
-                        skillRuntime: params.skillRuntime,
-                        requestHeaders,
-                    });
-                    return await sendSse(res, events);
+                    const evaluationId = match[1];
+                    const evaluation = evaluationStore.get(evaluationId);
+                    if (!evaluation) {
+                        return sendJson(res, 404, { error: "evaluation_not_found" });
+                    }
+                    const payload = (await readJson(req));
+                    const run = evaluationStore.addRun(evaluationId, payload);
+                    return sendJson(res, 201, { run });
                 }
-                const response = await createOpenAiResponse({
-                    request: payload,
-                    contextBuilder: params.contextBuilder,
-                    llmClient: params.llmClient,
-                    toolRegistry: params.toolRegistry,
-                    configStore: params.configStore,
-                    outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
-                    responseStore,
-                    skillRuntime: params.skillRuntime,
-                    requestHeaders,
-                });
-                return sendJson(res, 200, response);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/messages") {
-                void readAnthropicApiKey(req);
-                const payload = (await readJson(req));
-                const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
-                if (shouldProxyAnthropicMessagesNative(payload)) {
-                    const apiKey = readAnthropicApiKey(req) ??
-                        params.configStore.get().llm.apiKey ??
-                        process.env.ANTHROPIC_API_KEY;
-                    if (!apiKey) {
-                        return sendJson(res, 400, { error: "anthropic_api_key_required" });
+                if (req.method === "DELETE" && url.pathname.match(/^\/v1\/evaluations\/[^/]+$/)) {
+                    const id = url.pathname.replace("/v1/evaluations/", "");
+                    const deleted = evaluationStore.delete(id);
+                    if (!deleted) {
+                        return sendJson(res, 404, { error: "evaluation_not_found" });
                     }
-                    const baseUrl = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com";
-                    const nativeBody = { ...payload };
-                    delete nativeBody.kgm;
+                    return sendJson(res, 200, { deleted: true, evaluation_id: id });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/skills") {
+                    const tools = params.toolRegistry.listDefinitions();
+                    if (params.skillRuntime) {
+                        const skillRegistry = params.skillRuntime.getSkillRegistry();
+                        const skillNames = skillRegistry.listNames();
+                        const skills = skillNames.map(name => {
+                            const skill = skillRegistry.get(name);
+                            return skill || { name, description: "", steps: [] };
+                        });
+                        return sendJson(res, 200, { tools, skills });
+                    }
+                    return sendJson(res, 200, { tools, skills: [] });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/skills") {
+                    const payload = (await readJson(req));
+                    if (payload.type === "skill" && params.skillRuntime) {
+                        const skillRegistry = params.skillRuntime.getSkillRegistry();
+                        const skill = {
+                            name: payload.name,
+                            description: payload.description,
+                            steps: [],
+                        };
+                        skillRegistry.register(skill);
+                        return sendJson(res, 201, { skill });
+                    }
+                    else {
+                        const toolDef = {
+                            name: payload.name,
+                            kind: "tool",
+                            description: payload.description,
+                            inputSchema: payload.schema || {},
+                            outputSchema: {},
+                        };
+                        params.toolRegistry.register(toolDef, async () => ({ status: "not_implemented" }));
+                        return sendJson(res, 201, { tool: toolDef });
+                    }
+                }
+                if (req.method === "GET" && url.pathname.match(/^\/v1\/models\/[^/]+$/)) {
+                    const modelId = url.pathname.replace("/v1/models/", "");
+                    const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
+                    const effectiveModels = buildEffectiveModels({ configStore: params.configStore, modelManager, discovery });
+                    const model = effectiveModels.data.find((m) => m.id === modelId);
+                    if (!model) {
+                        return sendJson(res, 404, { error: "model_not_found" });
+                    }
+                    return sendJson(res, 200, model);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/models/pull") {
+                    const payload = (await readJson(req));
+                    const artifact = await modelManager.pull({ name: payload.model });
+                    return sendJson(res, 200, { artifact });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/logs") {
+                    const limit = parseNumber(url.searchParams.get("limit")) ?? 100;
+                    const type = url.searchParams.get("type");
+                    const logs = snapshotHttpAccessLog(limit);
+                    return sendJson(res, 200, {
+                        logs,
+                        limit,
+                        type,
+                        total: logs.length,
+                        note: "Recent HTTP paths after auth (ring buffer); not full application audit logs.",
+                    });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/admin/config") {
+                    return sendJson(res, 200, params.configStore.get());
+                }
+                if (req.method === "GET" && url.pathname === "/v1/admin/versions") {
+                    return sendJson(res, 200, {
+                        version: process.env.npm_package_version || "0.2.1",
+                        nodeVersion: process.version,
+                    });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/admin/reload") {
+                    const reloaded = params.configStore.reloadFromDisk();
+                    if (reloaded && params.skillRuntime) {
+                        syncPlaygroundFromConfig({
+                            skillRegistry: params.skillRuntime.getSkillRegistry(),
+                            toolRegistry: params.toolRegistry,
+                            configStore: params.configStore,
+                        });
+                    }
+                    return sendJson(res, 200, {
+                        status: "ok",
+                        reloaded: Boolean(reloaded),
+                        message: reloaded ? "Config reloaded from disk" : "No persistPath or config file to reload",
+                    });
+                }
+                if (req.method === "DELETE" && url.pathname.startsWith("/v1/memory/")) {
+                    const id = url.pathname.replace("/v1/memory/", "");
+                    const deleted = await params.memoryStore.deleteByChunkId(id);
+                    if (!deleted) {
+                        return sendJson(res, 404, { error: "memory_not_found", deleted: false });
+                    }
+                    return sendJson(res, 200, { deleted: true, id });
+                }
+                if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
+                    const payload = (await readJson(req));
+                    const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
+                    const resolved = await resolveModelAlias(requestedModel);
+                    if (resolved?.alias) {
+                        payload.model = resolved.model;
+                    }
+                    if (auth.kind === "virtual" && auth.virtualKey?.allowedModels?.length) {
+                        const allowed = auth.virtualKey.allowedModels;
+                        const ok = (requestedModel && allowed.includes(requestedModel)) ||
+                            (payload.model && allowed.includes(String(payload.model))) ||
+                            (resolved?.alias && allowed.includes(resolved.alias.alias));
+                        if (!ok) {
+                            return sendJson(res, 403, kgmErrorBody("model_not_allowed", "Virtual key is not allowed to call this model", 403));
+                        }
+                    }
+                    const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
                     if (payload.stream) {
-                        const events = streamAnthropicMessagesNative({
+                        const proxied = await maybeProxyNativeOpenAiStream({
+                            configStore: params.configStore,
+                            modelManager,
+                            protocol: "chat",
+                            payload,
+                            send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
+                        });
+                        if (proxied) {
+                            return;
+                        }
+                        const events = streamOpenAiChatCompletion({
+                            request: payload,
+                            contextBuilder: params.contextBuilder,
+                            llmClient: params.llmClient,
+                            toolRegistry: params.toolRegistry,
+                            configStore: params.configStore,
+                            outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
+                            responseStore,
+                            skillRuntime: params.skillRuntime,
+                            requestHeaders,
+                        });
+                        return await sendSse(res, events);
+                    }
+                    const response = await createOpenAiChatCompletion({
+                        request: payload,
+                        contextBuilder: params.contextBuilder,
+                        llmClient: params.llmClient,
+                        toolRegistry: params.toolRegistry,
+                        configStore: params.configStore,
+                        outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
+                        responseStore,
+                        skillRuntime: params.skillRuntime,
+                        requestHeaders,
+                    });
+                    const corr = response.kgm
+                        ?.correlation;
+                    const ops = response.kgm?.ops;
+                    return sendJson(res, 200, response, traceResponseHeaders({
+                        requestId: corr?.requestId ?? String(response.id ?? ""),
+                        traceId: corr?.traceId ?? ops?.traceId ?? String(response.id ?? ""),
+                    }));
+                }
+                if (req.method === "POST" && url.pathname === "/v1/responses") {
+                    const payload = (await readJson(req));
+                    const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
+                    if (payload.stream) {
+                        const proxied = await maybeProxyNativeOpenAiStream({
+                            configStore: params.configStore,
+                            modelManager,
+                            protocol: "responses",
+                            payload,
+                            send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
+                        });
+                        if (proxied) {
+                            return;
+                        }
+                        const events = streamOpenAiResponse({
+                            request: payload,
+                            contextBuilder: params.contextBuilder,
+                            llmClient: params.llmClient,
+                            toolRegistry: params.toolRegistry,
+                            configStore: params.configStore,
+                            outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
+                            responseStore,
+                            skillRuntime: params.skillRuntime,
+                            requestHeaders,
+                        });
+                        return await sendSse(res, events);
+                    }
+                    const response = await createOpenAiResponse({
+                        request: payload,
+                        contextBuilder: params.contextBuilder,
+                        llmClient: params.llmClient,
+                        toolRegistry: params.toolRegistry,
+                        configStore: params.configStore,
+                        outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
+                        responseStore,
+                        skillRuntime: params.skillRuntime,
+                        requestHeaders,
+                    });
+                    const corr = response.kgm
+                        ?.correlation;
+                    const ops = response.kgm?.ops;
+                    return sendJson(res, 200, response, traceResponseHeaders({
+                        requestId: corr?.requestId ?? String(response.id ?? ""),
+                        traceId: corr?.traceId ?? ops?.traceId ?? String(response.id ?? ""),
+                    }));
+                }
+                if (req.method === "POST" && url.pathname === "/v1/messages") {
+                    void readAnthropicApiKey(req);
+                    const payload = (await readJson(req));
+                    const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
+                    if (shouldProxyAnthropicMessagesNative(payload)) {
+                        const apiKey = readAnthropicApiKey(req) ??
+                            params.configStore.get().llm.apiKey ??
+                            process.env.ANTHROPIC_API_KEY;
+                        if (!apiKey) {
+                            return sendJson(res, 400, { error: "anthropic_api_key_required" });
+                        }
+                        const baseUrl = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com";
+                        const nativeBody = { ...payload };
+                        delete nativeBody.kgm;
+                        if (payload.stream) {
+                            const events = streamAnthropicMessagesNative({
+                                baseUrl,
+                                apiKey,
+                                body: nativeBody,
+                                requestHeaders,
+                                timeoutMs: params.configStore.get().llm.timeoutMs,
+                            });
+                            return await sendSse(res, events, { appendDone: false });
+                        }
+                        const response = await postAnthropicMessages({
                             baseUrl,
                             apiKey,
                             body: nativeBody,
                             requestHeaders,
                             timeoutMs: params.configStore.get().llm.timeoutMs,
                         });
+                        return sendJson(res, 200, response);
+                    }
+                    if (payload.stream) {
+                        const events = streamAnthropicMessagesJsonLines({
+                            request: payload,
+                            contextBuilder: params.contextBuilder,
+                            llmClient: params.llmClient,
+                            toolRegistry: params.toolRegistry,
+                            configStore: params.configStore,
+                            outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
+                            responseStore,
+                            skillRuntime: params.skillRuntime,
+                        });
                         return await sendSse(res, events, { appendDone: false });
                     }
-                    const response = await postAnthropicMessages({
-                        baseUrl,
-                        apiKey,
-                        body: nativeBody,
-                        requestHeaders,
-                        timeoutMs: params.configStore.get().llm.timeoutMs,
-                    });
-                    return sendJson(res, 200, response);
-                }
-                if (payload.stream) {
-                    const events = streamAnthropicMessagesJsonLines({
+                    const response = await createAnthropicMessagesResponse({
                         request: payload,
                         contextBuilder: params.contextBuilder,
                         llmClient: params.llmClient,
@@ -1170,575 +1312,572 @@ export function createKgmRequestListener(params) {
                         responseStore,
                         skillRuntime: params.skillRuntime,
                     });
-                    return await sendSse(res, events, { appendDone: false });
+                    return sendJson(res, 200, response);
                 }
-                const response = await createAnthropicMessagesResponse({
-                    request: payload,
-                    contextBuilder: params.contextBuilder,
-                    llmClient: params.llmClient,
-                    toolRegistry: params.toolRegistry,
-                    configStore: params.configStore,
-                    outputSchema: params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {},
-                    responseStore,
-                    skillRuntime: params.skillRuntime,
-                });
-                return sendJson(res, 200, response);
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/config") {
-                return sendJson(res, 200, params.configStore.get());
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing") {
-                return sendJson(res, 200, params.configStore.get().autoRouting);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/auto-routing") {
-                const payload = (await readJson(req));
-                const updated = params.configStore.update({ autoRouting: payload ?? {} });
-                return sendJson(res, 200, updated.autoRouting);
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing/summary") {
-                if (!params.autoRoutingClient) {
-                    return sendJson(res, 501, { error: "auto_routing_not_enabled" });
+                if (req.method === "GET" && url.pathname === "/v1/kgm/config") {
+                    return sendJson(res, 200, params.configStore.get());
                 }
-                const limit = parseNumber(url.searchParams.get("limit"));
-                return sendJson(res, 200, params.autoRoutingClient.getAuditSummary(limit));
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing/audit") {
-                if (!params.autoRoutingClient) {
-                    return sendJson(res, 501, { error: "auto_routing_not_enabled" });
+                if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing") {
+                    return sendJson(res, 200, params.configStore.get().autoRouting);
                 }
-                const limit = parseNumber(url.searchParams.get("limit"));
-                return sendJson(res, 200, { items: params.autoRoutingClient.listAuditEntries(limit) });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/config") {
-                const payload = (await readJson(req));
-                const current = params.configStore.get();
-                let routingEntry = null;
-                if (payload.routing) {
-                    const nextRouting = applyRoutingPatch(current.routing, payload.routing);
-                    payload.routing = nextRouting;
-                    routingEntry = buildUpdateEntry(nextRouting, payload.routingNote);
+                if (req.method === "POST" && url.pathname === "/v1/kgm/auto-routing") {
+                    const payload = (await readJson(req));
+                    const updated = params.configStore.update({ autoRouting: payload ?? {} });
+                    return sendJson(res, 200, updated.autoRouting);
                 }
-                const updated = params.configStore.update(payload);
-                if (params.skillRuntime) {
-                    syncPlaygroundFromConfig({
-                        skillRegistry: params.skillRuntime.getSkillRegistry(),
-                        toolRegistry: params.toolRegistry,
-                        configStore: params.configStore,
-                    });
+                if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing/summary") {
+                    if (!params.autoRoutingClient) {
+                        return sendJson(res, 501, { error: "auto_routing_not_enabled" });
+                    }
+                    const limit = parseNumber(url.searchParams.get("limit"));
+                    return sendJson(res, 200, params.autoRoutingClient.getAuditSummary(limit));
                 }
-                if (routingEntry) {
-                    routingHistory.record(routingEntry);
+                if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing/audit") {
+                    if (!params.autoRoutingClient) {
+                        return sendJson(res, 501, { error: "auto_routing_not_enabled" });
+                    }
+                    const limit = parseNumber(url.searchParams.get("limit"));
+                    return sendJson(res, 200, { items: params.autoRoutingClient.listAuditEntries(limit) });
                 }
-                return sendJson(res, 200, updated);
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/routing") {
-                return sendJson(res, 200, params.configStore.get().routing);
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/routing/versions") {
-                const limit = parseNumber(url.searchParams.get("limit"));
-                return sendJson(res, 200, { items: routingHistory.list(limit ?? undefined) });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/routing") {
-                const payload = await readJson(req);
-                const parsed = parseRoutingUpdatePayload(payload);
-                if (!parsed) {
-                    return sendJson(res, 400, { error: "invalid_payload" });
-                }
-                const current = params.configStore.get().routing;
-                const nextRouting = applyRoutingPatch(current, parsed.patch);
-                params.configStore.update({ routing: nextRouting });
-                routingHistory.record(buildUpdateEntry(nextRouting, parsed.note));
-                return sendJson(res, 200, nextRouting);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/routing/rollback") {
-                const payload = (await readJson(req));
-                const version = payload?.version;
-                if (!version) {
-                    return sendJson(res, 400, { error: "version_required" });
-                }
-                const target = routingHistory.get(version);
-                if (!target) {
-                    return sendJson(res, 404, { error: "version_not_found" });
-                }
-                const rollbackFrom = params.configStore.get().routing.version;
-                params.configStore.update({ routing: target.config });
-                routingHistory.record(buildRollbackEntry(target.config, rollbackFrom, payload?.note));
-                return sendJson(res, 200, target.config);
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/tools") {
-                return sendJson(res, 200, { tools: params.toolRegistry.listDefinitions() });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/tools/stats") {
-                return sendJson(res, 200, params.toolRegistry.getCallStats());
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/schemas/")) {
-                const schemaId = url.pathname.replace("/v1/kgm/schemas/", "");
-                const record = params.schemaRegistry.get(schemaId);
-                if (!record) {
-                    return sendJson(res, 404, { error: "schema_not_found" });
-                }
-                return sendJson(res, 200, record);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/schemas") {
-                const payload = (await readJson(req));
-                const record = params.schemaRegistry.register(payload);
-                return sendJson(res, 200, record);
-            }
-            /**
-             * 记忆写入：canonical `POST /v1/kgm/memory`，别名 `POST /v1/memory/store`（与常见 API 文稿对齐，语义完全相同）。
-             */
-            if (req.method === "POST" &&
-                (url.pathname === "/v1/kgm/memory" || url.pathname === "/v1/memory/store")) {
-                const payload = (await readJson(req));
-                const embedding = await params.embedder.embed(payload.text);
-                const now = new Date().toISOString();
-                await params.memoryStore.add({
-                    id: `mem_${Date.now()}`,
-                    userId: payload.userId,
-                    text: payload.text,
-                    embedding,
-                    embeddingVersion: params.configStore.get().embedding.version,
-                    source: payload.source,
-                    createdAt: now,
-                    lastAccessedAt: now,
-                });
-                return sendJson(res, 200, { status: "ok" });
-            }
-            /**
-             * 记忆检索：canonical `POST /v1/kgm/memory/search`，别名 `POST /v1/memory/query`。
-             */
-            if (req.method === "POST" &&
-                (url.pathname === "/v1/kgm/memory/search" || url.pathname === "/v1/memory/query")) {
-                const payload = (await readJson(req));
-                const topK = Math.max(1, Math.min(payload.topK ?? 5, 50));
-                const memOpts = memorySearchOptionsFromKgm({
-                    strategy: payload.strategy,
-                    lexicalWeight: payload.lexicalWeight,
-                    overFetch: payload.overFetch,
-                    rerank: payload.rerank,
-                    rerankBlend: payload.rerankBlend,
-                });
-                const evidence = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, memOpts);
-                return sendJson(res, 200, { evidence });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/shortest_path") {
-                const payload = (await readJson(req));
-                const from = payload.from?.trim();
-                const to = payload.to?.trim();
-                if (!from || !to) {
-                    return sendJson(res, 400, kgmErrorBody("from_to_required", "Request body must include from and to", 400));
-                }
-                if (!params.graphStore.shortestPath) {
-                    return sendJson(res, 501, kgmErrorBody("graph_path_unavailable", "Graph backend does not expose shortestPath", 501));
-                }
-                const namespace = requireGraphNamespace(payload);
-                const result = await params.graphStore.shortestPath({
-                    from,
-                    to,
-                    maxHops: payload.maxHops,
-                    namespace,
-                });
-                return sendJson(res, 200, { result });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/communities") {
-                if (!params.graphStore.connectedCommunities) {
-                    return sendJson(res, 501, kgmErrorBody("graph_communities_unavailable", "Graph backend has no community API", 501));
-                }
-                const payload = (await readJson(req));
-                const namespace = requireGraphNamespace(payload);
-                const result = await params.graphStore.connectedCommunities({ namespace });
-                return sendJson(res, 200, result);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/expand") {
-                const body = (await readJson(req));
-                if (!body.entity?.trim()) {
-                    return sendJson(res, 400, kgmErrorBody("entity_required", "entity is required", 400));
-                }
-                if (!params.graphStore.reasonExpand) {
-                    return sendJson(res, 501, kgmErrorBody("graph_expand_unavailable", "Graph backend has no reasonExpand", 501));
-                }
-                const namespace = requireGraphNamespace(body);
-                const result = await params.graphStore.reasonExpand({
-                    entity: body.entity.trim(),
-                    maxDepth: body.maxDepth ?? 2,
-                    relations: body.relations,
-                    namespace,
-                });
-                return sendJson(res, 200, { result });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/rules") {
-                const body = (await readJson(req));
-                if (!params.graphStore.applyRules) {
-                    return sendJson(res, 501, kgmErrorBody("graph_rules_unavailable", "Graph backend has no applyRules", 501));
-                }
-                const rules = body.rules ?? [];
-                const maxR = Math.max(1, Math.min(20, body.maxRounds ?? 5));
-                const namespace = requireGraphNamespace(body);
-                const added = await params.graphStore.applyRules({
-                    rules,
-                    maxRounds: maxR,
-                    source: body.source,
-                    namespace,
-                });
-                return sendJson(res, 200, { added, count: added.length });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/multimodal/embed") {
-                const body = (await readJson(req));
-                if (!body.imageBase64) {
-                    return sendJson(res, 400, kgmErrorBody("image_required", "imageBase64 is required", 400));
-                }
-                const embedding = await embedImageRemote({
-                    request: {
-                        imageBase64: body.imageBase64,
-                        mimeType: body.mimeType,
-                        text: body.text,
-                        model: body.model,
-                    },
-                });
-                return sendJson(res, 200, { embedding, dim: embedding.length });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/graph/triples") {
-                const payload = (await readJson(req));
-                const triples = payload.triples ?? [];
-                const namespace = requireGraphNamespace(payload);
-                const stored = await params.graphStore.addTriples({
-                    triples,
-                    source: payload.source ?? "api",
-                    namespace,
-                });
-                return sendJson(res, 200, { status: "ok", count: stored.length, triples: stored });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/models") {
-                return sendJson(res, 200, { models: modelManager.listModels() });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/models/running") {
-                return sendJson(res, 200, { models: modelManager.listRunningModels() });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/models/create") {
-                const payload = (await readJson(req));
-                const created = await modelManager.createModel(payload);
-                return sendJson(res, 200, created);
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/") && url.pathname.endsWith("/metrics")) {
-                const id = url.pathname.replace("/v1/kgm/models/", "").replace(/\/metrics$/, "");
-                const metrics = modelManager.getRuntimeMetrics(id)
-                    ?? modelManager.listModels().find((item) => item.id === id || item.modelName === id)?.metrics;
-                if (!metrics) {
-                    return sendJson(res, 404, { error: "model_metrics_not_found" });
-                }
-                return sendJson(res, 200, { metrics });
-            }
-            if (req.method === "DELETE" && url.pathname.startsWith("/v1/kgm/models/")) {
-                const id = url.pathname.replace("/v1/kgm/models/", "");
-                return sendJson(res, 200, modelManager.deleteManagedEntity(id));
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/models/artifacts") {
-                return sendJson(res, 200, { artifacts: modelManager.listArtifacts() });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/models/pull") {
-                const payload = (await readJson(req));
-                const artifact = await modelManager.pull(payload);
-                return sendJson(res, 200, { artifact });
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/artifacts/")) {
-                const id = url.pathname.replace("/v1/kgm/models/artifacts/", "");
-                const artifact = modelManager.getArtifact(id);
-                if (!artifact) {
-                    return sendJson(res, 404, { error: "artifact_not_found" });
-                }
-                return sendJson(res, 200, { artifact });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/models/runtimes") {
-                return sendJson(res, 200, { runtimes: modelManager.listRuntimes() });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/models/runtimes") {
-                const payload = (await readJson(req));
-                try {
-                    const runtime = modelManager.createRuntime(payload);
-                    return sendJson(res, 200, { runtime });
-                }
-                catch (error) {
-                    return sendJson(res, 400, kgmErrorBody("runtime_create_failed", String(error), 400));
-                }
-            }
-            if (req.method === "POST" &&
-                url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
-                url.pathname.endsWith("/lora")) {
-                const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
-                const payload = (await readJson(req));
-                const adapters = payload.adapters ?? (payload.adapter ? [payload.adapter] : []);
-                try {
-                    const runtime = modelManager.attachLoraAdapters(id, adapters);
-                    return sendJson(res, 200, { runtime, loraAdapters: runtime.loraAdapters ?? [] });
-                }
-                catch (error) {
-                    return sendJson(res, 400, kgmErrorBody("lora_attach_failed", String(error), 400));
-                }
-            }
-            if (req.method === "GET" &&
-                url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
-                url.pathname.endsWith("/lora")) {
-                const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
-                try {
-                    return sendJson(res, 200, { loraAdapters: modelManager.listLoraAdapters(id) });
-                }
-                catch {
-                    return sendJson(res, 404, { error: "runtime_not_found" });
-                }
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/weights/capabilities") {
-                return sendJson(res, 200, getWeightCapabilityReport());
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/weights/resolve") {
-                const payload = (await readJson(req));
-                const artifact = payload.artifactId
-                    ? modelManager.getArtifact(payload.artifactId)
-                    : payload.localPath
-                        ? {
-                            id: "ephemeral",
-                            name: "ephemeral",
-                            modelName: "ephemeral",
-                            sourceType: "local",
-                            sourceRef: payload.localPath,
-                            localPath: payload.localPath,
-                            status: "ready",
-                            runtimeHints: payload.runtimeHints ?? inferRuntimeHintsForModelPath(payload.localPath),
-                            notes: [],
-                            tags: [],
-                            metadata: {},
-                            createdAt: new Date().toISOString(),
-                            updatedAt: new Date().toISOString(),
-                        }
-                        : undefined;
-                const assessment = assessArtifactExecution(artifact);
-                let resolvedRuntime;
-                let resolveError;
-                try {
-                    resolvedRuntime = resolveRuntimeKind({
-                        requested: payload.requestedRuntime ?? "auto",
-                        artifact,
-                    });
-                }
-                catch (error) {
-                    resolveError = String(error);
-                }
-                return sendJson(res, 200, {
-                    assessment,
-                    resolvedRuntime,
-                    resolveError,
-                    nativeGpu: getNativeGpuClosedLoopStatus(),
-                    closedLoop: getWeightCapabilityReport().closedLoop,
-                });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/runtime/gpu_throughput/plan") {
-                const payload = (await readJson(req));
-                return sendJson(res, 200, planGpuThroughput({
-                    modelManager,
-                    preference: payload.preference,
-                    modelName: payload.modelName,
-                }));
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
-                const id = url.pathname
-                    .replace("/v1/kgm/models/runtimes/", "")
-                    .replace(/\/(start|stop|lora|metrics)$/, "");
-                const runtime = modelManager.getRuntime(id);
-                if (!runtime) {
-                    return sendJson(res, 404, { error: "runtime_not_found" });
-                }
-                return sendJson(res, 200, { runtime });
-            }
-            if (req.method === "POST" && url.pathname.endsWith("/start") && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
-                const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/start$/, "");
-                const runtime = await modelManager.startRuntime(id);
-                return sendJson(res, 200, { runtime });
-            }
-            if (req.method === "POST" && url.pathname.endsWith("/stop") && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
-                const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/stop$/, "");
-                const runtime = modelManager.stopRuntime(id);
-                return sendJson(res, 200, { runtime });
-            }
-            if (req.method === "GET" && url.pathname === "/v1/kgm/sandboxes") {
-                return sendJson(res, 200, { sandboxes: params.sandboxManager.list() });
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/sandboxes") {
-                const payload = (await readJson(req));
-                const sandbox = params.sandboxManager.create({
-                    kind: payload.kind ?? "computer",
-                    name: payload.name,
-                    notes: payload.notes,
-                });
-                return sendJson(res, 200, { sandbox });
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
-                const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/(start|stop)$/, "");
-                const sandbox = params.sandboxManager.get(id);
-                if (!sandbox) {
-                    return sendJson(res, 404, { error: "sandbox_not_found" });
-                }
-                return sendJson(res, 200, { sandbox });
-            }
-            if (req.method === "POST" && url.pathname.endsWith("/start") && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
-                const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/start$/, "");
-                return sendJson(res, 200, { sandbox: params.sandboxManager.start(id) });
-            }
-            if (req.method === "POST" && url.pathname.endsWith("/stop") && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
-                const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/stop$/, "");
-                return sendJson(res, 200, { sandbox: params.sandboxManager.stop(id) });
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/artifacts/")) {
-                if (!params.artifactStore) {
-                    return sendJson(res, 501, { error: "artifact_store_not_enabled" });
-                }
-                const id = url.pathname.replace("/v1/kgm/artifacts/", "");
-                try {
-                    const data = params.artifactStore.read(id, {
-                        offset: parseNumber(url.searchParams.get("offset")),
-                        limit: parseNumber(url.searchParams.get("limit")),
-                    });
-                    return sendJson(res, 200, data);
-                }
-                catch (error) {
-                    return sendJson(res, 404, { error: String(error) });
-                }
-            }
-            if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/sessions/")) {
-                if (!params.sessionStore) {
-                    return sendJson(res, 501, { error: "session_store_not_enabled" });
-                }
-                const id = url.pathname.replace("/v1/kgm/sessions/", "");
-                try {
-                    const data = params.sessionStore.read(id, {
-                        offset: parseNumber(url.searchParams.get("offset")),
-                        limit: parseNumber(url.searchParams.get("limit")),
-                    });
-                    return sendJson(res, 200, data);
-                }
-                catch (error) {
-                    return sendJson(res, 404, { error: String(error) });
-                }
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/execute") {
-                const payload = (await readJson(req));
-                const response = await params.scheduler.run(payload);
-                return sendJson(res, 200, response);
-            }
-            if (req.method === "POST" && url.pathname === "/v1/kgm/kce/compute") {
-                const payload = validateKceComputePayload(await readJson(req));
-                const requestId = payload.requestId ?? generateId("kce");
-                const traceId = readTraceId(payload.metadata) ?? generateId("trace");
-                const sessionId = payload.sessionId ?? payload.userId;
-                const previewChars = params.configStore.get().context.artifactPreviewChars ?? 240;
-                const enrichedPayload = {
-                    ...payload,
-                    requestId,
-                    sessionId,
-                    metadata: {
-                        ...(payload.metadata ?? {}),
-                        traceId,
-                    },
-                };
-                if (params.sessionStore) {
-                    params.sessionStore.append(sessionId, {
-                        timestamp: new Date().toISOString(),
-                        role: "user",
-                        type: "input",
-                        content: payload.input,
-                    });
-                }
-                const requestArtifact = params.artifactStore?.writeJson("kce_request", {
-                    request_id: requestId,
-                    session_id: sessionId,
-                    trace_id: traceId,
-                    payload: enrichedPayload,
-                }, previewChars);
-                try {
-                    const response = await kceEngine.compute(enrichedPayload);
-                    const traceArtifact = params.artifactStore?.writeJson("kce_trace", {
-                        request_id: requestId,
-                        trace_id: traceId,
-                        reasoning_trace: response.reasoning_trace,
-                        execution_plan: response.execution_plan,
-                        validation: response.validation,
-                    }, previewChars);
-                    const responseArtifact = params.artifactStore?.writeJson("kce_response", {
-                        request_id: requestId,
-                        session_id: sessionId,
-                        trace_id: traceId,
-                        response,
-                    }, previewChars);
-                    const sessionRef = params.sessionStore?.getRef(sessionId, params.configStore.get().context.sessionPreviewChars ?? 240);
-                    if (params.sessionStore) {
-                        params.sessionStore.append(sessionId, {
-                            timestamp: new Date().toISOString(),
-                            role: "assistant",
-                            type: "final",
-                            content: response.answer,
-                        });
-                        params.sessionStore.append(sessionId, {
-                            timestamp: new Date().toISOString(),
-                            role: "tool",
-                            type: "tool",
-                            name: "kce_audit",
-                            output: {
-                                request_id: requestId,
-                                trace_id: traceId,
-                                validation: response.validation,
-                                artifacts: {
-                                    request: requestArtifact,
-                                    trace: traceArtifact,
-                                    response: responseArtifact,
-                                },
-                            },
+                if (req.method === "POST" && url.pathname === "/v1/kgm/config") {
+                    const payload = (await readJson(req));
+                    const current = params.configStore.get();
+                    let routingEntry = null;
+                    if (payload.routing) {
+                        const nextRouting = applyRoutingPatch(current.routing, payload.routing);
+                        payload.routing = nextRouting;
+                        routingEntry = buildUpdateEntry(nextRouting, payload.routingNote);
+                    }
+                    const updated = params.configStore.update(payload);
+                    if (params.skillRuntime) {
+                        syncPlaygroundFromConfig({
+                            skillRegistry: params.skillRuntime.getSkillRegistry(),
+                            toolRegistry: params.toolRegistry,
+                            configStore: params.configStore,
                         });
                     }
-                    return sendJson(res, 200, {
-                        ...response,
-                        request_id: requestId,
-                        session_id: sessionId,
-                        trace_id: traceId,
-                        session_ref: sessionRef,
-                        artifacts: {
-                            request: requestArtifact,
-                            trace: traceArtifact,
-                            response: responseArtifact,
+                    if (routingEntry) {
+                        routingHistory.record(routingEntry);
+                    }
+                    return sendJson(res, 200, updated);
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/routing") {
+                    return sendJson(res, 200, params.configStore.get().routing);
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/routing/versions") {
+                    const limit = parseNumber(url.searchParams.get("limit"));
+                    return sendJson(res, 200, { items: routingHistory.list(limit ?? undefined) });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/routing") {
+                    const payload = await readJson(req);
+                    const parsed = parseRoutingUpdatePayload(payload);
+                    if (!parsed) {
+                        return sendJson(res, 400, { error: "invalid_payload" });
+                    }
+                    const current = params.configStore.get().routing;
+                    const nextRouting = applyRoutingPatch(current, parsed.patch);
+                    params.configStore.update({ routing: nextRouting });
+                    routingHistory.record(buildUpdateEntry(nextRouting, parsed.note));
+                    return sendJson(res, 200, nextRouting);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/routing/rollback") {
+                    const payload = (await readJson(req));
+                    const version = payload?.version;
+                    if (!version) {
+                        return sendJson(res, 400, { error: "version_required" });
+                    }
+                    const target = routingHistory.get(version);
+                    if (!target) {
+                        return sendJson(res, 404, { error: "version_not_found" });
+                    }
+                    const rollbackFrom = params.configStore.get().routing.version;
+                    params.configStore.update({ routing: target.config });
+                    routingHistory.record(buildRollbackEntry(target.config, rollbackFrom, payload?.note));
+                    return sendJson(res, 200, target.config);
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/tools") {
+                    return sendJson(res, 200, { tools: params.toolRegistry.listDefinitions() });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/tools/stats") {
+                    return sendJson(res, 200, params.toolRegistry.getCallStats());
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/schemas/")) {
+                    const schemaId = url.pathname.replace("/v1/kgm/schemas/", "");
+                    const record = params.schemaRegistry.get(schemaId);
+                    if (!record) {
+                        return sendJson(res, 404, { error: "schema_not_found" });
+                    }
+                    return sendJson(res, 200, record);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/schemas") {
+                    const payload = (await readJson(req));
+                    const record = params.schemaRegistry.register(payload);
+                    return sendJson(res, 200, record);
+                }
+                /**
+                 * 记忆写入：canonical `POST /v1/kgm/memory`，别名 `POST /v1/memory/store`（与常见 API 文稿对齐，语义完全相同）。
+                 */
+                if (req.method === "POST" &&
+                    (url.pathname === "/v1/kgm/memory" || url.pathname === "/v1/memory/store")) {
+                    const payload = (await readJson(req));
+                    const embedding = await params.embedder.embed(payload.text);
+                    const now = new Date().toISOString();
+                    await params.memoryStore.add({
+                        id: `mem_${Date.now()}`,
+                        userId: payload.userId,
+                        text: payload.text,
+                        embedding,
+                        embeddingVersion: params.configStore.get().embedding.version,
+                        source: payload.source,
+                        createdAt: now,
+                        lastAccessedAt: now,
+                    });
+                    return sendJson(res, 200, { status: "ok" });
+                }
+                /**
+                 * 记忆检索：canonical `POST /v1/kgm/memory/search`，别名 `POST /v1/memory/query`。
+                 */
+                if (req.method === "POST" &&
+                    (url.pathname === "/v1/kgm/memory/search" || url.pathname === "/v1/memory/query")) {
+                    const payload = (await readJson(req));
+                    const topK = Math.max(1, Math.min(payload.topK ?? 5, 50));
+                    const memOpts = memorySearchOptionsFromKgm({
+                        strategy: payload.strategy,
+                        lexicalWeight: payload.lexicalWeight,
+                        overFetch: payload.overFetch,
+                        rerank: payload.rerank,
+                        rerankBlend: payload.rerankBlend,
+                    });
+                    const evidence = await params.memoryStore.search(payload.userId, payload.query, params.embedder, topK, memOpts);
+                    return sendJson(res, 200, { evidence });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/graph/shortest_path") {
+                    const payload = (await readJson(req));
+                    const from = payload.from?.trim();
+                    const to = payload.to?.trim();
+                    if (!from || !to) {
+                        return sendJson(res, 400, kgmErrorBody("from_to_required", "Request body must include from and to", 400));
+                    }
+                    if (!params.graphStore.shortestPath) {
+                        return sendJson(res, 501, kgmErrorBody("graph_path_unavailable", "Graph backend does not expose shortestPath", 501));
+                    }
+                    const namespace = requireGraphNamespace(payload);
+                    const result = await params.graphStore.shortestPath({
+                        from,
+                        to,
+                        maxHops: payload.maxHops,
+                        namespace,
+                    });
+                    return sendJson(res, 200, { result });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/graph/communities") {
+                    if (!params.graphStore.connectedCommunities) {
+                        return sendJson(res, 501, kgmErrorBody("graph_communities_unavailable", "Graph backend has no community API", 501));
+                    }
+                    const payload = (await readJson(req));
+                    const namespace = requireGraphNamespace(payload);
+                    const result = await params.graphStore.connectedCommunities({ namespace });
+                    return sendJson(res, 200, result);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/expand") {
+                    const body = (await readJson(req));
+                    if (!body.entity?.trim()) {
+                        return sendJson(res, 400, kgmErrorBody("entity_required", "entity is required", 400));
+                    }
+                    if (!params.graphStore.reasonExpand) {
+                        return sendJson(res, 501, kgmErrorBody("graph_expand_unavailable", "Graph backend has no reasonExpand", 501));
+                    }
+                    const namespace = requireGraphNamespace(body);
+                    const result = await params.graphStore.reasonExpand({
+                        entity: body.entity.trim(),
+                        maxDepth: body.maxDepth ?? 2,
+                        relations: body.relations,
+                        namespace,
+                    });
+                    return sendJson(res, 200, { result });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/graph/reason/rules") {
+                    const body = (await readJson(req));
+                    if (!params.graphStore.applyRules) {
+                        return sendJson(res, 501, kgmErrorBody("graph_rules_unavailable", "Graph backend has no applyRules", 501));
+                    }
+                    const rules = body.rules ?? [];
+                    const maxR = Math.max(1, Math.min(20, body.maxRounds ?? 5));
+                    const namespace = requireGraphNamespace(body);
+                    const added = await params.graphStore.applyRules({
+                        rules,
+                        maxRounds: maxR,
+                        source: body.source,
+                        namespace,
+                    });
+                    return sendJson(res, 200, { added, count: added.length });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/multimodal/embed") {
+                    const body = (await readJson(req));
+                    if (!body.imageBase64) {
+                        return sendJson(res, 400, kgmErrorBody("image_required", "imageBase64 is required", 400));
+                    }
+                    const embedding = await embedImageRemote({
+                        request: {
+                            imageBase64: body.imageBase64,
+                            mimeType: body.mimeType,
+                            text: body.text,
+                            model: body.model,
                         },
                     });
+                    return sendJson(res, 200, { embedding, dim: embedding.length });
                 }
-                catch (error) {
-                    const errorMessage = error instanceof Error ? error.message : String(error);
-                    const errorArtifact = params.artifactStore?.writeJson("kce_error", {
-                        request_id: requestId,
-                        session_id: sessionId,
-                        trace_id: traceId,
-                        error: errorMessage,
-                    }, previewChars);
+                if (req.method === "POST" && url.pathname === "/v1/kgm/graph/triples") {
+                    const payload = (await readJson(req));
+                    const triples = payload.triples ?? [];
+                    const namespace = requireGraphNamespace(payload);
+                    const stored = await params.graphStore.addTriples({
+                        triples,
+                        source: payload.source ?? "api",
+                        namespace,
+                    });
+                    return sendJson(res, 200, { status: "ok", count: stored.length, triples: stored });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/models") {
+                    return sendJson(res, 200, { models: modelManager.listModels() });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/models/running") {
+                    return sendJson(res, 200, { models: modelManager.listRunningModels() });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/models/create") {
+                    const payload = (await readJson(req));
+                    const created = await modelManager.createModel(payload);
+                    return sendJson(res, 200, created);
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/") && url.pathname.endsWith("/metrics")) {
+                    const id = url.pathname.replace("/v1/kgm/models/", "").replace(/\/metrics$/, "");
+                    const metrics = modelManager.getRuntimeMetrics(id)
+                        ?? modelManager.listModels().find((item) => item.id === id || item.modelName === id)?.metrics;
+                    if (!metrics) {
+                        return sendJson(res, 404, { error: "model_metrics_not_found" });
+                    }
+                    return sendJson(res, 200, { metrics });
+                }
+                if (req.method === "DELETE" && url.pathname.startsWith("/v1/kgm/models/")) {
+                    const id = url.pathname.replace("/v1/kgm/models/", "");
+                    return sendJson(res, 200, modelManager.deleteManagedEntity(id));
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/models/artifacts") {
+                    return sendJson(res, 200, { artifacts: modelManager.listArtifacts() });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/models/pull") {
+                    const payload = (await readJson(req));
+                    const artifact = await modelManager.pull(payload);
+                    return sendJson(res, 200, { artifact });
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/artifacts/")) {
+                    const id = url.pathname.replace("/v1/kgm/models/artifacts/", "");
+                    const artifact = modelManager.getArtifact(id);
+                    if (!artifact) {
+                        return sendJson(res, 404, { error: "artifact_not_found" });
+                    }
+                    return sendJson(res, 200, { artifact });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/models/runtimes") {
+                    return sendJson(res, 200, { runtimes: modelManager.listRuntimes() });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/models/runtimes") {
+                    const payload = (await readJson(req));
+                    try {
+                        const runtime = modelManager.createRuntime(payload);
+                        return sendJson(res, 200, { runtime });
+                    }
+                    catch (error) {
+                        return sendJson(res, 400, kgmErrorBody("runtime_create_failed", String(error), 400));
+                    }
+                }
+                if (req.method === "POST" &&
+                    url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
+                    url.pathname.endsWith("/lora")) {
+                    const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
+                    const payload = (await readJson(req));
+                    const adapters = payload.adapters ?? (payload.adapter ? [payload.adapter] : []);
+                    try {
+                        const runtime = modelManager.attachLoraAdapters(id, adapters);
+                        return sendJson(res, 200, { runtime, loraAdapters: runtime.loraAdapters ?? [] });
+                    }
+                    catch (error) {
+                        return sendJson(res, 400, kgmErrorBody("lora_attach_failed", String(error), 400));
+                    }
+                }
+                if (req.method === "GET" &&
+                    url.pathname.startsWith("/v1/kgm/models/runtimes/") &&
+                    url.pathname.endsWith("/lora")) {
+                    const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/lora$/, "");
+                    try {
+                        return sendJson(res, 200, { loraAdapters: modelManager.listLoraAdapters(id) });
+                    }
+                    catch {
+                        return sendJson(res, 404, { error: "runtime_not_found" });
+                    }
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/weights/capabilities") {
+                    return sendJson(res, 200, getWeightCapabilityReport());
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/weights/resolve") {
+                    const payload = (await readJson(req));
+                    const artifact = payload.artifactId
+                        ? modelManager.getArtifact(payload.artifactId)
+                        : payload.localPath
+                            ? {
+                                id: "ephemeral",
+                                name: "ephemeral",
+                                modelName: "ephemeral",
+                                sourceType: "local",
+                                sourceRef: payload.localPath,
+                                localPath: payload.localPath,
+                                status: "ready",
+                                runtimeHints: payload.runtimeHints ?? inferRuntimeHintsForModelPath(payload.localPath),
+                                notes: [],
+                                tags: [],
+                                metadata: {},
+                                createdAt: new Date().toISOString(),
+                                updatedAt: new Date().toISOString(),
+                            }
+                            : undefined;
+                    const assessment = assessArtifactExecution(artifact);
+                    let resolvedRuntime;
+                    let resolveError;
+                    try {
+                        resolvedRuntime = resolveRuntimeKind({
+                            requested: payload.requestedRuntime ?? "auto",
+                            artifact,
+                        });
+                    }
+                    catch (error) {
+                        resolveError = String(error);
+                    }
+                    return sendJson(res, 200, {
+                        assessment,
+                        resolvedRuntime,
+                        resolveError,
+                        nativeGpu: getNativeGpuClosedLoopStatus(),
+                        closedLoop: getWeightCapabilityReport().closedLoop,
+                    });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/runtime/gpu_throughput/plan") {
+                    const payload = (await readJson(req));
+                    return sendJson(res, 200, planGpuThroughput({
+                        modelManager,
+                        preference: payload.preference,
+                        modelName: payload.modelName,
+                    }));
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
+                    const id = url.pathname
+                        .replace("/v1/kgm/models/runtimes/", "")
+                        .replace(/\/(start|stop|lora|metrics)$/, "");
+                    const runtime = modelManager.getRuntime(id);
+                    if (!runtime) {
+                        return sendJson(res, 404, { error: "runtime_not_found" });
+                    }
+                    return sendJson(res, 200, { runtime });
+                }
+                if (req.method === "POST" && url.pathname.endsWith("/start") && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
+                    const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/start$/, "");
+                    const runtime = await modelManager.startRuntime(id);
+                    return sendJson(res, 200, { runtime });
+                }
+                if (req.method === "POST" && url.pathname.endsWith("/stop") && url.pathname.startsWith("/v1/kgm/models/runtimes/")) {
+                    const id = url.pathname.replace("/v1/kgm/models/runtimes/", "").replace(/\/stop$/, "");
+                    const runtime = modelManager.stopRuntime(id);
+                    return sendJson(res, 200, { runtime });
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/sandboxes") {
+                    return sendJson(res, 200, { sandboxes: params.sandboxManager.list() });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/sandboxes") {
+                    const payload = (await readJson(req));
+                    const sandbox = params.sandboxManager.create({
+                        kind: payload.kind ?? "computer",
+                        name: payload.name,
+                        notes: payload.notes,
+                    });
+                    return sendJson(res, 200, { sandbox });
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
+                    const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/(start|stop)$/, "");
+                    const sandbox = params.sandboxManager.get(id);
+                    if (!sandbox) {
+                        return sendJson(res, 404, { error: "sandbox_not_found" });
+                    }
+                    return sendJson(res, 200, { sandbox });
+                }
+                if (req.method === "POST" && url.pathname.endsWith("/start") && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
+                    const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/start$/, "");
+                    return sendJson(res, 200, { sandbox: params.sandboxManager.start(id) });
+                }
+                if (req.method === "POST" && url.pathname.endsWith("/stop") && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
+                    const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/stop$/, "");
+                    return sendJson(res, 200, { sandbox: params.sandboxManager.stop(id) });
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/artifacts/")) {
+                    if (!params.artifactStore) {
+                        return sendJson(res, 501, { error: "artifact_store_not_enabled" });
+                    }
+                    const id = url.pathname.replace("/v1/kgm/artifacts/", "");
+                    try {
+                        const data = params.artifactStore.read(id, {
+                            offset: parseNumber(url.searchParams.get("offset")),
+                            limit: parseNumber(url.searchParams.get("limit")),
+                        });
+                        return sendJson(res, 200, data);
+                    }
+                    catch (error) {
+                        return sendJson(res, 404, { error: String(error) });
+                    }
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/sessions/")) {
+                    if (!params.sessionStore) {
+                        return sendJson(res, 501, { error: "session_store_not_enabled" });
+                    }
+                    const id = url.pathname.replace("/v1/kgm/sessions/", "");
+                    try {
+                        const data = params.sessionStore.read(id, {
+                            offset: parseNumber(url.searchParams.get("offset")),
+                            limit: parseNumber(url.searchParams.get("limit")),
+                        });
+                        return sendJson(res, 200, data);
+                    }
+                    catch (error) {
+                        return sendJson(res, 404, { error: String(error) });
+                    }
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/execute") {
+                    const payload = (await readJson(req));
+                    const response = await params.scheduler.run(payload);
+                    return sendJson(res, 200, response);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/kgm/kce/compute") {
+                    const payload = validateKceComputePayload(await readJson(req));
+                    const requestId = payload.requestId ?? generateId("kce");
+                    const traceId = readTraceId(payload.metadata) ??
+                        resolveRequestTraceIds({
+                            headers: req.headers,
+                            body: {
+                                requestId: typeof payload.requestId === "string" ? payload.requestId : undefined,
+                                metadata: payload.metadata,
+                            },
+                            fallbackRequestId: requestId,
+                        }).traceId;
+                    const sessionId = payload.sessionId ?? payload.userId;
+                    const previewChars = params.configStore.get().context.artifactPreviewChars ?? 240;
+                    const enrichedPayload = {
+                        ...payload,
+                        requestId,
+                        sessionId,
+                        metadata: {
+                            ...(payload.metadata ?? {}),
+                            traceId,
+                        },
+                    };
                     if (params.sessionStore) {
                         params.sessionStore.append(sessionId, {
                             timestamp: new Date().toISOString(),
-                            role: "tool",
-                            type: "tool",
-                            name: "kce_compute_error",
-                            output: {
-                                request_id: requestId,
-                                trace_id: traceId,
-                                error: errorMessage,
-                                artifact: errorArtifact,
+                            role: "user",
+                            type: "input",
+                            content: payload.input,
+                        });
+                    }
+                    const requestArtifact = params.artifactStore?.writeJson("kce_request", {
+                        request_id: requestId,
+                        session_id: sessionId,
+                        trace_id: traceId,
+                        payload: enrichedPayload,
+                    }, previewChars);
+                    try {
+                        const response = await kceEngine.compute(enrichedPayload);
+                        const traceArtifact = params.artifactStore?.writeJson("kce_trace", {
+                            request_id: requestId,
+                            trace_id: traceId,
+                            reasoning_trace: response.reasoning_trace,
+                            execution_plan: response.execution_plan,
+                            validation: response.validation,
+                        }, previewChars);
+                        const responseArtifact = params.artifactStore?.writeJson("kce_response", {
+                            request_id: requestId,
+                            session_id: sessionId,
+                            trace_id: traceId,
+                            response,
+                        }, previewChars);
+                        const sessionRef = params.sessionStore?.getRef(sessionId, params.configStore.get().context.sessionPreviewChars ?? 240);
+                        if (params.sessionStore) {
+                            params.sessionStore.append(sessionId, {
+                                timestamp: new Date().toISOString(),
+                                role: "assistant",
+                                type: "final",
+                                content: response.answer,
+                            });
+                            params.sessionStore.append(sessionId, {
+                                timestamp: new Date().toISOString(),
+                                role: "tool",
+                                type: "tool",
+                                name: "kce_audit",
+                                output: {
+                                    request_id: requestId,
+                                    trace_id: traceId,
+                                    validation: response.validation,
+                                    artifacts: {
+                                        request: requestArtifact,
+                                        trace: traceArtifact,
+                                        response: responseArtifact,
+                                    },
+                                },
+                            });
+                        }
+                        return sendJson(res, 200, {
+                            ...response,
+                            request_id: requestId,
+                            session_id: sessionId,
+                            trace_id: traceId,
+                            session_ref: sessionRef,
+                            artifacts: {
+                                request: requestArtifact,
+                                trace: traceArtifact,
+                                response: responseArtifact,
                             },
                         });
                     }
-                    if (error instanceof KceExecutionFailure) {
-                        return sendJson(res, error.status, {
-                            ...kgmErrorBody(error.code, error.message, error.status),
+                    catch (error) {
+                        const errorMessage = error instanceof Error ? error.message : String(error);
+                        const errorArtifact = params.artifactStore?.writeJson("kce_error", {
                             request_id: requestId,
+                            session_id: sessionId,
                             trace_id: traceId,
-                            failed_step: error.step,
-                        });
+                            error: errorMessage,
+                        }, previewChars);
+                        if (params.sessionStore) {
+                            params.sessionStore.append(sessionId, {
+                                timestamp: new Date().toISOString(),
+                                role: "tool",
+                                type: "tool",
+                                name: "kce_compute_error",
+                                output: {
+                                    request_id: requestId,
+                                    trace_id: traceId,
+                                    error: errorMessage,
+                                    artifact: errorArtifact,
+                                },
+                            });
+                        }
+                        if (error instanceof KceExecutionFailure) {
+                            return sendJson(res, error.status, {
+                                ...kgmErrorBody(error.code, error.message, error.status),
+                                request_id: requestId,
+                                trace_id: traceId,
+                                failed_step: error.step,
+                            });
+                        }
+                        throw error;
                     }
-                    throw error;
                 }
-            }
-            return sendJson(res, 404, { error: "not_found" });
+                return sendJson(res, 404, { error: "not_found" });
+            }); // runWithOpsAuthAsync
         }
         catch (error) {
             if (error instanceof KgmJsonParseError) {

@@ -256,7 +256,7 @@ function printHelp(): void {
 
 Notes:
   source-type supports: huggingface | ollama | github | modelscope | direct | local
-  runtime supports: native | llama.cpp | ollama | vllm | sglang | openai-compatible`);
+  runtime supports: native | llama.cpp | ds4 | ollama | vllm | sglang | mlx | openai-compatible`);
 }
 
 main().catch((error) => {

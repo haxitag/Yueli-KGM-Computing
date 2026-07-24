@@ -30,7 +30,7 @@ export function workerRestartDelayMs(attempt: number, config: WorkerAutoRestartC
 
 /** 通过本进程 spawn 托管的 runtime 种类才自动重启（不重启 native / 外部 daemon） */
 export function isSpawnManagedWorkerKind(kind: string): boolean {
-  return kind === "vllm" || kind === "sglang" || kind === "llama.cpp" || kind === "mlx";
+  return kind === "vllm" || kind === "sglang" || kind === "llama.cpp" || kind === "ds4" || kind === "mlx";
 }
 
 function parseIntEnv(raw: string | undefined, fallback: number): number {

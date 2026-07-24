@@ -46,6 +46,10 @@ export type ProviderType =
   | 'lmstudio'
   /** Apple MLX / vMLX 等本机 OpenAI 兼容 HTTP 端点，默认见 env */
   | 'vmlx'
+  /** antirez/ds4 (ds4-server)，默认 http://127.0.0.1:8090/v1 */
+  | 'ds4'
+  /** llama.cpp llama-server，默认 http://127.0.0.1:8080/v1 */
+  | 'llama_cpp'
   | 'modelscope'
   | 'moonshot'
   | 'ollama'
@@ -419,6 +423,28 @@ export class LlmProviderFactory {
           requireApiKey: false,
         });
 
+      /** antirez/ds4 ds4-server（DeepSeek V4 / GLM 专用） */
+      case 'ds4':
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'ds4',
+          defaultBaseUrl:
+            process.env.DS4_BASE_URL ||
+            process.env.KGM_DS4_BASE_URL ||
+            `http://127.0.0.1:${process.env.KGM_DS4_PORT || '8090'}/v1`,
+          requireApiKey: false,
+        });
+
+      /** llama.cpp llama-server OpenAI 兼容 */
+      case 'llama_cpp':
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'llama_cpp',
+          defaultBaseUrl:
+            process.env.LLAMA_CPP_BASE_URL ||
+            process.env.KGM_LLAMA_CPP_BASE_URL ||
+            'http://127.0.0.1:8080/v1',
+          requireApiKey: false,
+        });
+
       case 'openai':
       case 'custom':
         return new HttpLlmClient({
@@ -722,6 +748,33 @@ export class LlmProviderFactory {
         };
       }
 
+      case 'ds4': {
+        const port = process.env.KGM_DS4_PORT || '8090';
+        const base =
+          process.env.DS4_BASE_URL ||
+          process.env.KGM_DS4_BASE_URL ||
+          `http://127.0.0.1:${port}/v1`;
+        return {
+          type: 'ds4',
+          baseUrl: base,
+          model: process.env.DS4_DEFAULT_MODEL || process.env.KGM_DS4_DEFAULT_MODEL || 'ds4-local',
+          apiKey: process.env.DS4_API_KEY,
+        };
+      }
+
+      case 'llama_cpp': {
+        const base =
+          process.env.LLAMA_CPP_BASE_URL ||
+          process.env.KGM_LLAMA_CPP_BASE_URL ||
+          'http://127.0.0.1:8080/v1';
+        return {
+          type: 'llama_cpp',
+          baseUrl: base,
+          model: process.env.LLAMA_CPP_DEFAULT_MODEL || 'local-model',
+          apiKey: process.env.LLAMA_CPP_API_KEY,
+        };
+      }
+
       case 'aws_bedrock': {
         const base =
           process.env.BEDROCK_OPENAI_COMPAT_BASE_URL || process.env.AWS_BEDROCK_OPENAI_BASE_URL;
@@ -792,6 +845,8 @@ export class LlmProviderFactory {
       'text_generation_webui',
       'lmstudio',
       'vmlx',
+      'ds4',
+      'llama_cpp',
       'modelscope',
       'moonshot',
       'ollama',
@@ -840,6 +895,8 @@ export class LlmProviderFactory {
       case 'text_generation_webui':
       case 'lmstudio':
       case 'vmlx':
+      case 'ds4':
+      case 'llama_cpp':
         return !!config.model;
       case 'ollama':
       case 'vllm':

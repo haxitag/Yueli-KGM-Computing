@@ -1,4 +1,5 @@
 import { generateId } from "../utils/id.js";
+import { isDs4SpecializedGguf } from "../runtime/ds4Artifacts.js";
 export function parseKgmfile(input) {
     const trimmed = input.trim();
     if (!trimmed) {
@@ -97,8 +98,12 @@ function deriveNameFromSpec(spec) {
     return source.split("/").filter(Boolean).at(-1)?.replace(/\.[^.]+$/, "") ?? "managed-model";
 }
 function inferRuntimeKind(spec) {
-    const candidate = `${spec.source?.filePath ?? ""} ${spec.source?.url ?? ""}`.toLowerCase();
-    if (candidate.includes(".gguf")) {
+    const candidate = `${spec.source?.filePath ?? ""} ${spec.source?.url ?? ""} ${spec.source?.ref ?? ""}`;
+    const lower = candidate.toLowerCase();
+    if (lower.includes(".gguf")) {
+        if (isDs4SpecializedGguf(candidate)) {
+            return "ds4";
+        }
         return "llama.cpp";
     }
     if (spec.source?.type === "ollama") {

@@ -65,7 +65,9 @@ export function createRuntime(params: {
   const artifactStore = new ArtifactStore(configStore.get().context.artifactDir);
   const sessionStore = new SessionStore(configStore.get().context.sessionDir);
   const graphStore = params.graphStore ?? new InMemoryGraphStore();
-  const sandboxManager = new SandboxManager();
+  const sandboxManager = new SandboxManager({
+    getOverlay: () => configStore.get().sandboxAdapters,
+  });
   const modelManager = new ManagedModelManager({
     llamaCpp: () => {
       const worker = configStore.get().workers.llamaCpp;
@@ -73,6 +75,15 @@ export function createRuntime(params: {
         enabled: worker.enabled,
         command: worker.command,
         installHint: worker.installHint,
+      };
+    },
+    ds4: () => {
+      const worker = configStore.get().workers.ds4;
+      return {
+        enabled: worker.enabled,
+        command: worker.command,
+        installHint: worker.installHint,
+        chdir: worker.chdir,
       };
     },
   });
@@ -110,6 +121,7 @@ export function createRuntime(params: {
     },
     embeddingVersion: configStore.get().embedding.version,
     contextConfig: configStore.get().context,
+    getContextConfig: () => configStore.get().context,
     artifactStore,
     sessionStore,
     graphStore,

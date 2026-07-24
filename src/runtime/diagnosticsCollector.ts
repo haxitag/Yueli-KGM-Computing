@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { ConfigStore } from "../core/configStore.js";
 import { probeLlamaCppDeploy } from "./llamaCppDeploy.js";
+import { probeDs4Deploy } from "./ds4Deploy.js";
 
 export type RuntimeIssue = {
   code: string;
@@ -78,6 +79,41 @@ export function collectRuntimeDiagnostics(configStore: ConfigStore): { issues: R
       message: "llama.cpp worker is disabled by deploy config",
       affectedFeatures: ["runtime.llama.cpp"],
       suggestedFix: "Set workers.llamaCpp.enabled=auto|on or KGM_LLAMA_CPP_ENABLED=auto|on to allow local GGUF operators",
+    });
+  }
+
+  const ds4 = probeDs4Deploy({
+    enabled: config.workers.ds4.enabled,
+    command: config.workers.ds4.command,
+    installHint: config.workers.ds4.installHint,
+    chdir: config.workers.ds4.chdir,
+  });
+  if (config.workers.ds4.enabled === "on" && !ds4.installed) {
+    issues.push({
+      code: "DS4_REQUIRED_BUT_MISSING",
+      severity: "error",
+      stage: "workers.ds4",
+      message: "ds4 is required by deploy config but ds4-server was not found",
+      affectedFeatures: ["runtime.ds4", "deepseek_v4_glm_local"],
+      suggestedFix: ds4.remediation.join(" "),
+    });
+  } else if (config.workers.ds4.enabled === "auto" && !ds4.installed) {
+    issues.push({
+      code: "DS4_OPTIONAL_NOT_INSTALLED",
+      severity: "warning",
+      stage: "workers.ds4",
+      message: "ds4-server binary not found; DeepSeek V4 / GLM specialized GGUF via ds4 is unavailable until installed",
+      affectedFeatures: ["runtime.ds4", "deepseek_v4_glm_local"],
+      suggestedFix: ds4.remediation.join(" "),
+    });
+  } else if (config.workers.ds4.enabled === "off") {
+    issues.push({
+      code: "DS4_DISABLED",
+      severity: "info",
+      stage: "workers.ds4",
+      message: "ds4 worker is disabled by deploy config",
+      affectedFeatures: ["runtime.ds4"],
+      suggestedFix: "Set workers.ds4.enabled=auto|on or KGM_DS4_ENABLED=auto|on for DeepSeek V4 / GLM specialized local throughput",
     });
   }
 

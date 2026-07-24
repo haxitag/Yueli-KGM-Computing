@@ -12,6 +12,8 @@ const LOCALHOST_BEARER_PROVIDERS = new Set([
     'text_generation_webui',
     'lmstudio',
     'vmlx',
+    'ds4',
+    'llama_cpp',
 ]);
 
 class KGMTrustProxyPlayground {
@@ -59,6 +61,7 @@ class KGMTrustProxyPlayground {
         this.loadConfigFromLocalStorage();
         this.renderStatusBar();
         this.loadManagedModels();
+        this.refreshSandboxHowtoStatus();
         this.playgroundConfig = null;
         this.activeWorkspace = 'chat';
         this.activeIntegrationTab = null;
@@ -163,7 +166,7 @@ class KGMTrustProxyPlayground {
         this.saveRoutingBtn = document.getElementById('save-routing-btn');
         this.routingEnabled = document.getElementById('routing-enabled');
         this.routingProfileSelect = document.getElementById('routing-profile-select');
-        this.routingDynamic = document.getElementById('routing-dynamic');
+        this.routingDynamic = document.getElementById('routing-allow-dynamic');
         this.routingVerifiable = document.getElementById('routing-verifiable');
         this.routingMaxCost = document.getElementById('routing-max-cost');
         this.routingTargetLatency = document.getElementById('routing-target-latency');
@@ -204,8 +207,15 @@ class KGMTrustProxyPlayground {
             chat: document.getElementById('workspace-chat'),
             routing: document.getElementById('workspace-routing'),
             models: document.getElementById('workspace-models'),
+            config: document.getElementById('workspace-config'),
+            memory: document.getElementById('workspace-memory'),
+            ops: document.getElementById('workspace-ops'),
             integration: document.getElementById('workspace-integration'),
         };
+        this.opsSubnav = document.getElementById('ops-subnav');
+        this.routingMaxCandidates = document.getElementById('routing-max-candidates');
+        this.routingAuditEnabled = document.getElementById('routing-audit-enabled');
+        this.routingHealthPanel = document.getElementById('routing-health-panel');
         this.outputTabs = document.querySelectorAll('.output-tab[data-output-tab]');
         this.outputPanels = document.querySelectorAll('.output-tab-panel[data-output-panel]');
         this.playgroundConfigJson = document.getElementById('playground-config-json');
@@ -248,10 +258,10 @@ class KGMTrustProxyPlayground {
                     this.clearBtn.click();
                 }
             }
-            // Ctrl/Cmd + 1-4 切换工作区
-            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key >= '1' && e.key <= '4') {
+            // Ctrl/Cmd + 1-7 切换工作区
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key >= '1' && e.key <= '7') {
                 e.preventDefault();
-                const workspaces = ['chat', 'routing', 'models', 'integration'];
+                const workspaces = ['chat', 'routing', 'models', 'integration', 'ops', 'memory', 'config'];
                 const index = parseInt(e.key, 10) - 1;
                 if (workspaces[index]) {
                     this.switchWorkspace(workspaces[index]);
@@ -489,6 +499,8 @@ class KGMTrustProxyPlayground {
                         </optgroup>
                         <optgroup label="本地 (localhost) · 本机推理">
                             <option value="yueli-native" ${isNative ? 'selected' : ''}>Yueli-KGM 本地</option>
+                            <option value="ds4" ${sel('ds4')}>ds4（DeepSeek V4 / GLM）</option>
+                            <option value="llama_cpp" ${sel('llama_cpp')}>llama.cpp</option>
                             <option value="ollama" ${sel('ollama')}>Ollama</option>
                             <option value="vllm" ${sel('vllm')}>vLLM</option>
                             <option value="sglang" ${sel('sglang')}>SGLang</option>
@@ -1126,13 +1138,13 @@ class KGMTrustProxyPlayground {
             },
             {
                 title: '本地 (localhost)',
-                desc: '本机 Ollama、vLLM、SGLang、Yueli-KGM 本地、vMLX/MLX、LM Studio、KoboldCpp、Text Gen WebUI 等若前有鉴权或统一网关，请填「本地统一 Bearer」主键 localhost；仍兼容旧版 per-engine 键。',
+                desc: '本机 ds4、llama.cpp、Ollama、vLLM、SGLang、Yueli-KGM 本地、vMLX/MLX、LM Studio、KoboldCpp、Text Gen WebUI 等若前有鉴权或统一网关，请填「本地统一 Bearer」主键 localhost；仍兼容旧版 per-engine 键。',
                 fields: [
                     {
                         key: 'localhost',
                         label: '本地统一 Bearer（localhost）',
                         placeholder: '可选；127.0.0.1 前置网关或本地服务鉴权',
-                        hint: '适用于：Yueli-KGM 本地、Ollama、vLLM、SGLang、LM Studio、vMLX/MLX 本地 OpenAI 端口、KoboldCpp、Text Gen WebUI',
+                        hint: '适用于：Yueli-KGM 本地、ds4（默认 :8090）、llama.cpp（默认 :8080）、Ollama、vLLM、SGLang、LM Studio、vMLX/MLX、KoboldCpp、Text Gen WebUI',
                         multiKey: true,
                     },
                 ],
@@ -1375,11 +1387,26 @@ class KGMTrustProxyPlayground {
         if (this.integrationSubnav) {
             this.integrationSubnav.classList.toggle('is-hidden', name !== 'integration');
         }
+        if (this.opsSubnav) {
+            this.opsSubnav.classList.toggle('is-hidden', name !== 'ops');
+        }
         if (name === 'routing') {
             this.loadAutoRoutingOverview();
         }
         if (name === 'models') {
             this.loadManagedModels();
+        }
+        if (name === 'ops') {
+            window.dispatchEvent(new CustomEvent('kgm-ops-activate', { detail: { opsTab: 'usage' } }));
+            if (window.KgmOpsPanel?.refreshAll) {
+                window.KgmOpsPanel.refreshAll().catch(() => {});
+            }
+        }
+        if (name === 'memory' && window.KGM_MEMORY_OBS?.refresh) {
+            window.KGM_MEMORY_OBS.refresh().catch(() => {});
+        }
+        if (name === 'config' && window.KGM_CONFIG_PANEL?.refresh) {
+            window.KGM_CONFIG_PANEL.refresh().catch(() => {});
         }
         if (name === 'integration' && !this.activeIntegrationTab) {
             this.switchIntegrationTab('tasks');
@@ -1507,6 +1534,35 @@ class KGMTrustProxyPlayground {
         return { Authorization: `Bearer ${token}` };
     }
 
+    async refreshSandboxHowtoStatus() {
+        const statusEl = document.getElementById('sandbox-howto-status');
+        if (!statusEl) {
+            return;
+        }
+        try {
+            const response = await fetch('/v1/kgm/sandboxes');
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const payload = await response.json();
+            const sandboxes = payload.sandboxes || [];
+            const total = sandboxes.length;
+            const ready = sandboxes.filter((s) => s.runtimeMode === 'external').length;
+            const unconfigured = sandboxes.filter((s) => s.runtimeMode === 'unconfigured').length;
+            const running = sandboxes.filter((s) => s.status === 'running').length;
+            if (ready > 0) {
+                statusEl.className = 'sandbox-howto-status is-ok';
+                statusEl.textContent = `API 正常：${total} 个实例，${ready} 个已配置 adapter，${running} 个 running。`;
+            } else {
+                statusEl.className = 'sandbox-howto-status is-warn';
+                statusEl.textContent = `API 正常：${total} 个实例，其中 ${unconfigured} 个 unconfigured（可创建/列表，启动需先配置 adapter）。`;
+            }
+        } catch (error) {
+            statusEl.className = 'sandbox-howto-status is-warn';
+            statusEl.textContent = `无法探测沙箱 API：${error.message || error}`;
+        }
+    }
+
     showInfoModal() {
         this.modalTitle.textContent = '信任委托与代理功能';
         this.modalBody.innerHTML = `
@@ -1520,6 +1576,7 @@ class KGMTrustProxyPlayground {
                 <ul>
                     <li><strong>双协议出口</strong>：OpenAI 兼容（<code>chat.completions</code> / <code>responses</code>）与 Anthropic（Claude）兼容（<code>messages</code>），便于统一客户端与网关接入。</li>
                     <li><strong><code>kgm</code> 扩展</strong>：工具注入与执行、图谱与实体/三元组、检索与会话等元数据；启用时流式走桥接，未启用时可对上游 SSE 透传以降低开销。</li>
+                    <li><strong>沙箱控制面</strong>：首页「沙箱调用」与 <code>sandbox.html</code> 共用 <code>/v1/kgm/sandboxes</code>；工具 <code>list_sandboxes</code> / <code>start_sandbox</code> / <code>stop_sandbox</code>。未配置 adapter 时启动返回 503。</li>
                     <li><strong>受管 runtime 与制品</strong>：模型制品拉取、runtime 生命周期、队列/熔断与 <code>/metrics</code> 等指标，便于运维观测。</li>
                     <li><strong>Native 推理（可选）</strong>：在已支持的权重布局与后端范围内，可由 <code>native</code> runtime 在本进程完成前向与解码；复杂布局与生产吞吐需按文档分层评估，不宜默认等同专用 serving 集群。</li>
                 </ul>
@@ -2390,6 +2447,9 @@ class KGMTrustProxyPlayground {
         if (normalized.provider === 'slang') {
             normalized.provider = 'sglang';
         }
+        if (normalized.provider === 'llama.cpp' || normalized.provider === 'llamacpp') {
+            normalized.provider = 'llama_cpp';
+        }
         if (normalized.provider === 'litellm') {
             normalized.provider = '';
         }
@@ -2554,9 +2614,10 @@ class KGMTrustProxyPlayground {
 
     async loadAutoRoutingOverview() {
         try {
-            const [configResponse, summaryResponse] = await Promise.all([
+            const [configResponse, summaryResponse, healthResponse] = await Promise.all([
                 fetch('/v1/kgm/auto-routing'),
-                fetch('/v1/kgm/auto-routing/summary?limit=8')
+                fetch('/v1/kgm/auto-routing/summary?limit=8'),
+                fetch('/v1/runtime/status'),
             ]);
             if (!configResponse.ok) {
                 throw new Error(`auto routing config status ${configResponse.status}`);
@@ -2566,6 +2627,22 @@ class KGMTrustProxyPlayground {
             this.autoRoutingConfig = config;
             this.autoRoutingSummary = summary;
             this.renderAutoRoutingPanel();
+            if (this.routingHealthPanel) {
+                if (healthResponse.ok) {
+                    const health = await healthResponse.json();
+                    const workers = health.workers || {};
+                    const native = health.native || {};
+                    this.routingHealthPanel.innerHTML = `
+                        <div class="routing-health-grid">
+                            <span>LLM: ${health.llm?.healthy ? 'healthy' : 'degraded'} (${this.escapeHtml(health.llm?.model || '-')})</span>
+                            <span>Native loaded: ${(native.loadedModels || []).length}</span>
+                            <span>llama.cpp: ${workers.llamaCpp?.selectable ? 'ready' : (workers.llamaCpp?.reason || 'n/a')}</span>
+                            <span>ds4: ${workers.ds4?.selectable ? 'ready' : (workers.ds4?.reason || 'n/a')}</span>
+                        </div>`;
+                } else {
+                    this.routingHealthPanel.textContent = `健康状态不可用 (${healthResponse.status})`;
+                }
+            }
         } catch (error) {
             if (this.routingSummaryCards) {
                 this.routingSummaryCards.innerHTML = `<div class="managed-empty">自动调度信息加载失败: ${error.message}</div>`;
@@ -2590,6 +2667,8 @@ class KGMTrustProxyPlayground {
         if (this.routingVerifiable) this.routingVerifiable.checked = config.preferVerifiableTasks !== false;
         if (this.routingMaxCost) this.routingMaxCost.value = String(config.thresholds?.maxCostPerRequest ?? 0.15);
         if (this.routingTargetLatency) this.routingTargetLatency.value = String(config.thresholds?.targetLatencyMs ?? 3500);
+        if (this.routingMaxCandidates) this.routingMaxCandidates.value = String(config.thresholds?.maxCandidateCount ?? 6);
+        if (this.routingAuditEnabled) this.routingAuditEnabled.checked = config.auditEnabled !== false;
         if (this.routingEvalEnabled) this.routingEvalEnabled.checked = config.evaluation?.enabled !== false;
         if (this.routingEvalFallback) this.routingEvalFallback.checked = config.evaluation?.fallbackToHeuristics !== false;
         if (this.routingJudgeEnabled) this.routingJudgeEnabled.checked = config.evaluation?.judge?.enabled !== false;
@@ -2732,8 +2811,10 @@ class KGMTrustProxyPlayground {
             thresholds: {
                 ...(this.autoRoutingConfig?.thresholds || {}),
                 maxCostPerRequest: Number(this.routingMaxCost?.value || this.autoRoutingConfig?.thresholds?.maxCostPerRequest || 0.15),
-                targetLatencyMs: Number(this.routingTargetLatency?.value || this.autoRoutingConfig?.thresholds?.targetLatencyMs || 3500)
+                targetLatencyMs: Number(this.routingTargetLatency?.value || this.autoRoutingConfig?.thresholds?.targetLatencyMs || 3500),
+                maxCandidateCount: Number(this.routingMaxCandidates?.value || this.autoRoutingConfig?.thresholds?.maxCandidateCount || 6),
             },
+            auditEnabled: this.routingAuditEnabled?.checked !== false,
             evaluation: {
                 ...(this.autoRoutingConfig?.evaluation || {}),
                 enabled: this.routingEvalEnabled?.checked !== false,
@@ -3099,11 +3180,13 @@ const PROVIDER_ALIASES = [
     'baidu_qianfan',
     'custom',
     'deepseek',
+    'ds4',
     'fireworks',
     'gemini',
     'groq',
     'huggingface',
     'koboldcpp',
+    'llama_cpp',
     'lmstudio',
     'minimax',
     'mistral',
@@ -3127,7 +3210,7 @@ const PROVIDER_ALIASES = [
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', () => {
-    new KGMTrustProxyPlayground();
+    window.kgmPlaygroundInstance = new KGMTrustProxyPlayground();
     
     // 支持拖拽上传图片
     const dropArea = document.querySelector('.media-item:first-child'); // 图片上传区域

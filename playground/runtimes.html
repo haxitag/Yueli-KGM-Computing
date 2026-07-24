@@ -34,6 +34,7 @@
                     <span>Runtime</span>
                     <select id="runtime-kind-select">
                         <option value="native">native</option>
+                        <option value="ds4">ds4（DeepSeek V4 / GLM）</option>
                         <option value="llama.cpp">llama.cpp</option>
                         <option value="ollama">ollama</option>
                         <option value="vllm">vLLM</option>
@@ -48,7 +49,7 @@
                 </label>
                 <label class="option-field">
                     <span>端口</span>
-                    <input id="runtime-port" type="number" placeholder="8080 / 8000 / 7860">
+                    <input id="runtime-port" type="number" placeholder="8090(ds4) / 8080 / 8000 / 7860">
                 </label>
                 <div class="model-actions">
                     <button type="button" id="create-runtime-btn">创建 Runtime</button>

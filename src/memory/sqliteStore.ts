@@ -69,4 +69,49 @@ export class SqliteMetadataStore implements MetadataStore {
     const info = stmt.run(id);
     return (info.changes ?? 0) > 0;
   }
+
+  async listRecent(params?: {
+    userId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MetadataRecord[]> {
+    const limit = Math.max(1, Math.min(200, params?.limit ?? 50));
+    const offset = Math.max(0, params?.offset ?? 0);
+    if (params?.userId) {
+      const stmt = this.db.prepare(
+        `SELECT id, user_id as userId, text, source, created_at as createdAt
+         FROM memory_chunks WHERE user_id = ?
+         ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      );
+      return stmt.all(params.userId, limit, offset) as MetadataRecord[];
+    }
+    const stmt = this.db.prepare(
+      `SELECT id, user_id as userId, text, source, created_at as createdAt
+       FROM memory_chunks
+       ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+    );
+    return stmt.all(limit, offset) as MetadataRecord[];
+  }
+
+  async getStats(): Promise<{
+    totalChunks: number;
+    userCount: number;
+    byUser: Array<{ userId: string; chunks: number }>;
+  }> {
+    const totalRow = this.db.prepare("SELECT COUNT(*) as c FROM memory_chunks").get() as { c: number };
+    const userRow = this.db.prepare("SELECT COUNT(DISTINCT user_id) as c FROM memory_chunks").get() as {
+      c: number;
+    };
+    const byUser = this.db
+      .prepare(
+        `SELECT user_id as userId, COUNT(*) as chunks FROM memory_chunks
+         GROUP BY user_id ORDER BY chunks DESC LIMIT 50`,
+      )
+      .all() as Array<{ userId: string; chunks: number }>;
+    return {
+      totalChunks: totalRow?.c ?? 0,
+      userCount: userRow?.c ?? 0,
+      byUser,
+    };
+  }
 }

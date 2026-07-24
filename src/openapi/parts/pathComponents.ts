@@ -254,6 +254,12 @@ export function buildOpenApiPathsV1(): Record<string, unknown> {
         responses: { "200": { description: "LlamaCppDeployStatus" }, ...getOnly() },
       },
     },
+    "/v1/runtime/workers/ds4": {
+      get: {
+        summary: "ds4 部署探测（DeepSeek V4 / GLM specialized；含 SSD streaming / micro-batch servingHints）",
+        responses: { "200": { description: "Ds4DeployStatus + servingHints" }, ...getOnly() },
+      },
+    },
     "/v1/kgm/multimodal/embed": {
       post: {
         summary: "多模态向量（KGM 经 KGM_MULTIMODAL_* 调上游；见 components.schemas 说明）",
@@ -319,6 +325,12 @@ export function buildOpenApiPathsV1(): Record<string, unknown> {
     "/v1/kgm/sandboxes": {
       get: { summary: "沙箱列表", responses: { "200": { description: "列表" }, ...getOnly() } },
       post: { summary: "创建", requestBody: { content: { "application/json": { schema: { type: "object" } } } }, responses: { "200": { description: "sandbox" }, ...postWithBody() } },
+    },
+    "/v1/kgm/sandboxes/adapters": {
+      get: {
+        summary: "沙箱 adapter 状态",
+        responses: { "200": { description: "adapters + config overlay" }, ...getOnly() },
+      },
     },
     "/v1/kgm/sandboxes/{id}": {
       get: {

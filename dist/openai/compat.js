@@ -4,6 +4,7 @@ import { parseIntent } from "../parse/parser.js";
 import { renderPrompt } from "../prompt/renderer.js";
 import { collectPlaygroundSystemAddons } from "../playground/systemAddons.js";
 import { generateId } from "../utils/id.js";
+import { resolveRequestTraceIds } from "../observability/requestTrace.js";
 import { extractMaaSOpenAiExtras } from "../llm/maas/reasoning.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
@@ -262,12 +263,25 @@ function buildMaaSCompletionOptions(params, base) {
     };
 }
 async function executeCompatibilityRun(params) {
-    const requestId = generateId();
+    const ids = resolveRequestTraceIds({
+        headers: params.requestHeaders,
+        body: {
+            kgm: params.kgm,
+            metadata: params.metadata,
+        },
+    });
+    const requestId = ids.requestId;
     const created = Math.floor(Date.now() / 1000);
     const config = params.configStore.get();
     const model = resolveRequestedModel(params.model, params.configStore);
     let resolvedModel = model;
-    const kgm = normalizeKgmExtensions(requestId, params.kgm);
+    const kgm = normalizeKgmExtensions(requestId, {
+        ...params.kgm,
+        ops: {
+            ...(params.kgm?.ops ?? {}),
+            traceId: ids.traceId,
+        },
+    });
     const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
     const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
     const executeToolCalls = kgm.capabilities?.executeToolCalls ?? true;
@@ -458,6 +472,10 @@ async function executeCompatibilityRun(params) {
         metadata: params.metadata ?? {},
         kgm: {
             ...kgm,
+            correlation: {
+                requestId,
+                traceId: kgm.ops?.traceId ?? requestId,
+            },
             compatibility: {
                 protocol: params.protocol,
                 toolExecution: executeToolCalls ? "server" : "external",
@@ -693,11 +711,21 @@ async function* streamResponsesChunks(params) {
     });
 }
 async function prepareDirectStream(params) {
-    const requestId = generateId();
+    const ids = resolveRequestTraceIds({
+        headers: params.requestHeaders,
+        body: { kgm: params.kgm, metadata: params.metadata },
+    });
+    const requestId = ids.requestId;
     const created = Math.floor(Date.now() / 1000);
     const config = params.configStore.get();
     const model = resolveRequestedModel(params.model, params.configStore);
-    const kgm = normalizeKgmExtensions(requestId, params.kgm);
+    const kgm = normalizeKgmExtensions(requestId, {
+        ...params.kgm,
+        ops: {
+            ...(params.kgm?.ops ?? {}),
+            traceId: ids.traceId,
+        },
+    });
     const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
     const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
     // 只要注入了 tools（含「仅返回 tool_calls、服务端不执行」），走完整兼容管线，

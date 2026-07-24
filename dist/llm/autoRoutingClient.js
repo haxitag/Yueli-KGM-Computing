@@ -6,6 +6,8 @@ import { LlmProviderFactory } from "./providerFactory.js";
 import { configuredLlmRouteSegment } from "../runtime/topologyResolver.js";
 import { streamCompletion } from "./client.js";
 import { createPricingService } from "./pricingService.js";
+import { classifyIntent, classifyIntentSync, intentToRoutingTaskType } from "../frontstation/index.js";
+import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 export class AutoRoutingLlmClient {
     fallback;
     manager;
@@ -226,7 +228,9 @@ export class AutoRoutingLlmClient {
         const hints = normalizeHints(options?.routing, options?.metadata);
         const profile = normalizeProfile(hints.profile ?? config.defaultProfile);
         const taskInput = options?.taskInput ?? prompt;
-        const taskType = options?.taskType ?? hints.taskType ?? detectTaskType(taskInput, config.defaultTaskType);
+        const taskType = options?.taskType ??
+            hints.taskType ??
+            (await detectTaskTypeAsync(taskInput, config.defaultTaskType));
         const taskName = options?.taskName ?? hints.taskName;
         const verifiable = hints.verificationExpected ?? isVerifiableTask(taskInput, taskType, prompt);
         const complexity = estimateComplexity(taskInput);
@@ -842,6 +846,25 @@ export class AutoRoutingLlmClient {
         });
     }
     recordAudit(selection, prompt, options, elapsedMs, outcome) {
+        void recordOpsUsage({
+            requestId: options?.requestId,
+            model: selection.selected.model,
+            provider: selection.selected.provider,
+            runtimeId: selection.selected.runtimeId,
+            profile: selection.profile,
+            taskType: selection.taskType,
+            success: outcome.success,
+            latencyMs: Math.max(0, elapsedMs),
+            promptTokens: outcome.promptTokens,
+            completionTokens: outcome.completionTokens,
+            totalTokens: outcome.totalTokens,
+            costUsd: outcome.actualCost + outcome.evaluationCost,
+            source: "auto_routing",
+            meta: {
+                routeKey: selection.selected.routeKey,
+                qualityScore: outcome.qualityScore,
+            },
+        });
         if (!this.configStore.get().autoRouting.auditEnabled) {
             return;
         }
@@ -1009,23 +1032,18 @@ function normalizeProfile(value) {
     return value === "cost_first" || value === "manual" ? value : "quality_first";
 }
 function detectTaskType(input, fallback) {
-    const value = input.toLowerCase();
-    if (/(typescript|javascript|python|sql|bug|代码|编程|函数|class|api)/.test(value)) {
-        return "code_generation";
+    const classified = classifyIntentSync(input);
+    return intentToRoutingTaskType(classified.intent, fallback);
+}
+/** 路由前站：走完整级联（ONNX MiniLM / HTTP worker / local_neural） */
+async function detectTaskTypeAsync(input, fallback) {
+    try {
+        const classified = await classifyIntent(input);
+        return intentToRoutingTaskType(classified.intent, fallback);
     }
-    if (/(json|schema|结构化|yaml|xml|csv)/.test(value)) {
-        return "structured_output";
+    catch {
+        return detectTaskType(input, fallback);
     }
-    if (/(math|equation|calculate|solve|数学|方程|证明)/.test(value)) {
-        return "math_reasoning";
-    }
-    if (/(translate|translation|翻译)/.test(value)) {
-        return "translation";
-    }
-    if (/(analy|reason|推理|分析|strategy|plan|design)/.test(value)) {
-        return "reasoning";
-    }
-    return fallback;
 }
 function isVerifiableTask(input, taskType, prompt) {
     if (taskType === "code_generation" || taskType === "structured_output" || taskType === "math_reasoning") {

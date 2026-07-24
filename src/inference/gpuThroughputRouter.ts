@@ -36,6 +36,7 @@ export function planGpuThroughput(params: {
   const runtimes = params.modelManager.listRuntimes();
   const notes: string[] = [
     "KGM does not ship production CUDA kernels; GPU throughput uses managed vLLM/SGLang workers.",
+    "DeepSeek V4 / GLM specialized GGUF local throughput uses managed ds4 (see GET /v1/runtime/workers/ds4 servingHints).",
     "Simulated multi-GPU / speculative paths are disabled unless KGM_ALLOW_SIMULATED_INFERENCE=1.",
   ];
 

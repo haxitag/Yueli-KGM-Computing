@@ -315,6 +315,11 @@ const defaultConfig = {
             command: "llama-server",
             installHint: "Install llama.cpp llama-server; set workers.llamaCpp.command or KGM_LLAMA_SERVER_CMD; KGM_LLAMA_CPP_ENABLED=on|off|auto",
         },
+        ds4: {
+            enabled: "auto",
+            command: "ds4-server",
+            installHint: "Build antirez/ds4 ds4-server; set workers.ds4.command or KGM_DS4_SERVER_CMD; KGM_DS4_ENABLED=on|off|auto. Kernels stay in ds4 — not KGM native-gpu.",
+        },
     },
     playground: {
         skills: [
@@ -416,17 +421,29 @@ function mergeConfig(base, patch) {
     };
 }
 function mergeWorkersConfig(base, patch) {
-    if (!patch?.llamaCpp) {
+    if (!patch?.llamaCpp && !patch?.ds4) {
         return base;
     }
     return {
-        llamaCpp: {
-            ...base.llamaCpp,
-            ...patch.llamaCpp,
-            enabled: patch.llamaCpp.enabled ?? base.llamaCpp.enabled,
-            command: patch.llamaCpp.command?.trim() || base.llamaCpp.command,
-            installHint: patch.llamaCpp.installHint ?? base.llamaCpp.installHint,
-        },
+        llamaCpp: patch?.llamaCpp
+            ? {
+                ...base.llamaCpp,
+                ...patch.llamaCpp,
+                enabled: patch.llamaCpp.enabled ?? base.llamaCpp.enabled,
+                command: patch.llamaCpp.command?.trim() || base.llamaCpp.command,
+                installHint: patch.llamaCpp.installHint ?? base.llamaCpp.installHint,
+            }
+            : base.llamaCpp,
+        ds4: patch?.ds4
+            ? {
+                ...base.ds4,
+                ...patch.ds4,
+                enabled: patch.ds4.enabled ?? base.ds4.enabled,
+                command: patch.ds4.command?.trim() || base.ds4.command,
+                installHint: patch.ds4.installHint ?? base.ds4.installHint,
+                chdir: patch.ds4.chdir?.trim() || base.ds4.chdir,
+            }
+            : base.ds4,
     };
 }
 function mergeYueliAiGatewayConfig(base, patch) {

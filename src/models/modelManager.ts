@@ -15,6 +15,9 @@ import { parseKgmfile, toModelRequests, type KgmfileSpec } from "./kgmfile.js";
 import { detectJangInModelDirectory } from "../native/jang.js";
 import { assessArtifactExecution, resolveRuntimeKind } from "../native/executionPolicy.js";
 import { assertLlamaCppCallable, resolveLlamaCppDeployConfig, type LlamaCppDeployConfig } from "../runtime/llamaCppDeploy.js";
+import { assertDs4Callable, resolveDs4DeployConfig, type Ds4DeployConfig } from "../runtime/ds4Deploy.js";
+import { isDs4SpecializedGguf } from "../runtime/ds4Artifacts.js";
+import { buildDs4ServerArgs, resolveDs4ServingHints } from "../runtime/ds4SessionKv.js";
 import {
   DEFAULT_CLOUD_MODEL_CATALOG,
   isProviderConfigured,
@@ -32,6 +35,7 @@ export type ManagedModelArtifactStatus = "ready" | "downloading" | "pulling" | "
 export type ManagedModelRuntimeKind =
   | "native"
   | "llama.cpp"
+  | "ds4"
   | "ollama"
   | "vllm"
   | "sglang"
@@ -267,6 +271,7 @@ export class ManagedModelManager {
   private healthIntervalMs: number;
   private healthTimer?: NodeJS.Timeout;
   private llamaCppOverrides?: Partial<LlamaCppDeployConfig> | (() => Partial<LlamaCppDeployConfig>);
+  private ds4Overrides?: Partial<Ds4DeployConfig> | (() => Partial<Ds4DeployConfig>);
   private workerRestartConfig: WorkerAutoRestartConfig;
   /** 主动 stop 的 runtime，exit 回调不触发自动重启 */
   private intentionalStops = new Set<string>();
@@ -278,6 +283,8 @@ export class ManagedModelManager {
     artifactDir?: string;
     /** Deploy-time llama.cpp gate (from ConfigStore.workers.llamaCpp or env). */
     llamaCpp?: Partial<LlamaCppDeployConfig> | (() => Partial<LlamaCppDeployConfig>);
+    /** Deploy-time ds4 gate (from ConfigStore.workers.ds4 or env). */
+    ds4?: Partial<Ds4DeployConfig> | (() => Partial<Ds4DeployConfig>);
   }) {
     const configured = options?.statePath ?? process.env.KGM_MODEL_STATE_PATH ?? "data/models/store";
     const { stateRoot, legacyMonolithicCatalog } = resolveConfiguredModelStateRoot(configured);
@@ -285,6 +292,7 @@ export class ManagedModelManager {
     this.artifactDir = path.resolve(options?.artifactDir ?? process.env.KGM_MODEL_ARTIFACT_DIR ?? "data/model-artifacts");
     this.healthIntervalMs = parseNumber(process.env.KGM_MODEL_HEALTHCHECK_INTERVAL_MS) ?? 15000;
     this.llamaCppOverrides = options?.llamaCpp;
+    this.ds4Overrides = options?.ds4;
     this.workerRestartConfig = resolveWorkerAutoRestartConfig();
     fs.mkdirSync(this.stateRoot, { recursive: true });
     fs.mkdirSync(this.artifactDir, { recursive: true });
@@ -309,6 +317,11 @@ export class ManagedModelManager {
   private resolveLlamaCppConfig() {
     const raw = typeof this.llamaCppOverrides === "function" ? this.llamaCppOverrides() : this.llamaCppOverrides;
     return resolveLlamaCppDeployConfig(raw);
+  }
+
+  private resolveDs4Config() {
+    const raw = typeof this.ds4Overrides === "function" ? this.ds4Overrides() : this.ds4Overrides;
+    return resolveDs4DeployConfig(raw);
   }
 
   close(): void {
@@ -760,13 +773,18 @@ export class ManagedModelManager {
     const artifact = request.artifactId ? this.requireArtifact(request.artifactId) : undefined;
     const assessment = assessArtifactExecution(artifact);
     const llamaCpp = this.resolveLlamaCppConfig();
+    const ds4 = this.resolveDs4Config();
     const runtime = resolveRuntimeKind({
       requested: request.runtime,
       artifact,
       llamaCpp,
+      ds4,
     });
     if (runtime === "llama.cpp") {
       assertLlamaCppCallable(llamaCpp);
+    }
+    if (runtime === "ds4") {
+      assertDs4Callable(ds4);
     }
     const host = request.host ?? "127.0.0.1";
     const port = request.port ?? defaultPort(runtime);
@@ -936,6 +954,28 @@ export class ManagedModelManager {
             command: status.resolvedCommand,
             notes: Array.from(
               new Set([...(next.notes ?? []), `llama_cpp_binary:${status.resolvedCommand}`, ...(status.version ? [`llama_cpp_version:${status.version}`] : [])]),
+            ),
+          });
+        }
+      } catch (error) {
+        this.patchRuntime(id, { status: "error", lastError: String(error) });
+        throw error;
+      }
+    }
+
+    if (next.runtime === "ds4") {
+      try {
+        const status = assertDs4Callable(this.resolveDs4Config());
+        if (status.resolvedCommand) {
+          this.patchRuntime(id, {
+            command: status.resolvedCommand,
+            notes: Array.from(
+              new Set([
+                ...(next.notes ?? []),
+                `ds4_binary:${status.resolvedCommand}`,
+                ...(status.version ? [`ds4_version:${status.version}`] : []),
+                "ds4_kernels_external:not_merged_into_native_gpu",
+              ]),
             ),
           });
         }
@@ -1608,6 +1648,20 @@ export class ManagedModelManager {
               ...buildLoraSpawnArgs("llama.cpp", runtime.loraAdapters),
             ],
         };
+      case "ds4":
+        if (!artifact?.localPath) {
+          throw new Error("ds4 runtime requires a downloaded local artifact (DeepSeek V4 / GLM specialized GGUF)");
+        }
+        return {
+          command: runtime.command ?? defaultCommand("ds4"),
+          args: runtime.args ?? buildDs4ServerArgs({
+            modelPath: artifact.localPath,
+            host: runtime.host,
+            port: runtime.port,
+            hints: resolveDs4ServingHints(),
+          }),
+          cwd: this.resolveDs4Config().chdir,
+        };
       case "vllm":
         return {
           command: runtime.command ?? defaultCommand("vllm"),
@@ -2180,6 +2234,9 @@ function inferRuntimeHints(value: string): ManagedModelRuntimeKind[] {
     return ["native", "openai-compatible"];
   }
   if (lower.endsWith(".gguf")) {
+    if (isDs4SpecializedGguf(lower)) {
+      return ["ds4", "llama.cpp", "ollama"];
+    }
     return ["native", "llama.cpp", "ollama"];
   }
   if (lower.endsWith(".safetensors") || lower.endsWith(".safetensors.index.json")) {
@@ -2221,6 +2278,9 @@ function inferRuntimeHintsForLocalPath(localPath: string, stat: fs.Stats): Manag
     return ["native", ...inferRuntimeHints(path.join(localPath, "model.kgm.json")).filter((item) => item !== "native")];
   }
   if (hasDirectoryEntry(localPath, (name) => name.toLowerCase().endsWith(".gguf"))) {
+    if (hasDirectoryEntry(localPath, (name) => isDs4SpecializedGguf(name))) {
+      return ["ds4", "llama.cpp", "ollama"];
+    }
     return ["native", "llama.cpp", "ollama"];
   }
   if (hasDirectoryEntry(localPath, (name) => name.toLowerCase().endsWith(".safetensors") || name.toLowerCase().endsWith(".safetensors.index.json"))) {
@@ -2246,6 +2306,17 @@ function runtimeNotes(runtime: ManagedModelRuntimeKind, artifact?: ManagedModelA
     notes.push("Runs a single-process CPU reference inference backend inside KGM.");
   } else if (runtime === "llama.cpp") {
     notes.push("Requires llama-server or compatible command to be installed on the host.");
+  } else if (runtime === "ds4") {
+    const hints = resolveDs4ServingHints();
+    notes.push(
+      "Requires antirez/ds4 ds4-server for DeepSeek V4 / GLM specialized GGUF. Kernels stay in ds4 — not merged into KGM native-gpu.",
+    );
+    notes.push(
+      `serving:ssd_streaming=${hints.ssdStreaming};batched_session=${hints.batchedSession};micro_batch=${hints.microBatchLabel};token_interleave=${hints.tokenInterleaveOwner}`,
+    );
+    if (hints.sessionKv.enabled) {
+      notes.push(`serving:kv_disk_dir=${hints.sessionKv.diskDir};kv_disk_space_mb=${hints.sessionKv.diskSpaceMb}`);
+    }
   } else if (runtime === "vllm") {
     notes.push("Requires vLLM runtime on a GPU-capable host.");
   } else if (runtime === "sglang") {
@@ -2266,6 +2337,8 @@ function defaultPort(runtime: ManagedModelRuntimeKind): number {
       return 9100;
     case "llama.cpp":
       return 8080;
+    case "ds4":
+      return parseNumber(process.env.KGM_DS4_PORT) ?? 8090;
     case "ollama":
       return 11434;
     case "vllm":
@@ -2292,7 +2365,7 @@ function defaultMaxConcurrent(runtime: ManagedModelRuntimeKind): number {
   if (runtime === "native") {
     return parseNumber(process.env.KGM_NATIVE_MAX_CONCURRENT_REQUESTS) ?? 8;
   }
-  if (runtime === "llama.cpp" || runtime === "ollama") {
+  if (runtime === "llama.cpp" || runtime === "ollama" || runtime === "ds4") {
     return 2;
   }
   return 8;
@@ -2302,7 +2375,7 @@ function defaultMaxQueueSize(runtime: ManagedModelRuntimeKind): number {
   if (runtime === "native") {
     return parseNumber(process.env.KGM_NATIVE_MAX_QUEUE_SIZE) ?? 64;
   }
-  if (runtime === "llama.cpp" || runtime === "ollama") {
+  if (runtime === "llama.cpp" || runtime === "ollama" || runtime === "ds4") {
     return 16;
   }
   return 128;
@@ -2324,7 +2397,7 @@ function defaultBaseUrl(runtime: ManagedModelRuntimeKind, host: string, port: nu
   if (runtime === "native") {
     return `http://${host}:${port}/native`;
   }
-  if (runtime === "llama.cpp") {
+  if (runtime === "llama.cpp" || runtime === "ds4") {
     return `http://${host}:${port}`;
   }
   return `http://${host}:${port}/v1`;
@@ -2334,7 +2407,7 @@ function defaultApiPath(runtime: ManagedModelRuntimeKind): string {
   if (runtime === "native") {
     return "/v1/chat/completions";
   }
-  if (runtime === "llama.cpp") {
+  if (runtime === "llama.cpp" || runtime === "ds4") {
     return "/v1/chat/completions";
   }
   if (
@@ -2378,6 +2451,8 @@ function defaultCommand(runtime: ManagedModelRuntimeKind): string {
       return process.execPath;
     case "llama.cpp":
       return resolveLlamaCppDeployConfig().command;
+    case "ds4":
+      return resolveDs4DeployConfig().command;
     case "ollama":
       return process.env.KGM_OLLAMA_CMD ?? "ollama";
     case "vllm":
@@ -2386,8 +2461,12 @@ function defaultCommand(runtime: ManagedModelRuntimeKind): string {
       return process.env.KGM_SGLANG_CMD ?? "python";
     case "mlx":
       return process.env.KGM_MLX_CMD ?? "python";
-    default:
+    case "openai-compatible":
       return "";
+    default: {
+      const _exhaustive: never = runtime;
+      return _exhaustive;
+    }
   }
 }
 

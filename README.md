@@ -29,15 +29,21 @@
 
 ---
 
-## 🚀 0.3.3 版本更新
+## 🚀 0.3.4 版本更新
 
-### 本版要点：战略能力收线 · 算子复用 llama.cpp · 开放图导出
+### 本版要点：前站 encoder 浅层 · Trace 对齐 · Compose sidecar
+- **Trace / Request ID**：集成方优先传 `kgm.ops.traceId` / `x-trace-id` / `x-kgm-request-id`；缺省 `prefix_uuid`；响应回写（见 `docs/trace-correlation.md`）
+- **前站浅层核**（与 decoder-only Native GPU **分轨**）：意图 + Cross-Encoder + 抽取式摘要；ONNX MiniLM / Python micro-worker / `local_neural` 级联回退
+- **KCE**：`summary` 走 `extractive_summary`；路径意图关键字硬闸保持 `graph_reasoning` 必选语义
+- **部署**：`frontstation-worker` sidecar（`docker compose up`）；`.env.example` 的 `KGM_FRONTSTATION_*`
+- 完整变更见根目录 [`CHANGELOG.md`](./CHANGELOG.md)
+
+### 0.3.3：战略能力收线 · 算子复用 llama.cpp · 开放图导出
 - **算子策略（冻结自研）**：生产算子复用 **llama.cpp**（GGUF）与 **vLLM/SGLang**（高吞吐）；可选部署闸门 `KGM_LLAMA_CPP_ENABLED` / `workers.llamaCpp`（详见 `docs/算子几llamaCPP.md`）
 - **开放图防锁定**：`/v1/kgm/graph/export|import` 支持 JSON-LD / N-Triples / Turtle / GraphML
 - **双轨推理**：`/v1/kgm/graph/reason/dual_track` + KCE `validation.dual_track`（符号 × 检索 × LLM）
 - **执行闭环**：`runtime: "auto"`、`/v1/kgm/weights/resolve|capabilities`；HF 全面可执行 = via_worker
 - **LoRA（worker）**、`/v1/runtime/workers/llama.cpp`、GPU 吞吐规划 API
-- 完整变更见根目录 [`CHANGELOG.md`](./CHANGELOG.md)
 
 ### 0.3.1：YueliAI 云端聚合网关与 Playground 工作区
 - **YueliAI v1 反向代理**：`YUELIAI_HOST` + `YUELIAI_API_KEY` 暴露 `/yueliai/v1/*` 与 `/api/yueliai/v1/*`
@@ -729,7 +735,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.3
+npm install @haxitag/yueli-kgm-computing@0.3.4
 ```
 
 ### 开源仓库同步（维护者）
@@ -755,9 +761,11 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前：`0.3.3`）
+## 版本说明（当前：`0.3.4`）
 
-**0.3.3**：开放图导出 / 双轨推理 / 执行策略闭环；算子复用 llama.cpp（可选部署）；LoRA worker 挂载；Native GPU 自研算子冻结。详见 [`CHANGELOG.md`](./CHANGELOG.md)。
+**0.3.4**：前站 encoder 浅层（意图 / CE / 抽取式摘要）+ Trace 对齐 + Compose `frontstation-worker` sidecar；与 decoder-only Native GPU 分轨。详见 [`CHANGELOG.md`](./CHANGELOG.md)。
+
+**0.3.3**：开放图导出 / 双轨推理 / 执行策略闭环；算子复用 llama.cpp（可选部署）；LoRA worker 挂载；Native GPU 自研算子冻结。
 
 **0.3.1**：YueliAI 云端聚合网关（`/yueliai/v1` 代理）、Playground 工作区与配置加载优化、推理调用文档补充。
 
@@ -769,7 +777,7 @@ npm run dev:enhanced
 
 **0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明。
 
-**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告；当前以 **0.3.3** 为准。
+**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告；当前以 **0.3.4** 为准。
 
 ### ✅ 新增功能
 

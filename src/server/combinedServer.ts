@@ -25,7 +25,9 @@ import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson } from "./
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import type { Embedder } from '../embedding/canonical.js';
 import { playgroundRouter } from './playgroundApi.js';
+import { createPlaygroundSpaFallbackMiddleware } from './playgroundSpaFallback.js';
 import { syncPlaygroundFromConfig } from '../playground/syncPlayground.js';
+import type { SandboxManager } from '../sandbox/manager.js';
 import {
   applyRoutingPatch,
   buildRollbackEntry,
@@ -52,6 +54,7 @@ export function createCombinedServer(params: {
   skillRuntime?: SkillRuntime;
   /** 缺省则图谱相关新路由返回 501 */
   graphStore?: GraphStore;
+  sandboxManager?: SandboxManager;
 }, port: number = 3000) {
   const app = express();
   const server = http.createServer(app);
@@ -72,6 +75,9 @@ export function createCombinedServer(params: {
 
   // API路由 - Playground
   app.use('/api/kgm', playgroundRouter);
+
+  // /dynamic 等误开路径 → Playground；浏览器 HTML 导航避免落到 JSON 404
+  app.use(createPlaygroundSpaFallbackMiddleware());
 
   // 用 Express 兜底桥接原生 HTTP API，避免与内置 request listener 重复响应。
   app.use(async (req, res) => {
@@ -152,6 +158,9 @@ export function createCombinedServer(params: {
             routingEntry = buildUpdateEntry(nextRouting, typed.routingNote);
           }
           const updated = params.configStore.update(typed as KgmConfigPatch);
+          if (typed.sandboxAdapters) {
+            params.sandboxManager?.reloadAdapters();
+          }
           if (params.skillRuntime) {
             syncPlaygroundFromConfig({
               skillRegistry: params.skillRuntime.getSkillRegistry(),

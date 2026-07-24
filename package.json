@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": false,
   "workspaces": [
     "packages/*"
@@ -28,12 +28,13 @@
   },
   "scripts": {
     "playground": "tsx src/server/playgroundServer.ts",
-    "dev:enhanced": "tsx src/server/enhancedStart.ts",
+    "dev:enhanced": "npm run build:markdown-normalize && tsx src/server/enhancedStart.ts",
     "dev": "tsx watch src/index.ts",
-    "dev:server": "tsx src/server/start.ts",
+    "dev:server": "npm run build:markdown-normalize && tsx src/server/start.ts",
     "kgm": "tsx src/cli/kgm.ts",
     "build": "npm run build -w @haxitag/markdown-gfm-normalize && tsc -p tsconfig.build.json",
     "build:markdown-normalize": "npm run build -w @haxitag/markdown-gfm-normalize",
+    "prepare": "npm run build:markdown-normalize",
     "check:no-workspace-protocol": "node scripts/assert-no-workspace-protocol.mjs",
     "prepublishOnly": "npm run check:no-workspace-protocol && npm run build",
     "release:deps": "node scripts/publish-workspace-deps.mjs",
@@ -101,9 +102,11 @@
     "test:unit:continuous-batching": "node --import tsx --test tests/unit/continuous_batching.test.ts",
     "test:unit:concurrency-guardrail": "node --import tsx --test tests/unit/concurrency_guardrail.test.ts",
     "test:load:worker": "node --import tsx tests/performance/worker-concurrency-load.ts",
-    "test:strategic-20260714": "node --import tsx --test tests/unit/graph_open_formats.test.ts tests/unit/dual_track_reasoner.test.ts tests/unit/runtime_lora_gpu.test.ts tests/unit/closed_loop_native_hf.test.ts",
+    "test:strategic-20260714": "node --import tsx --test tests/unit/graph_open_formats.test.ts tests/unit/dual_track_reasoner.test.ts tests/unit/runtime_lora_gpu.test.ts tests/unit/closed_loop_native_hf.test.ts tests/unit/ds4_deploy.test.ts",
     "test:closed-loop": "node --import tsx --test tests/unit/closed_loop_native_hf.test.ts",
     "test:llama-cpp-deploy": "node --import tsx --test tests/unit/llama_cpp_deploy.test.ts",
+    "test:ds4-deploy": "node --import tsx --test tests/unit/ds4_deploy.test.ts",
+    "test:ops-admin": "node --import tsx --test tests/unit/ops_admin.test.ts",
     "test:e2e:cli": "tsx --test tests/e2e/kgm-cli.e2e.test.ts",
     "test:e2e:all": "tsx --test tests/e2e/kgm-server.e2e.test.ts tests/e2e/kce-compute.e2e.test.ts tests/e2e/playground-api.e2e.test.ts tests/e2e/upstream-proxy.e2e.test.ts tests/e2e/user-journey-matrix.e2e.test.ts tests/e2e/critical-review-matrix.e2e.test.ts tests/e2e/kgm-cli.e2e.test.ts",
     "test:kgm-regression": "npm run build && npm run test:jang && npm run test:mlx-hints && npm run test:jang-layer-plan && npm run test:apple-silicon-probe && npm run test:canonical-conversion && npm run test:hf-public-configs && npm run test:tokenizer-chat-template && npm run test:jinja-lite && npm run test:pytorch-index-canonical && npm run test:pytorch-index-validate-files && npm run test:gguf-layout-matrix && npm run test:native-gguf-negative-synth && npm run test:anthropic-tool-mapping && npm run test:anthropic-streaming-tool-text-order && npm run test:native-gpu-backend && npm run test:native-gpu-sim-difftest && npm run test:native-gpu-safetensors-layout && npm run test:native-gpu-safetensors-index-layout && npm run test:native-gpu-qwen2-weights-layout && npm run test:native-gpu-qwen2-tie-word-embeddings && npm run test:native-gpu-buffer-cast && npm run test:native-gpu-safetensors-index-buffer-cast && npm run test:native-gpu-minimal-infer-sim && npm run test:native-gpu-attention-kv-sim && npm run test:native-gpu-graph-capture-sim && npm run test:native-gpu-comm-sim-collectives && npm run test:native-gpu-tp-sharding-helpers && npm run test:managed-runtime-metrics-prom-extra && npm run smoke:native-safetensors && npm run smoke:native-gguf && npm run smoke:openai-compat",
