@@ -83,11 +83,17 @@ export function buildOpenApiPathsV1() {
             },
         },
         "/v1/kgm/config": {
-            get: { summary: "读完整配置", responses: { "200": j200("KgmConfig"), ...getOnly() } },
+            get: { summary: "读配置（秘密仅返回 configured 标记）", responses: { "200": j200("KgmConfig"), ...getOnly() } },
             post: {
                 summary: "更新配置 (patch)",
                 requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/KgmConfigPatch" } } } },
                 responses: { "200": j200("KgmConfig"), ...postWithBody() },
+            },
+        },
+        "/v1/kgm/ops/config-status": {
+            get: {
+                summary: "读 P0-P2 控制面 effective 状态（无秘密）",
+                responses: { "200": { description: "control-plane status" }, ...getOnly() },
             },
         },
         "/v1/kgm/auto-routing": {
@@ -322,6 +328,12 @@ export function buildOpenApiPathsV1() {
         "/v1/kgm/sandboxes": {
             get: { summary: "沙箱列表", responses: { "200": { description: "列表" }, ...getOnly() } },
             post: { summary: "创建", requestBody: { content: { "application/json": { schema: { type: "object" } } } }, responses: { "200": { description: "sandbox" }, ...postWithBody() } },
+        },
+        "/v1/kgm/sandboxes/adapters": {
+            get: {
+                summary: "沙箱 adapter 状态",
+                responses: { "200": { description: "adapters + config overlay" }, ...getOnly() },
+            },
         },
         "/v1/kgm/sandboxes/{id}": {
             get: {

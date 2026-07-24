@@ -618,6 +618,83 @@ a.nav-item {
     gap: 0;
 }
 
+.credential-scope-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.credential-scope-card {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    width: 100%;
+}
+
+.credential-scope-card:hover {
+    border-color: var(--color-accent);
+}
+
+.credential-scope-card.is-active {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+}
+
+.credential-scope-card strong {
+    font-size: 12px;
+    color: var(--color-text);
+}
+
+.credential-scope-card span {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--color-text-muted);
+}
+
+.api-keys-scope-panel {
+    margin-top: 4px;
+}
+
+.api-keys-fold {
+    margin-bottom: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    padding: 0 12px 12px;
+}
+
+.api-keys-fold-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+    list-style: none;
+    padding: 12px 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.api-keys-fold-summary::-webkit-details-marker {
+    display: none;
+}
+
+.api-keys-fold-meta {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+}
+
 .api-keys-intro {
     font-size: 13px;
     color: var(--color-text-muted);
@@ -683,6 +760,44 @@ a.nav-item {
     font-weight: 400;
     color: var(--color-text-faint);
     margin-top: 2px;
+}
+
+.api-key-field-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 24px;
+    margin-top: 3px;
+}
+
+.api-key-state {
+    font-size: 11px;
+    color: var(--color-text-faint);
+}
+
+.api-key-state.is-configured {
+    color: #15803d;
+    font-weight: 600;
+}
+
+.api-key-clear-btn {
+    padding: 2px 7px;
+    border: 0;
+    background: transparent;
+    color: #b91c1c;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.api-key-clear-btn:disabled {
+    color: var(--color-text-faint);
+    cursor: default;
+}
+
+.api-keys-field.is-pending-clear {
+    padding: 7px;
+    border-radius: var(--radius-sm);
+    background: #fef2f2;
 }
 
 .api-keys-field input {

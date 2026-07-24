@@ -1335,6 +1335,21 @@ input[type="checkbox"] {
     background: rgba(248, 250, 252, 0.65);
 }
 
+.kgm-config-fieldset.is-inactive {
+    opacity: 0.62;
+    border-style: dashed;
+}
+
+.kgm-config-fieldset.is-inactive legend::after {
+    content: " · 当前不生效";
+    font-weight: 500;
+    color: #b45309;
+}
+
+.helper-text.is-warn {
+    color: #b45309;
+}
+
 .kgm-config-fieldset legend {
     padding: 0 6px;
     font-size: 0.85rem;
@@ -1370,6 +1385,87 @@ input[type="checkbox"] {
 
 .cfg-adapter-pill--warn {
     background: rgba(217, 119, 6, 0.12);
+    color: #b45309;
+}
+
+.control-plane-entry {
+    margin: 10px 0 14px;
+    padding: 8px 10px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 10px;
+    background: rgba(248, 250, 252, 0.8);
+}
+
+.control-plane-entry summary {
+    cursor: pointer;
+    color: #334155;
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+
+.control-plane-inline {
+    padding-bottom: 0;
+}
+
+.control-plane-inline-card {
+    margin: 12px 0 16px;
+}
+
+.control-plane-status {
+    display: grid;
+    gap: 6px;
+    margin: 9px 0 11px;
+}
+
+.control-plane-row {
+    display: grid;
+    grid-template-columns: minmax(105px, 0.35fr) minmax(0, 1fr);
+    gap: 4px 10px;
+    align-items: baseline;
+    padding-bottom: 5px;
+    border-bottom: 1px dashed rgba(148, 163, 184, 0.25);
+    font-size: 0.78rem;
+}
+
+.control-plane-row > span {
+    color: #64748b;
+}
+
+.control-plane-row > strong {
+    overflow-wrap: anywhere;
+    color: #0f172a;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.control-plane-row > small {
+    grid-column: 2;
+    color: #94a3b8;
+}
+
+.control-plane-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.control-plane-chip {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+
+.control-plane-chip--ok {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.control-plane-chip--warn {
+    background: #fef3c7;
     color: #b45309;
 }
 

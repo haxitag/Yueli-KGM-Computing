@@ -1,140 +1,119 @@
 # Yueli KGM Computing
 
-`@haxitag/yueli-kgm-computing` — 阅粒 **KGM**（Knowledge Graph & Model runtime）：自托管的 **OpenAI / Anthropic 兼容网关与编排层**，内建 **进程内 Native 推理** 与 **受管模型控制面**；支持 `kgm` 扩展（工具、图谱信号、检索、观测等）。
+自托管的 **OpenAI / Anthropic 兼容 AI 网关**：本地编排、受管推理 Worker、Playground 配置控制面。
 
-> **NPM 安装**: [![npm version](https://badge.fury.io/js/@haxitag%2Fyueli-kgm-computing.svg)](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing)
-> 
-> ```bash
-> npm install @haxitag/yueli-kgm-computing@latest
-> ```
+[![npm version](https://img.shields.io/npm/v/@haxitag/yueli-kgm-computing.svg)](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing)
+[![Node.js](https://img.shields.io/badge/node-20.x-brightgreen.svg)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-**快速入口**：[官网](https://haxitag.com/page/kgm) · [社区主题](https://haxitag.com/community/yuelikgm) · [npm 包](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing) · [GitHub](https://github.com/haxitag/Yueli-KGM-Computing)
+```bash
+npm install @haxitag/yueli-kgm-computing@latest
+```
+
+**文档**：[官网](https://haxitag.com/page/kgm) · [社区](https://haxitag.com/community/yuelikgm) · [GitHub](https://github.com/haxitag/Yueli-KGM-Computing) · [Changelog](./CHANGELOG.md)
+
+---
+
+## 它能做什么
+
+- **兼容网关**：`/v1/chat/completions`、`/v1/responses`、Anthropic `/v1/messages`
+- **本地推理**：llama.cpp / vLLM / SGLang / ds4 等受管 Worker
+- **Playground**：配置 LLM/Embedding、记忆后端、Worker 门闩、沙箱、Keys 分域
+- **控制面**：HTTP 安全、前站、熔断/流式、Native/CORS/Discovery 只读状态
+
+---
+
+## 快速开始
+
+```bash
+npm install
+npm run build
+npm run dev:enhanced
+# 打开 http://localhost:3000
+```
+
+生产建议：`KGM_HTTP_SECURITY_MODE=strict` + `KGM_HTTP_API_KEY`。
+
+---
+
+## 0.3.5
+
+配置控制面与安全加固：
+
+- Playground 可写：默认 LLM/Embedding、记忆 TTL、Worker 门闩、Sandbox adapter
+- Keys 分域：管理会话 / 服务端 YueliAI / 浏览器凭证 / KGM 调用钥
+- 配置 API 脱敏；Sandbox reload 保留 PID；MCP `[REDACTED]` 防误写
+
+完整变更见 [`CHANGELOG.md`](./CHANGELOG.md)。
 
 ---
 
 ## 文档与社区（HaxiTAG）
 
-完整文档在 [阅粒知识计算引擎社区](https://haxitag.com/community/yuelikgm) 发布（需邮箱验证访问正文）；npm 包仅含 `README` 与运行时代码。
+完整文档在 [阅粒知识计算引擎社区](https://haxitag.com/community/yuelikgm) 发布（需邮箱验证访问正文）；npm 包含 `README`、`dist/` 与 `playground/`。
 
 | 主题 | 链接 |
 |------|------|
-| **Yueli-KGM-Computing 新开发者使用指南** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw) |
-| **Yueli KGM Computing 开源组件说明** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-es923485r01d) |
-| **Yueli 推理引擎优化 — 性能优化配置使用指南** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-k9gyjbpkyq8t) |
-| **后端 Rust / Go / Python / C++ 集成阅粒知识计算引擎** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-7ipzi1bv7gho) |
-| **haxitag/yueli-kgm-computing 集成具体操作实践** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-2muqnfrly7jc) |
-| **官网与产品页** | [haxitag.com/page/kgm](https://haxitag.com/page/kgm) |
-| **npm 包** | [@haxitag/yueli-kgm-computing](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing) |
-| **GitHub 开源仓库** | [haxitag/Yueli-KGM-Computing](https://github.com/haxitag/Yueli-KGM-Computing) |
+| **新开发者使用指南** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw) |
+| **开源组件说明** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-es923485r01d) |
+| **性能优化配置** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-k9gyjbpkyq8t) |
+| **多语言后端集成** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-7ipzi1bv7gho) |
+| **集成实践** | [社区文章](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-2muqnfrly7jc) |
 
 ---
 
-## 🚀 0.3.4 版本更新
+## 历史版本摘要
 
-### 本版要点：前站 encoder 浅层 · Trace 对齐 · Compose sidecar
-- **Trace / Request ID**：集成方优先传 `kgm.ops.traceId` / `x-trace-id` / `x-kgm-request-id`；缺省 `prefix_uuid`；响应回写（见 `docs/trace-correlation.md`）
-- **前站浅层核**（与 decoder-only Native GPU **分轨**）：意图 + Cross-Encoder + 抽取式摘要；ONNX MiniLM / Python micro-worker / `local_neural` 级联回退
-- **KCE**：`summary` 走 `extractive_summary`；路径意图关键字硬闸保持 `graph_reasoning` 必选语义
-- **部署**：`frontstation-worker` sidecar（`docker compose up`）；`.env.example` 的 `KGM_FRONTSTATION_*`
-- 完整变更见根目录 [`CHANGELOG.md`](./CHANGELOG.md)
+### 0.3.4：前站 encoder 浅层 · Trace · Compose sidecar
+- Trace / Request ID 对齐；前站意图 + Cross-Encoder + 抽取式摘要；`frontstation-worker` sidecar
 
-### 0.3.3：战略能力收线 · 算子复用 llama.cpp · 开放图导出
-- **算子策略（冻结自研）**：生产算子复用 **llama.cpp**（GGUF）与 **vLLM/SGLang**（高吞吐）；可选部署闸门 `KGM_LLAMA_CPP_ENABLED` / `workers.llamaCpp`（详见 `docs/算子几llamaCPP.md`）
-- **开放图防锁定**：`/v1/kgm/graph/export|import` 支持 JSON-LD / N-Triples / Turtle / GraphML
-- **双轨推理**：`/v1/kgm/graph/reason/dual_track` + KCE `validation.dual_track`（符号 × 检索 × LLM）
-- **执行闭环**：`runtime: "auto"`、`/v1/kgm/weights/resolve|capabilities`；HF 全面可执行 = via_worker
-- **LoRA（worker）**、`/v1/runtime/workers/llama.cpp`、GPU 吞吐规划 API
+### 0.3.3：算子复用 · 开放图导出
+- 生产算子复用 llama.cpp / vLLM / SGLang；图导出 JSON-LD / N-Triples / Turtle / GraphML
 
-### 0.3.1：YueliAI 云端聚合网关与 Playground 工作区
-- **YueliAI v1 反向代理**：`YUELIAI_HOST` + `YUELIAI_API_KEY` 暴露 `/yueliai/v1/*` 与 `/api/yueliai/v1/*`
-- **Playground 重构**与配置持久化；文档 `docs/KGM服务调用.md`
+### 0.3.1–0.3.0：YueliAI 网关 · MaaS Thinking
+- YueliAI v1 反向代理；统一 MaaS Thinking / Reasoning 兼容
 
-### 0.3.0：MaaS 全链路 Thinking / Reasoning 兼容
-- **统一 MaaS 层**（`src/llm/maas/`）：模型目录、请求封装、推理字段解析、Anthropic 原生代理
-- **最新旗舰模型**：Anthropic（Opus 4.8/4.7、Sonnet 4.6、Fable 5）、智谱 GLM-5.2/5.1/5.0、Kimi 2.7/2.6/2.5、MiniMax 3.0/2.7/2.6/2.5
-- **Thinking / Reasoning**：请求支持 `thinking`、`enable_thinking`、`reasoning_effort`、`output_config`；响应/流式统一解析 `reasoning_content` / `thinking` 等字段
-- **Anthropic 原生直通**：`/v1/messages` 在含 `thinking` / `output_config` 时直连 `api.anthropic.com`，流式输出 `thinking_delta` 内容块
-- **OpenAI-compat 增强**：智谱 / Moonshot / DeepSeek 改走完整 Chat Completions 客户端（流式 + tools + thinking 透传）
+### 0.2.x：Copilot / Responses / 品牌统一
+- Responses API、Copilot SSE、Critical E2E、Yueli KGM Runtime 品牌统一
 
-### 0.2.9：OpenAI Responses API
-- `/v1/responses` 对齐新版流式事件；Chat Completions `reasoning_content` 非流式与流式 `delta` 支持
+<details>
+<summary>更早功能清单（0.2.6 起）</summary>
 
-### 0.2.8：Copilot 集成
-- SSE 流式归一化：`executeToolCalls` 关闭时放宽透传；Ollama `think=false` 与 reasoning 通道
-- 管理 API：`PUT/GET /v1/admin/model-providers` 云厂商同步；`/v1/models?configured=true` 已配置模型列表
-- 路由元数据、`KGM_STREAM_IDLE_MS`、`X-KGM-Output-Normalize: off` 等 Copilot 对接能力
+### ✅ 新增功能
 
-### 0.2.7 及延续：Critical E2E 与品牌统一
-- **Critical E2E**：补充 `/v1/chat/completions` 与 `/v1/responses` 的 SSE 流式覆盖（含 `tool_calls`、`response.output_item.added` 等）；记录「同步路径 `502`」与「流式先返回 SSE `200` 后上游失败截断」的差异
-- **0.2.6 起延续：Yueli KGM Runtime 品牌统一**
+**品牌统一与用户体验**
+- 统一品牌标识：将所有用户可见的错误消息、日志输出更新为 `Yueli KGM Runtime` 品牌标识
+- 保持 API 兼容性：类名、类型名、配置值、环境变量保持不变
 
-**1. 用户体验优化**
-- 统一品牌标识：将所有用户可见的错误消息、日志输出从 `native_runtime_*` 格式更新为 `Yueli KGM Runtime` 品牌标识
-- 更新 `src/models/modelManager.ts`、`src/native/backend.ts`、`src/native/loaders.ts`、`src/native/bindings.ts` 等核心模块的错误消息
-- 保持 API 兼容性：类名（`NativeRuntimeEngine`）、类型名、配置值（`runtime: 'native'`）、环境变量（`KGM_NATIVE_*`）保持不变
+**模型管理增强**
+- 模型扫描发现：`POST /v1/models/discover`
+- 模型上传 / 删除 / 标签管理 API
 
-**2. 文档体系完善**
-- [新开发者使用指南](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw)（社区）：项目概述、快速开始、核心组件、本地推理、进程内集成、环境变量、调试与生产部署
-- 代码示例为主，帮助新开发者快速上手
-
-**3. 生产级发布准备**
-- 完善的错误处理和日志输出体系
-- 统一的用户可见消息格式
-- 增强的开发者体验
-
-### 关键改进
-- **品牌一致性**: 统一的 `Yueli KGM Runtime` 品牌标识贯穿所有用户可见文本
-- **文档增强**: 新增面向新开发者的完整使用指南
-- **向后兼容**: 所有公共 API、类型定义、环境变量保持兼容
-- **构建验证**: 完整的 TypeScript 编译和类型诊断通过
-
-### 核心能力概览
+**核心能力概览**
 
 | 能力类别 | 支持内容 |
 |---------|---------|
-| **多厂商支持** | 30+ 主流 LLM 提供商（OpenAI、Anthropic、智谱、阿里云、百度千帆等） |
-| **本地推理引擎** | Ollama、vLLM、SGLang、LM Studio |
-| **原生推理** | Yueli KGM Runtime（进程内张量计算），支持 kgm-json、GGUF、safetensors |
+| **多厂商支持** | 30+ 主流 LLM 提供商 |
+| **本地推理引擎** | Ollama、vLLM、SGLang、LM Studio、llama.cpp、ds4 |
 | **统一 API** | OpenAI Chat/Completions、Anthropic Messages 兼容 |
 | **智能路由** | 多 API Key 轮询、自动故障转移 |
 | **知识图谱** | 图检索、社区发现、规则推理 |
-| **多模态** | 图像嵌入、视觉检索 |
 
-### 快速入门
-
-```typescript
-// 创建 Yueli KGM Runtime 推理引擎
-import { NativeRuntimeEngine } from '@haxitag/yueli-kgm-computing';
-
-const engine = new NativeRuntimeEngine('./models/my-model.kgm.json', {
-promptCacheLimit: 8,
-sessionCacheLimit: 64,
-schedulerMaxBatchSize: 8,
-kvCacheMode: 'paged',
-});
-
-const result = await engine.complete('Hello, Yueli KGM!');
-console.log(result.text);
-```
+</details>
 
 ---
 
 - **环境**：Node **20.x**（与 `package.json` 的 `engines` 一致）
 - **官网**：[Yueli KGM Computing 产品页](https://haxitag.com/page/kgm)
-- **社区文档**：[阅粒知识计算引擎主题](https://haxitag.com/community/yuelikgm)（含[新开发者指南](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw)、[开源组件说明](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-es923485r01d)、[集成实践](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-2muqnfrly7jc)等）
+- **社区文档**：[阅粒知识计算引擎主题](https://haxitag.com/community/yuelikgm)
 - **npm**：[@haxitag/yueli-kgm-computing](https://www.npmjs.com/package/@haxitag/yueli-kgm-computing)
 - **GitHub**：[haxitag/Yueli-KGM-Computing](https://github.com/haxitag/Yueli-KGM-Computing)
-- **npm 包内容**：`dist/`（运行时代码）+ `playground/`（Web Playground 静态资源）+ 本 `README`；**不**再内置仓库中的大量 `docs/*.md`，以减小包体；完整文档以社区与官网为准
+- **npm 包内容**：`dist/` + `playground/` + `README` + `LICENSE`；完整文档以社区与官网为准
 - **生产加固**：`NODE_ENV=production`（或 `KGM_HTTP_SECURITY_MODE=strict`）**强制** `KGM_HTTP_API_KEY`；未设限流时默认 **120 req/分钟**；`KGM_HTTP_AUTH_EXEMPT` 默认 `/health,/metrics,/openapi.json`；`KGM_HTTP_TRUST_PROXY=1` 才信任 `X-Forwarded-For`。本地开发默认 permissive。上游 LLM 经 **opossum** 按 host 熔断（`KGM_CIRCUIT_BREAKER_*`）。Managed worker（vLLM/SGLang/llama.cpp/MLX）异常退出默认**自动重启**（`KGM_WORKER_AUTO_RESTART`，指数退避）；自动路由在首 token 前失败时可 **stream failover** 到 default 候选。
-- **OpenAPI 3.1**：`GET /openapi.json`（主规范同 `src/openapi/kgmOpenApiV1Spec.ts`）
-- **Runtime 观测层**：`GET /v1/runtime/status`、`/topology`、`/discovery`、`/diagnostics`，以及 `POST /v1/runtime/route/explain`，用于应用端启动体检、模型发现、路由预检与失败解释
-- **检索三阶段**：`kgm.retrieval.strategy=hybrid`（BM25+向量）、`kgm.retrieval.rerank=embed`（双塔成对编码）或 `rerank=http` + `KGM_RERANK_HTTP_URL`
-- **图与多模态**
-  - 图：`POST /v1/kgm/graph/communities`、`reason/expand`、`reason/rules` 等
-  - 多模态：`POST /v1/kgm/multimodal/embed`：KGM 将请求转发到由环境变量指定的上游图像向量服务
-    - 必填：`KGM_MULTIMODAL_BASE_URL`
-    - 常用：`KGM_MULTIMODAL_PATH`（默认 `"/v1/embeddings"`）、`KGM_MULTIMODAL_MODEL`（默认 `"clip"`）、`KGM_MULTIMODAL_KEY`、`KGM_MULTIMODAL_TIMEOUT_MS`（默认 `120000`）
-    - `KGM_MULTIMODAL_JSON_TEMPLATE=1`：对上游发 `{ model, image, mime, text? }`；否则默认 `{ model, input: [dataUrl] }`
+- **OpenAPI 3.1**：`GET /openapi.json`
+- **Runtime 观测层**：`GET /v1/runtime/status`、`/topology`、`/discovery`、`/diagnostics`，以及 `POST /v1/runtime/route/explain`
+- **检索三阶段**：`kgm.retrieval.strategy=hybrid`、`kgm.retrieval.rerank=embed|http`
+- **图与多模态**：图社区 / 规则推理；`POST /v1/kgm/multimodal/embed`（`KGM_MULTIMODAL_*`）
 
 ---
 
@@ -735,7 +714,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.4
+npm install @haxitag/yueli-kgm-computing@0.3.5
 ```
 
 ### 开源仓库同步（维护者）
@@ -761,93 +740,24 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前：`0.3.4`）
+## 版本说明（当前：`0.3.5`）
 
-**0.3.4**：前站 encoder 浅层（意图 / CE / 抽取式摘要）+ Trace 对齐 + Compose `frontstation-worker` sidecar；与 decoder-only Native GPU 分轨。详见 [`CHANGELOG.md`](./CHANGELOG.md)。
+详见上方「0.3.5」与 [`CHANGELOG.md`](./CHANGELOG.md)。历史版本摘要见「历史版本摘要」一节。
 
-**0.3.3**：开放图导出 / 双轨推理 / 执行策略闭环；算子复用 llama.cpp（可选部署）；LoRA worker 挂载；Native GPU 自研算子冻结。
+### 本地 GPU 推理支持
 
-**0.3.1**：YueliAI 云端聚合网关（`/yueliai/v1` 代理）、Playground 工作区与配置加载优化、推理调用文档补充。
+| 模型系列 | 文件 | 状态 |
+|---------|------|------|
+| **Qwen 3.5/3.6** | [src/native/gpu/qwen3.ts](./src/native/gpu/qwen3.ts) | ✅ |
+| **GLM 5.0/5.1** | [src/native/gpu/glm5.ts](./src/native/gpu/glm5.ts) | ✅ |
+| **Google Gemma 4** | [src/native/gpu/gemma4.ts](./src/native/gpu/gemma4.ts) | ✅ |
+| **MiniMax 2.5/2.7** | [src/native/gpu/minimax25.ts](./src/native/gpu/minimax25.ts) | ✅ |
+| **MiMo 2.5** | [src/native/gpu/mimo25.ts](./src/native/gpu/mimo25.ts) | ✅ |
+| **vMLX (Apple Silicon)** | [src/native/gpu/vmlxAdapter.ts](./src/native/gpu/vmlxAdapter.ts) | ✅ |
 
-**0.3.0**：MaaS 全链路 Thinking/Reasoning 兼容 — 统一 `src/llm/maas/` 层；补全 Anthropic / GLM / Kimi / MiniMax 最新旗舰模型；Anthropic 原生直通与 OpenAI-compat 推理字段透传。
-
-**0.2.9**：OpenAI Responses API 流式事件与 reasoning 通道对齐；Chat Completions `reasoning_content` 支持。
-
-**0.2.8**：Copilot 集成 — SSE 归一化、云厂商同步 API、已配置模型列表与路由元数据。
-
-**0.2.7**：Critical E2E 增补 SSE 流式场景；部署文档补充同步错误与流式截断的差异说明。
-
-**0.2.6 及延续**：以下「✅ 新增功能」等条目主要来自 **0.2.6** 发布公告；当前以 **0.3.4** 为准。
-
-### ✅ 新增功能
-
-**品牌统一与用户体验**
-- 统一品牌标识：将所有用户可见的错误消息、日志输出更新为 `Yueli KGM Runtime` 品牌标识
-- 更新核心模块：`src/models/modelManager.ts`、`src/native/backend.ts`、`src/native/loaders.ts`、`src/native/bindings.ts`
-- 保持 API 兼容性：类名、类型名、配置值、环境变量保持不变
-
-**文档体系完善**
-- [新开发者使用指南](https://haxitag.com/community/yuelikgm/yuelikgm_t-yuelikgm-6jnu87fondgw)（社区）：项目概述、快速开始、核心组件、本地推理、进程内集成、环境变量、调试与生产部署
-
-**模型管理增强**
-- 模型扫描发现：`POST /v1/models/discover` 扫描宿主机可用模型
-- 模型上传：`POST /v1/models/upload` 上传本地模型文件
-- 模型删除：`DELETE /v1/models/{model}` 删除模型
-- 模型标签：`POST /v1/models/{model}/tags/add`、`/remove`、`PUT /v1/models/{model}/tags`
-
-**流式响应稳定性**
-- 流式请求超时控制（默认 5 分钟），可通过 `KGM_STREAM_TIMEOUT_MS` 配置
-- 客户端断开连接检测与资源清理
-- **安全增强**: 添加 `headersSent` 检查，防止重复发送响应头
-
-**内存存储优化**
-- LRU/FIFO 驱逐策略
-- 用户级和全局级容量限制
-- 环境变量：`KGM_MEMORY_MAX_CHUNKS_PER_USER`、`KGM_MEMORY_MAX_TOTAL_CHUNKS`、`KGM_MEMORY_EVICTION_POLICY`
-
-**请求安全加固**
-- 请求体大小限制（默认 5MB），可通过 `KGM_HTTP_MAX_BODY_SIZE_MB` 配置
-- 完整 CORS 配置支持（`KGM_CORS_ORIGINS`、`KGM_CORS_METHODS`、`KGM_CORS_HEADERS`）
-- 敏感信息日志脱敏
-
-### 🔒 安全修复
-
-| 问题 | 严重程度 | 描述 |
-|------|----------|------|
-| CORS 安全漏洞 | 严重 | 通配符源模式下错误设置 `Access-Control-Allow-Credentials: true` |
-| sendSse 头部检查缺失 | 高 | 缺少 `headersSent` 检查，可能导致运行时错误 |
-| 环境变量解析错误 | 中 | `parseInt` 结果未验证 NaN |
-
-### 📦 本地 GPU 推理支持
-
-| 模型系列 | 文件 | 支持型号 | 状态 |
-|---------|------|---------|------|
-| **Qwen 3.5/3.6** | [src/native/gpu/qwen3.ts](./src/native/gpu/qwen3.ts) | 7B/14B/32B/72B | ✅ |
-| **GLM 5.0/5.1** | [src/native/gpu/glm5.ts](./src/native/gpu/glm5.ts) | 9B/32B | ✅ |
-| **Google Gemma 4** | [src/native/gpu/gemma4.ts](./src/native/gpu/gemma4.ts) | 2B/4B/9B/27B | ✅ |
-| **MiniMax 2.5/2.7** | [src/native/gpu/minimax25.ts](./src/native/gpu/minimax25.ts) | 4B/8B/32B/456B | ✅ |
-| **MiMo 2.5** | [src/native/gpu/mimo25.ts](./src/native/gpu/mimo25.ts) | 1.5B/7B/13B/30B | ✅ |
-| **vMLX (Apple Silicon)** | [src/native/gpu/vmlxAdapter.ts](./src/native/gpu/vmlxAdapter.ts) | M1/M2/M3/M4 | ✅ |
-
-### 运行测试
 ```bash
 npm run test:native-gpu-models
 ```
-
-**结果**: 63 测试通过，0 失败
-
-### 主要功能
-- **权重别名映射**: 支持 Hugging Face 格式 → 本地 GPU 格式
-- **内存估算**: 支持多种量化格式 (Q4_0, Q8_0, F16 等)
-- **统一接口**: [getModelConfig()](./src/native/gpu/index.ts), [estimateModelMemory()](./src/native/gpu/index.ts)
-- **模型注册表**: `MODEL_REGISTRY` 包含所有支持模型
-- **特色功能**:
-  - Qwen: 滑动窗口、Yarn RoPE
-  - GLM: Prefix Attention、MQA/GQA
-  - Gemma: GeGLU、嵌入归一化
-  - MiniMax: 400K 上下文、KV 压缩
-  - MiMo: 端侧量化、推荐 batch size
-  - vMLX (Apple MLX): 统一内存、Metal 加速、前缀缓存、连续批处理
 
 ---
 

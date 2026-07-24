@@ -1,7 +1,8 @@
 import { logger } from "../observability/logger.js";
 import { performanceMonitor } from "../observability/performanceMetrics.js";
+import { Pool } from "pg";
 export class PostgresqlMetadataStore {
-    pool = null;
+    pool;
     config;
     queryCount = 0;
     slowQueryThreshold = 1000; // ms
@@ -13,6 +14,17 @@ export class PostgresqlMetadataStore {
             ssl: false,
             ...config,
         };
+        this.pool = new Pool({
+            host: this.config.host,
+            port: this.config.port,
+            database: this.config.database,
+            user: this.config.username,
+            password: this.config.password,
+            ssl: this.config.ssl,
+            max: this.config.maxConnections,
+            idleTimeoutMillis: this.config.idleTimeout,
+            connectionTimeoutMillis: this.config.connectionTimeout,
+        });
     }
     static async connect(config) {
         if (config.provider !== "postgresql") {
@@ -35,18 +47,6 @@ export class PostgresqlMetadataStore {
     }
     async initialize() {
         try {
-            const { Pool } = require("pg");
-            this.pool = new Pool({
-                host: this.config.host,
-                port: this.config.port,
-                database: this.config.database,
-                user: this.config.username,
-                password: this.config.password,
-                ssl: this.config.ssl,
-                max: this.config.maxConnections,
-                idleTimeoutMillis: this.config.idleTimeout,
-                connectionTimeoutMillis: this.config.connectionTimeout,
-            });
             // Test connection
             const client = await this.pool.connect();
             await client.query("SELECT 1");
@@ -197,6 +197,48 @@ export class PostgresqlMetadataStore {
             client.release();
         }
     }
+    async listRecent(params) {
+        const limit = Math.max(1, Math.min(500, params?.limit ?? 50));
+        const offset = Math.max(0, params?.offset ?? 0);
+        const values = [];
+        const where = params?.userId ? "WHERE user_id = $1" : "";
+        if (params?.userId)
+            values.push(params.userId);
+        values.push(limit, offset);
+        const limitIndex = values.length - 1;
+        const offsetIndex = values.length;
+        const result = await this.pool.query(`SELECT id, user_id AS "userId", text, source, created_at AS "createdAt"
+       FROM memory_chunks
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT $${limitIndex} OFFSET $${offsetIndex}`, values);
+        return result.rows.map((row) => ({
+            id: String(row.id),
+            userId: String(row.userId),
+            text: String(row.text),
+            source: String(row.source),
+            createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+        }));
+    }
+    async getStats() {
+        const [totals, users] = await Promise.all([
+            this.pool.query(`SELECT COUNT(*)::int AS "totalChunks",
+                COUNT(DISTINCT user_id)::int AS "userCount"
+         FROM memory_chunks`),
+            this.pool.query(`SELECT user_id AS "userId", COUNT(*)::int AS chunks
+         FROM memory_chunks
+         GROUP BY user_id
+         ORDER BY chunks DESC, user_id ASC`),
+        ]);
+        return {
+            totalChunks: Number(totals.rows[0]?.totalChunks ?? 0),
+            userCount: Number(totals.rows[0]?.userCount ?? 0),
+            byUser: users.rows.map((row) => ({
+                userId: String(row.userId),
+                chunks: Number(row.chunks),
+            })),
+        };
+    }
     async close() {
         if (this.pool) {
             await this.pool.end();
@@ -205,7 +247,7 @@ export class PostgresqlMetadataStore {
             }, 'PostgreSQL connection pool closed');
         }
     }
-    getStats() {
+    getConnectionStats() {
         return {
             isConnected: this.pool !== null,
             queryCount: this.queryCount,

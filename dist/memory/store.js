@@ -1,6 +1,11 @@
 import { CANONICAL_EMBEDDING } from "../core/config.js";
 import { applyMemoryRerank } from "../rerank/applyRerank.js";
 import { blendAndNormalize, bm25Scores } from "./lexicalRerank.js";
+export function isInspectableMemoryStore(store) {
+    const candidate = store;
+    return (typeof candidate.getMemoryStats === "function" &&
+        typeof candidate.listMemoryRecords === "function");
+}
 export class InMemoryStore {
     store = new Map();
     maxChunksPerUser;
@@ -128,6 +133,45 @@ export class InMemoryStore {
             }
         });
         return removed;
+    }
+    async getMemoryStats() {
+        const byUser = [];
+        this.store.forEach((list, userId) => {
+            byUser.push({ userId, chunks: list.length });
+        });
+        byUser.sort((a, b) => b.chunks - a.chunks);
+        return {
+            backend: "in_memory",
+            totalChunks: this.getTotalChunks(),
+            userCount: this.store.size,
+            byUser,
+            maxChunksPerUser: this.maxChunksPerUser,
+            maxTotalChunks: this.maxTotalChunks,
+            evictionPolicy: this.evictionPolicy,
+            inspectable: true,
+        };
+    }
+    async listMemoryRecords(params) {
+        const limit = Math.max(1, Math.min(200, params?.limit ?? 50));
+        const offset = Math.max(0, params?.offset ?? 0);
+        const rows = [];
+        this.store.forEach((list, userId) => {
+            if (params?.userId && userId !== params.userId) {
+                return;
+            }
+            for (const chunk of list) {
+                rows.push({
+                    id: chunk.id,
+                    userId: chunk.userId,
+                    text: chunk.text,
+                    source: chunk.source,
+                    createdAt: chunk.createdAt,
+                    lastAccessedAt: chunk.lastAccessedAt,
+                });
+            }
+        });
+        rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        return rows.slice(offset, offset + limit);
     }
 }
 export function buildMemoryChunk(params) {

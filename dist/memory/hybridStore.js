@@ -77,4 +77,36 @@ export class HybridMemoryStore {
         }
         return metaDeleted;
     }
+    async getMemoryStats() {
+        if (typeof this.metadataStore.getStats === "function") {
+            const stats = await this.metadataStore.getStats();
+            return {
+                backend: "hybrid",
+                totalChunks: stats.totalChunks,
+                userCount: stats.userCount,
+                byUser: stats.byUser,
+                inspectable: true,
+            };
+        }
+        return {
+            backend: "hybrid",
+            totalChunks: 0,
+            userCount: 0,
+            byUser: [],
+            inspectable: false,
+        };
+    }
+    async listMemoryRecords(params) {
+        if (typeof this.metadataStore.listRecent !== "function") {
+            return [];
+        }
+        const rows = await this.metadataStore.listRecent(params);
+        return rows.map((r) => ({
+            id: r.id,
+            userId: r.userId,
+            text: r.text,
+            source: r.source,
+            createdAt: r.createdAt,
+        }));
+    }
 }

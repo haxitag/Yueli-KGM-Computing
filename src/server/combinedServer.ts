@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { DEFAULT_SCHEMA_IDS } from '../core/config.js';
 import type { KgmRequest, KgmRetrievalOptions } from '../core/types.js';
 import type { ConfigStore, KgmConfigPatch } from '../core/configStore.js';
+import { toPublicKgmConfig } from '../core/publicConfig.js';
 import type { ContextBuilder } from '../context/contextBuilder.js';
 import { Scheduler } from '../scheduler/fsm.js';
 import type { LlmClient } from '../llm/client.js';
@@ -36,6 +37,7 @@ import {
   parseRoutingUpdatePayload,
 } from '../routing/routingService.js';
 import { createExpressCorsOptions } from "./corsPolicy.js";
+import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 
 // 获取当前文件目录
 const __filename = fileURLToPath(import.meta.url);
@@ -118,7 +120,11 @@ export function createCombinedServer(params: {
       }
 
       if (req.method === "GET" && url.pathname === "/v1/kgm/config") {
-        return sendJson(res, 200, params.configStore.get());
+        return sendJson(res, 200, toPublicKgmConfig(params.configStore.get()));
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/kgm/ops/config-status") {
+        return sendJson(res, 200, buildControlPlaneStatus(params.configStore));
       }
 
       if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing") {
@@ -171,7 +177,7 @@ export function createCombinedServer(params: {
           if (routingEntry) {
             routingHistory.record(routingEntry);
           }
-          return sendJson(res, 200, updated);
+          return sendJson(res, 200, toPublicKgmConfig(updated));
         } else {
           return sendJson(res, 400, { error: "invalid_payload" });
         }

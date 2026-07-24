@@ -1,5 +1,6 @@
 import http from "node:http";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
+import { toPublicKgmConfig } from "../core/publicConfig.js";
 import { syncPlaygroundFromConfig } from "../playground/syncPlayground.js";
 import { createAnthropicMessagesResponse, streamAnthropicMessagesJsonLines, } from "../anthropic/compat.js";
 import { postAnthropicMessages, streamAnthropicMessagesNative, } from "../llm/maas/anthropicNative.js";
@@ -17,6 +18,8 @@ import { assertHttpAccessConfig, createHttpAccessConfigFromEnv, HttpRequestAcces
 import { getOpsStore } from "../admin/opsStore.js";
 import { runWithOpsAuthAsync } from "../admin/opsAuthContext.js";
 import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
+import { handleObservabilityRoute } from "./routes/observability.js";
+import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 import { resolveModelAlias } from "../admin/modelAliasResolve.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText } from "./httpJsonHelpers.js";
@@ -474,6 +477,23 @@ export function createKgmRequestListener(params) {
                         res,
                         sendJson,
                         isMaster: auth.kind === "master" || (!accessConfig.apiKey && auth.kind === "anonymous"),
+                    })) {
+                        return;
+                    }
+                }
+                if (url.pathname === "/v1/kgm/observability/context" ||
+                    url.pathname === "/v1/kgm/memory/records" ||
+                    url.pathname === "/v1/kgm/observability/retrieval-cache/clear") {
+                    if (await handleObservabilityRoute({
+                        method: req.method ?? "GET",
+                        pathname: url.pathname,
+                        url,
+                        req,
+                        res,
+                        sendJson,
+                        memoryStore: params.memoryStore,
+                        contextBuilder: params.contextBuilder,
+                        modelManager,
                     })) {
                         return;
                     }
@@ -1119,7 +1139,7 @@ export function createKgmRequestListener(params) {
                     });
                 }
                 if (req.method === "GET" && url.pathname === "/v1/admin/config") {
-                    return sendJson(res, 200, params.configStore.get());
+                    return sendJson(res, 200, toPublicKgmConfig(params.configStore.get()));
                 }
                 if (req.method === "GET" && url.pathname === "/v1/admin/versions") {
                     return sendJson(res, 200, {
@@ -1315,7 +1335,10 @@ export function createKgmRequestListener(params) {
                     return sendJson(res, 200, response);
                 }
                 if (req.method === "GET" && url.pathname === "/v1/kgm/config") {
-                    return sendJson(res, 200, params.configStore.get());
+                    return sendJson(res, 200, toPublicKgmConfig(params.configStore.get()));
+                }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/ops/config-status") {
+                    return sendJson(res, 200, buildControlPlaneStatus(params.configStore));
                 }
                 if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing") {
                     return sendJson(res, 200, params.configStore.get().autoRouting);
@@ -1349,6 +1372,9 @@ export function createKgmRequestListener(params) {
                         routingEntry = buildUpdateEntry(nextRouting, payload.routingNote);
                     }
                     const updated = params.configStore.update(payload);
+                    if (payload.sandboxAdapters) {
+                        params.sandboxManager.reloadAdapters();
+                    }
                     if (params.skillRuntime) {
                         syncPlaygroundFromConfig({
                             skillRegistry: params.skillRuntime.getSkillRegistry(),
@@ -1359,7 +1385,7 @@ export function createKgmRequestListener(params) {
                     if (routingEntry) {
                         routingHistory.record(routingEntry);
                     }
-                    return sendJson(res, 200, updated);
+                    return sendJson(res, 200, toPublicKgmConfig(updated));
                 }
                 if (req.method === "GET" && url.pathname === "/v1/kgm/routing") {
                     return sendJson(res, 200, params.configStore.get().routing);
@@ -1688,8 +1714,17 @@ export function createKgmRequestListener(params) {
                     const runtime = modelManager.stopRuntime(id);
                     return sendJson(res, 200, { runtime });
                 }
+                if (req.method === "GET" && url.pathname === "/v1/kgm/sandboxes/adapters") {
+                    return sendJson(res, 200, {
+                        adapters: params.sandboxManager.adapterStatus(),
+                        config: params.configStore.get().sandboxAdapters,
+                    });
+                }
                 if (req.method === "GET" && url.pathname === "/v1/kgm/sandboxes") {
-                    return sendJson(res, 200, { sandboxes: params.sandboxManager.list() });
+                    return sendJson(res, 200, {
+                        sandboxes: params.sandboxManager.list(),
+                        adapters: params.sandboxManager.adapterStatus(),
+                    });
                 }
                 if (req.method === "POST" && url.pathname === "/v1/kgm/sandboxes") {
                     const payload = (await readJson(req));

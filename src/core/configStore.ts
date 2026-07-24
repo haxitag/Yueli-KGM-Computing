@@ -1,4 +1,5 @@
 import { CANONICAL_EMBEDDING } from "./config.js";
+import { REDACTED_CONFIG_SECRET } from "./publicConfig.js";
 import type { BusinessRoutingConfig } from "../routing/businessRouting.js";
 import type { RoutingProfile, RoutingTarget, SkillStep } from "./types.js";
 import fs from "node:fs";
@@ -870,7 +871,30 @@ function mergePlaygroundConfig(base: PlaygroundConfig, patch?: PlaygroundConfigP
   }
   return {
     skills: patch.skills ?? base.skills,
-    mcpConnectors: patch.mcpConnectors ?? base.mcpConnectors,
+    mcpConnectors: patch.mcpConnectors
+      ? patch.mcpConnectors.map((connector) => {
+          if (!connector.headers) {
+            return connector;
+          }
+          const previous = base.mcpConnectors.find((item) => item.id === connector.id);
+          const headers = Object.fromEntries(
+            Object.entries(connector.headers)
+              .map(([key, value]) => {
+                if (value !== REDACTED_CONFIG_SECRET) {
+                  return [key, value] as const;
+                }
+                const restored = previous?.headers?.[key];
+                // Never persist the public redaction placeholder as a real secret.
+                return restored !== undefined ? ([key, restored] as const) : null;
+              })
+              .filter((entry): entry is readonly [string, string] => entry !== null),
+          );
+          return {
+            ...connector,
+            headers: Object.keys(headers).length > 0 ? headers : undefined,
+          };
+        })
+      : base.mcpConnectors,
     outputTemplates: patch.outputTemplates ?? base.outputTemplates,
     activeSkillIds: patch.activeSkillIds ?? base.activeSkillIds,
     activeMcpIds: patch.activeMcpIds ?? base.activeMcpIds,

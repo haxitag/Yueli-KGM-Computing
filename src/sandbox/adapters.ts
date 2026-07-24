@@ -16,6 +16,9 @@ export type SandboxAdapter = {
   stop(instance: SandboxInstance): void;
   isRunning(instance: SandboxInstance): boolean;
   preview(instance: SandboxInstance): Partial<SandboxPreview>;
+  /** Optional: preserve detached child PIDs across config reload. */
+  exportProcessMap?(): Map<string, number>;
+  importProcessMap?(processes: Map<string, number>): void;
 };
 
 type SandboxAdapterConfig = {
@@ -262,6 +265,18 @@ class CommandSandboxAdapter implements SandboxAdapter {
       memoryMb: 0,
       networkKbps: 0,
     };
+  }
+
+  exportProcessMap(): Map<string, number> {
+    return new Map(this.processes);
+  }
+
+  importProcessMap(processes: Map<string, number>): void {
+    for (const [id, pid] of processes) {
+      if (typeof pid === "number" && Number.isFinite(pid) && pid > 0) {
+        this.processes.set(id, pid);
+      }
+    }
   }
 
   private getSystemMetrics(): Partial<Pick<SandboxPreview, "cpuPercent" | "memoryMb">> {

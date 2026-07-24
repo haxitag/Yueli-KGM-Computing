@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { ConfigStore, createRuntimeWithStorage, } from "../index.js";
 import { playgroundRouter } from "./playgroundApi.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
+import { createPlaygroundSpaFallbackMiddleware } from "./playgroundSpaFallback.js";
 import { createKgmRequestListener } from "./http.js";
 import { createExpressCorsOptions } from "./corsPolicy.js";
 // 获取当前文件目录
@@ -51,6 +52,8 @@ async function main() {
     app.use('/generated-audio', express.static(path.join(__dirname, '../../data/generated-audio')));
     // API路由 - Playground
     app.use('/api/kgm', playgroundRouter);
+    // /dynamic 等误开路径 → Playground；浏览器 HTML 导航避免落到 JSON 404
+    app.use(createPlaygroundSpaFallbackMiddleware());
     // 与 createKgmServer 共用同一套 HTTP 语义（含 /v1/embeddings、/v1/search、/v1/agents、KCE 等）
     app.use((req, res) => {
         void kgmListener(req, res);

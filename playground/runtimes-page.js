@@ -9,11 +9,62 @@
     const modelNameInput = document.getElementById('runtime-model-name');
     const portInput = document.getElementById('runtime-port');
     const createBtn = document.getElementById('create-runtime-btn');
+    const workerPolicyEl = document.getElementById('runtime-worker-policy');
 
     let modelArtifacts = [];
     let modelRuntimes = [];
     let modelSummaries = [];
     let nativeRuntimeId = '';
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;');
+    }
+
+    function policyRow(label, value, note) {
+        const rendered = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '—');
+        return `<div class="control-plane-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(rendered)}</strong>${
+            note ? `<small>${escapeHtml(note)}</small>` : ''
+        }</div>`;
+    }
+
+    async function loadWorkerPolicy() {
+        if (!workerPolicyEl) return;
+        const response = await fetch('/v1/kgm/ops/config-status');
+        if (!response.ok) throw new Error(`worker policy ${response.status}`);
+        const data = await response.json();
+        const workers = data.workers || {};
+        const gates = workers.gates?.value || {};
+        const restart = workers.autoRestart?.value || {};
+        const ds4 = workers.ds4?.value || {};
+        const connection = ds4.connection || {};
+        workerPolicyEl.innerHTML = [
+            policyRow('llama.cpp / ds4 门闩', {
+                llamaCpp: gates.llamaCpp?.enabled,
+                ds4: gates.ds4?.enabled,
+            }, 'ConfigStore · 即时'),
+            policyRow('自动重启', restart, `${workers.autoRestart?.source || 'default'} · 重启进程`),
+            policyRow('ds4 连接', {
+                enabled: connection.enabled ?? gates.ds4?.enabled,
+                command: connection.command || gates.ds4?.command,
+                chdir: connection.chdir || null,
+                port: connection.port ?? 8090,
+                baseUrl: connection.baseUrl || null,
+            }, 'PORT/BASE_URL 为 env · 门闩/command 可热更新（新建 runtime）'),
+            policyRow('ds4 serving', {
+                ssdStreaming: ds4.ssdStreaming,
+                batchedSession: ds4.batchedSession,
+                ctxTokens: ds4.ctxTokens,
+                diskKv: ds4.sessionKv?.enabled,
+                diskDir: ds4.sessionKv?.diskDir || null,
+                diskSpaceMb: ds4.sessionKv?.diskSpaceMb ?? null,
+                ssdCacheExperts: ds4.ssdStreamingCacheExperts || null,
+            }, `${workers.ds4?.source || 'default'} · token 交错由 ds4-server 负责`),
+        ].join('');
+    }
 
     function readNativeRuntimeId() {
         try {
@@ -103,6 +154,7 @@
             fetch('/v1/kgm/models/artifacts'),
             fetch('/v1/kgm/models/runtimes'),
             fetch('/v1/kgm/models'),
+            loadWorkerPolicy(),
         ]);
         if (!artifactResponse.ok) {
             throw new Error(`artifacts ${artifactResponse.status}`);

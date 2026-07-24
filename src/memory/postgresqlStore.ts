@@ -2,6 +2,7 @@ import type { MetadataRecord, MetadataStore } from "./metadataStore.js";
 import type { DatabaseConfig } from "../core/configStore.js";
 import { logger } from "../observability/logger.js";
 import { performanceMonitor } from "../observability/performanceMetrics.js";
+import { Pool } from "pg";
 
 interface PostgresConfig {
   host: string;
@@ -16,7 +17,7 @@ interface PostgresConfig {
 }
 
 export class PostgresqlMetadataStore implements MetadataStore {
-  private pool: any = null;
+  private pool: Pool;
   private config: PostgresConfig;
   private queryCount = 0;
   private slowQueryThreshold = 1000; // ms
@@ -29,6 +30,17 @@ export class PostgresqlMetadataStore implements MetadataStore {
       ssl: false,
       ...config,
     };
+    this.pool = new Pool({
+      host: this.config.host,
+      port: this.config.port,
+      database: this.config.database,
+      user: this.config.username,
+      password: this.config.password,
+      ssl: this.config.ssl,
+      max: this.config.maxConnections,
+      idleTimeoutMillis: this.config.idleTimeout,
+      connectionTimeoutMillis: this.config.connectionTimeout,
+    });
   }
 
   static async connect(config: DatabaseConfig): Promise<PostgresqlMetadataStore> {
@@ -55,20 +67,6 @@ export class PostgresqlMetadataStore implements MetadataStore {
 
   private async initialize(): Promise<void> {
     try {
-      const { Pool } = require("pg");
-      
-      this.pool = new Pool({
-        host: this.config.host,
-        port: this.config.port,
-        database: this.config.database,
-        user: this.config.username,
-        password: this.config.password,
-        ssl: this.config.ssl,
-        max: this.config.maxConnections,
-        idleTimeoutMillis: this.config.idleTimeout,
-        connectionTimeoutMillis: this.config.connectionTimeout,
-      });
-
       // Test connection
       const client = await this.pool.connect();
       await client.query("SELECT 1");
@@ -230,6 +228,65 @@ export class PostgresqlMetadataStore implements MetadataStore {
     }
   }
 
+  async listRecent(params?: {
+    userId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MetadataRecord[]> {
+    const limit = Math.max(1, Math.min(500, params?.limit ?? 50));
+    const offset = Math.max(0, params?.offset ?? 0);
+    const values: unknown[] = [];
+    const where = params?.userId ? "WHERE user_id = $1" : "";
+    if (params?.userId) values.push(params.userId);
+    values.push(limit, offset);
+    const limitIndex = values.length - 1;
+    const offsetIndex = values.length;
+    const result = await this.pool.query(
+      `SELECT id, user_id AS "userId", text, source, created_at AS "createdAt"
+       FROM memory_chunks
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+      values,
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      userId: String(row.userId),
+      text: String(row.text),
+      source: String(row.source),
+      createdAt:
+        row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+    }));
+  }
+
+  async getStats(): Promise<{
+    totalChunks: number;
+    userCount: number;
+    byUser: Array<{ userId: string; chunks: number }>;
+  }> {
+    const [totals, users] = await Promise.all([
+      this.pool.query(
+        `SELECT COUNT(*)::int AS "totalChunks",
+                COUNT(DISTINCT user_id)::int AS "userCount"
+         FROM memory_chunks`,
+      ),
+      this.pool.query(
+        `SELECT user_id AS "userId", COUNT(*)::int AS chunks
+         FROM memory_chunks
+         GROUP BY user_id
+         ORDER BY chunks DESC, user_id ASC`,
+      ),
+    ]);
+    return {
+      totalChunks: Number(totals.rows[0]?.totalChunks ?? 0),
+      userCount: Number(totals.rows[0]?.userCount ?? 0),
+      byUser: users.rows.map((row) => ({
+        userId: String(row.userId),
+        chunks: Number(row.chunks),
+      })),
+    };
+  }
+
   async close(): Promise<void> {
     if (this.pool) {
       await this.pool.end();
@@ -239,7 +296,7 @@ export class PostgresqlMetadataStore implements MetadataStore {
     }
   }
 
-  getStats(): {
+  getConnectionStats(): {
     isConnected: boolean;
     queryCount: number;
     config: PostgresConfig;

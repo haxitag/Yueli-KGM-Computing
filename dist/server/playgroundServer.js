@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { playgroundRouter } from './playgroundApi.js';
+import { createPlaygroundSpaFallbackMiddleware } from './playgroundSpaFallback.js';
 import { createExpressCorsOptions } from './corsPolicy.js';
 // 获取当前文件目录
 const __filename = fileURLToPath(import.meta.url);
@@ -24,6 +25,7 @@ export function createPlaygroundServer(port = 3001) {
     app.get('/', (req, res) => {
         res.sendFile(path.join(__dirname, '../../playground/index.html'));
     });
+    app.use(createPlaygroundSpaFallbackMiddleware());
     // 启动服务器
     const server = app.listen(port, () => {
         console.log(`KGM-Computing Playground server running on http://localhost:${port}`);

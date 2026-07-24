@@ -3,24 +3,16 @@
  * Depends on playground page DOM; uses same-origin /v1/kgm/* APIs.
  */
 (function () {
-  function masterHeaders() {
-    const key =
-      (window.KGM_PLAYGROUND && window.KGM_PLAYGROUND.masterKey) ||
-      localStorage.getItem("kgm_master_api_key") ||
-      localStorage.getItem("kgm_http_api_key") ||
-      "";
-    const headers = { "content-type": "application/json" };
-    if (key) {
-      headers.authorization = `Bearer ${key}`;
-      headers["x-api-key"] = key;
-    }
-    return headers;
+  function requestHeaders(extra = {}) {
+    // Master key is injected by auth-fetch.js (sessionStorage). Do not re-read
+    // long-lived localStorage copies that previously duplicated Keys 管理钥.
+    return { "content-type": "application/json", ...extra };
   }
 
   async function api(path, options = {}) {
     const res = await fetch(path, {
       ...options,
-      headers: { ...masterHeaders(), ...(options.headers || {}) },
+      headers: requestHeaders(options.headers || {}),
     });
     const text = await res.text();
     let data = null;

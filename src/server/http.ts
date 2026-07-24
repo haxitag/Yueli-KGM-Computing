@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { KgmRequest, SkillDefinition, ToolDefinition } from "../core/types.js";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
 import type { ConfigStore, KgmConfigPatch } from "../core/configStore.js";
+import { toPublicKgmConfig } from "../core/publicConfig.js";
 import { syncPlaygroundFromConfig } from "../playground/syncPlayground.js";
 import type { ContextBuilder } from "../context/contextBuilder.js";
 import type { GraphStore } from "../graph/store.js";
@@ -58,6 +59,7 @@ import { getOpsStore } from "../admin/opsStore.js";
 import { runWithOpsAuthAsync } from "../admin/opsAuthContext.js";
 import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
 import { handleObservabilityRoute } from "./routes/observability.js";
+import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 import { resolveModelAlias } from "../admin/modelAliasResolve.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText } from "./httpJsonHelpers.js";
@@ -1524,7 +1526,7 @@ export function createKgmRequestListener(
       }
 
       if (req.method === "GET" && url.pathname === "/v1/admin/config") {
-        return sendJson(res, 200, params.configStore.get());
+        return sendJson(res, 200, toPublicKgmConfig(params.configStore.get()));
       }
 
       if (req.method === "GET" && url.pathname === "/v1/admin/versions") {
@@ -1749,7 +1751,11 @@ export function createKgmRequestListener(
       }
 
       if (req.method === "GET" && url.pathname === "/v1/kgm/config") {
-        return sendJson(res, 200, params.configStore.get());
+        return sendJson(res, 200, toPublicKgmConfig(params.configStore.get()));
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/kgm/ops/config-status") {
+        return sendJson(res, 200, buildControlPlaneStatus(params.configStore));
       }
 
       if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing") {
@@ -1801,7 +1807,7 @@ export function createKgmRequestListener(
         if (routingEntry) {
           routingHistory.record(routingEntry);
         }
-        return sendJson(res, 200, updated);
+        return sendJson(res, 200, toPublicKgmConfig(updated));
       }
 
       if (req.method === "GET" && url.pathname === "/v1/kgm/routing") {

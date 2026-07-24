@@ -9,11 +9,16 @@ export class ContextBuilder {
     reportContextQuality;
     embeddingVersion;
     contextConfig;
+    getContextConfig;
     artifactStore;
     sessionStore;
     graphStore;
     ycbClient;
     retrievalCache = new Map();
+    retrievalCacheHits = 0;
+    retrievalCacheMisses = 0;
+    lastBuildAt;
+    lastBuildSummary;
     constructor(params) {
         this.memoryStore = params.memoryStore;
         this.embedder = params.embedder;
@@ -21,10 +26,14 @@ export class ContextBuilder {
         this.reportContextQuality = params.reportContextQuality;
         this.embeddingVersion = params.embeddingVersion;
         this.contextConfig = params.contextConfig;
+        this.getContextConfig = params.getContextConfig;
         this.artifactStore = params.artifactStore;
         this.sessionStore = params.sessionStore;
         this.graphStore = params.graphStore;
         this.ycbClient = params.ycbClient;
+    }
+    resolvedContext() {
+        return this.getContextConfig?.() ?? this.contextConfig;
     }
     async build(request) {
         const requestId = request.requestId ?? generateId();
@@ -45,11 +54,20 @@ export class ContextBuilder {
         const memOpts = memorySearchOptionsFromKgm(request.kgm?.retrieval);
         const memoryEvidence = await this.loadMemoryEvidence(request.userId, request.input, retrievalTopK, memOpts);
         let evidence = this.applyEvidenceBudget([...ycbEvidence, ...memoryEvidence]);
+        const budgetTruncated = [...ycbEvidence, ...memoryEvidence].filter((item, idx) => evidence[idx]?.text !== item.text || Boolean(evidence[idx]?.artifact_ref)).length;
         const toolPolicy = this.applyToolPolicy(request.toolPolicy, Boolean(request.kgm?.graph?.enabled));
         const rawSessionRef = this.sessionStore
-            ? this.sessionStore.getRef(sessionId, this.contextConfig?.sessionPreviewChars ?? 240)
+            ? this.sessionStore.getRef(sessionId, this.resolvedContext()?.sessionPreviewChars ?? 240)
             : undefined;
         const sessionRef = rawSessionRef && rawSessionRef.sizeBytes > 0 ? rawSessionRef : undefined;
+        this.lastBuildAt = new Date().toISOString();
+        this.lastBuildSummary = {
+            evidenceCount: evidence.length,
+            signalCount: signals.length,
+            graphEnabled: Boolean(request.kgm?.graph?.enabled),
+            ycbEvidenceCount: ycbEvidence.length,
+            budgetTruncated,
+        };
         if (this.reportContextQuality) {
             const hitRate = evidence.length
                 ? evidence.reduce((sum, item) => sum + (item.score ?? 0), 0) / evidence.length
@@ -83,16 +101,19 @@ export class ContextBuilder {
             .digest("hex");
     }
     async loadMemoryEvidence(userId, input, topK, memOpts) {
-        const ttl = this.contextConfig?.retrievalCacheTtlMs ?? 0;
+        const ttl = this.resolvedContext()?.retrievalCacheTtlMs ?? 0;
         if (ttl <= 0) {
+            this.retrievalCacheMisses += 1;
             return this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
         }
         const key = this.makeMemoryCacheKey(userId, input, topK, memOpts);
         const hit = this.retrievalCache.get(key);
         const now = Date.now();
         if (hit && hit.expires > now) {
+            this.retrievalCacheHits += 1;
             return hit.evidence;
         }
+        this.retrievalCacheMisses += 1;
         const evidence = await this.memoryStore.search(userId, input, this.embedder, topK, memOpts);
         if (this.retrievalCache.size > 300) {
             const first = this.retrievalCache.keys().next().value;
@@ -103,9 +124,34 @@ export class ContextBuilder {
         this.retrievalCache.set(key, { expires: now + ttl, evidence });
         return evidence;
     }
+    getObservabilityStats() {
+        const ttl = this.resolvedContext()?.retrievalCacheTtlMs ?? 0;
+        const total = this.retrievalCacheHits + this.retrievalCacheMisses;
+        return {
+            retrievalCache: {
+                enabled: ttl > 0,
+                ttlMs: ttl,
+                entries: this.retrievalCache.size,
+                hits: this.retrievalCacheHits,
+                misses: this.retrievalCacheMisses,
+                hitRate: total > 0 ? Number((this.retrievalCacheHits / total).toFixed(4)) : null,
+            },
+            evidenceBudget: {
+                maxEvidenceChars: this.resolvedContext()?.maxEvidenceChars ?? 800,
+                artifactPreviewChars: this.resolvedContext()?.artifactPreviewChars ?? 240,
+            },
+            lastBuildAt: this.lastBuildAt,
+            lastBuildSummary: this.lastBuildSummary,
+        };
+    }
+    clearRetrievalCache() {
+        const n = this.retrievalCache.size;
+        this.retrievalCache.clear();
+        return n;
+    }
     applyEvidenceBudget(evidence) {
-        const maxChars = this.contextConfig?.maxEvidenceChars ?? 800;
-        const previewChars = this.contextConfig?.artifactPreviewChars ?? 240;
+        const maxChars = this.resolvedContext()?.maxEvidenceChars ?? 800;
+        const previewChars = this.resolvedContext()?.artifactPreviewChars ?? 240;
         const artifactStore = this.artifactStore;
         if (!artifactStore) {
             return evidence.map((item) => ({
@@ -132,15 +178,15 @@ export class ContextBuilder {
             allowed: toolPolicy?.allowed ?? DEFAULT_TOOL_POLICY.allowed,
         };
         const systemTools = [];
-        if (this.contextConfig?.enableArtifactTool) {
+        if (this.resolvedContext()?.enableArtifactTool) {
             systemTools.push("read_artifact");
         }
-        if (this.contextConfig?.enableSessionTool) {
+        if (this.resolvedContext()?.enableSessionTool) {
             systemTools.push("read_session");
         }
-        if (this.contextConfig?.enableToolCatalogTool) {
+        if (this.resolvedContext()?.enableToolCatalogTool) {
             systemTools.push("list_tools", "describe_tool");
-            if (this.contextConfig?.includeSkillNames) {
+            if (this.resolvedContext()?.includeSkillNames) {
                 systemTools.push("list_skills", "describe_skill");
             }
         }

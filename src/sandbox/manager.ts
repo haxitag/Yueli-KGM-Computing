@@ -15,9 +15,16 @@ export class SandboxManager {
     this.ensureDefaults();
   }
 
-  /** Rebuild adapters after ConfigStore.sandboxAdapters changes (keeps instance records). */
+  /** Rebuild adapters after ConfigStore.sandboxAdapters changes (keeps instance records + PIDs). */
   reloadAdapters(): void {
+    const previous = this.adapters;
     this.adapters = createDefaultSandboxAdapters(this.overlayAsAdapterConfig());
+    for (const kind of ["computer", "browser", "mobile"] as SandboxKind[]) {
+      const oldMap = previous[kind].exportProcessMap?.();
+      if (oldMap && oldMap.size > 0) {
+        this.adapters[kind].importProcessMap?.(oldMap);
+      }
+    }
     for (const [id, sandbox] of this.sandboxes) {
       const adapter = this.adapters[sandbox.kind];
       this.sandboxes.set(id, {

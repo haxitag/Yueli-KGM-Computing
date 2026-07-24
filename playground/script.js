@@ -216,6 +216,14 @@ class KGMTrustProxyPlayground {
         this.routingMaxCandidates = document.getElementById('routing-max-candidates');
         this.routingAuditEnabled = document.getElementById('routing-audit-enabled');
         this.routingHealthPanel = document.getElementById('routing-health-panel');
+        this.routingWeightInputs = {
+            successRate: document.getElementById('routing-weight-success'),
+            quality: document.getElementById('routing-weight-quality'),
+            latency: document.getElementById('routing-weight-latency'),
+            cost: document.getElementById('routing-weight-cost'),
+            trust: document.getElementById('routing-weight-trust'),
+            verification: document.getElementById('routing-weight-verification'),
+        };
         this.outputTabs = document.querySelectorAll('.output-tab[data-output-tab]');
         this.outputPanels = document.querySelectorAll('.output-tab-panel[data-output-panel]');
         this.playgroundConfigJson = document.getElementById('playground-config-json');
@@ -1056,7 +1064,7 @@ class KGMTrustProxyPlayground {
     }
 
     showApiKeysModal() {
-        this.modalTitle.textContent = 'API Keys 与凭证';
+        this.modalTitle.textContent = '凭证与调用钥';
         if (this.modal) {
             this.modal.classList.add('modal--wide', 'modal--api-keys');
         }
@@ -1069,8 +1077,11 @@ class KGMTrustProxyPlayground {
 
         const sections = [
             {
+                scope: 'server',
+                id: 'yueliai',
                 title: '阅粒 · 云端推理聚合 (YueliAI v1)',
-                desc: '经本地 KGM 代理至云端 Bot Factory / yueliai 聚合 API；凭证同步到服务端 KgmConfig.yueliai，与 MaaS 厂商配置统一审计。',
+                desc: '经本地 KGM 代理至云端；凭证同步到服务端 KgmConfig.yueliai。',
+                open: true,
                 fields: [
                     {
                         key: 'yueliai',
@@ -1096,8 +1107,11 @@ class KGMTrustProxyPlayground {
                 ],
             },
             {
+                scope: 'browser',
+                id: 'cloud-native',
                 title: '云端 · 专用适配',
                 desc: '对接各厂商原生或专用 HTTP 客户端。保存于本机浏览器 localStorage。',
+                open: true,
                 fields: [
                     { key: 'openai', label: 'OpenAI', placeholder: 'sk-...', hint: 'platform.openai.com', multiKey: true },
                     { key: 'zhipu', label: '智谱 AI', placeholder: 'API Key', hint: 'open.bigmodel.cn', multiKey: true },
@@ -1114,8 +1128,11 @@ class KGMTrustProxyPlayground {
                 ],
             },
             {
+                scope: 'browser',
+                id: 'cn-compat',
                 title: '国内 · OpenAI 兼容',
                 desc: 'DashScope / 千帆 / 方舟等 OpenAI 形端点。',
+                open: false,
                 fields: [
                     { key: 'aliyun_bailian', label: '阿里百炼（兼容）', placeholder: 'DASHSCOPE_API_KEY', hint: 'dashscope.aliyuncs.com/compatible-mode/v1', multiKey: true },
                     { key: 'baidu_qianfan', label: '百度千帆', placeholder: 'API Key', hint: 'qianfan.baidubce.com/v2', multiKey: true },
@@ -1123,8 +1140,11 @@ class KGMTrustProxyPlayground {
                 ],
             },
             {
+                scope: 'browser',
+                id: 'intl-compat',
                 title: '国际 · OpenAI 兼容',
                 desc: '多数为云端 API；Bedrock 需经自建 OpenAI 形网关。',
+                open: false,
                 fields: [
                     { key: 'groq', label: 'Groq', placeholder: 'gsk_...', hint: 'api.groq.com', multiKey: true },
                     { key: 'together', label: 'Together AI', placeholder: 'API Key', hint: 'api.together.xyz', multiKey: true },
@@ -1137,8 +1157,11 @@ class KGMTrustProxyPlayground {
                 ],
             },
             {
+                scope: 'browser',
+                id: 'localhost',
                 title: '本地 (localhost)',
-                desc: '本机 ds4、llama.cpp、Ollama、vLLM、SGLang、Yueli-KGM 本地、vMLX/MLX、LM Studio、KoboldCpp、Text Gen WebUI 等若前有鉴权或统一网关，请填「本地统一 Bearer」主键 localhost；仍兼容旧版 per-engine 键。',
+                desc: '本机 ds4、llama.cpp、Ollama、vLLM、SGLang 等若前有鉴权，请填「本地统一 Bearer」。',
+                open: true,
                 fields: [
                     {
                         key: 'localhost',
@@ -1150,8 +1173,11 @@ class KGMTrustProxyPlayground {
                 ],
             },
             {
+                scope: 'browser',
+                id: 'other',
                 title: '其它',
                 desc: 'Minimax 需与 Group ID 同配；自定义上游用于非上述厂商的 Token。',
+                open: false,
                 fields: [
                     { key: 'custom', label: '自定义 OpenAI 兼容', placeholder: 'Bearer Token', hint: '服务模式选「自定义」时使用' },
                     {
@@ -1165,57 +1191,41 @@ class KGMTrustProxyPlayground {
             },
         ];
 
-        let bodyHtml = `
-            <div class="config-form api-keys-modal">
-                <p class="api-keys-intro">
-                    凭证仅保存在本机浏览器。<strong>本机推理</strong>请优先在「本地 (localhost)」分组填写统一主键
-                    <code>localhost</code>（及备用 <code>localhost_2</code> / <code>localhost_3</code>）；选择对应服务模式时请求将附带
-                    <code>Authorization: Bearer …</code>（仍兼容各引擎独立旧键）。云端厂商使用各自分区字段。
-                </p>
-        `;
-
-        sections.forEach((sec, secIdx) => {
-            bodyHtml += `
-                <section class="api-keys-section" aria-labelledby="api-keys-sec-${secIdx}">
-                    <h4 class="api-keys-section-title" id="api-keys-sec-${secIdx}">${this.escapeHtml(sec.title)}</h4>
-                    ${sec.desc ? `<p class="api-keys-section-desc">${this.escapeHtml(sec.desc)}</p>` : ''}
-                    <div class="api-keys-grid">
-            `;
+        const renderFields = (sec) => {
+            let html = '<div class="api-keys-grid">';
             for (const f of sec.fields) {
                 if (f.key === 'yueliaiHost') {
-                    bodyHtml += `
+                    html += `
                         <div class="api-keys-field">
                             <label for="api-key-yueliaiHost">${this.escapeHtml(f.label)}</label>
                             <input type="text" id="api-key-yueliaiHost" value="${gatewayHost}" placeholder="${this.escapeHtml(f.placeholder || '')}">
                             <span class="field-hint">${this.escapeHtml(f.hint || '')}</span>
-                        </div>
-                    `;
+                        </div>`;
                     continue;
                 }
                 if (f.key === 'yueliaiUpstreamPrefix') {
-                    bodyHtml += `
+                    html += `
                         <div class="api-keys-field">
                             <label for="api-key-yueliaiUpstreamPrefix">${this.escapeHtml(f.label)}</label>
                             <input type="text" id="api-key-yueliaiUpstreamPrefix" value="${gatewayPrefix}" placeholder="${this.escapeHtml(f.placeholder || '')}">
                             <span class="field-hint">${this.escapeHtml(f.hint || '')}</span>
-                        </div>
-                    `;
+                        </div>`;
                     continue;
                 }
                 const inputType = f.inputType || 'password';
                 const multiKey = f.multiKey || false;
                 const maxKeys = multiKey ? 3 : 1;
-
-                // 多密钥支持：显示主 Key + 最多2个备用 Key
                 for (let i = 0; i < maxKeys; i++) {
                     const keyId = i === 0 ? f.key : `${f.key}_${i + 1}`;
                     const label = i === 0 ? f.label : `${f.label} (备用${i})`;
-                    const placeholder = i === 0 ? f.placeholder : `${f.placeholder} (可选)`;
                     const value = val(keyId);
-
-                    // 非多密钥模式或第一个密钥，或已有值的备用密钥才显示
+                    const configured = Boolean(value) || (f.key === 'yueliai' && Boolean(gateway.apiKeyConfigured));
+                    const placeholder =
+                        inputType === 'password' && configured
+                            ? '已配置；留空保持不变，输入新值替换'
+                            : (i === 0 ? f.placeholder : `${f.placeholder} (可选)`);
                     if (i === 0 || value || multiKey) {
-                        bodyHtml += `
+                        html += `
                             <div class="api-keys-field${i > 0 ? ' api-key-backup' : ''}">
                                 <label for="api-key-${keyId}">${this.escapeHtml(label)}</label>
                                 <input
@@ -1224,46 +1234,195 @@ class KGMTrustProxyPlayground {
                                     name="api-key-${keyId}"
                                     autocomplete="${inputType === 'password' ? 'new-password' : 'off'}"
                                     placeholder="${this.escapeHtml(placeholder || '')}"
-                                    value="${value}"
+                                    value="${inputType === 'password' ? '' : value}"
+                                    data-configured="${configured ? 'true' : 'false'}"
                                 >
+                                ${inputType === 'password' ? `
+                                    <div class="api-key-field-actions">
+                                        <span class="api-key-state ${configured ? 'is-configured' : ''}">${configured ? '已配置' : '未配置'}</span>
+                                        <button type="button" class="api-key-clear-btn" data-clear-key="${keyId}" ${configured ? '' : 'disabled'}>清除</button>
+                                    </div>
+                                ` : ''}
                                 ${i === 0 && f.hint ? `<span class="field-hint">${this.escapeHtml(f.hint)}</span>` : ''}
-                            </div>
-                        `;
+                            </div>`;
                     }
                 }
             }
-            bodyHtml += `
-                    </div>
-                </section>
-            `;
-        });
+            html += '</div>';
+            return html;
+        };
 
-        bodyHtml += `
-                <div class="api-keys-actions">
-                    <button type="button" class="btn btn-primary" id="save-api-keys">保存凭证</button>
-                    <button type="button" class="btn btn-secondary" id="sync-maas-providers">同步 MaaS 凭证到服务端</button>
+        const serverSections = sections.filter((s) => s.scope === 'server');
+        const browserSections = sections.filter((s) => s.scope === 'browser');
+
+        this.modalBody.innerHTML = `
+            <div class="config-form api-keys-modal">
+                <div class="credential-scope-grid" role="tablist" aria-label="凭证作用域">
+                    <button type="button" class="credential-scope-card is-active" data-keys-scope="session" role="tab" aria-selected="true">
+                        <strong>管理会话</strong><span>Master Key · sessionStorage</span>
+                    </button>
+                    <button type="button" class="credential-scope-card" data-keys-scope="server" role="tab" aria-selected="false">
+                        <strong>服务端网关</strong><span>YueliAI · ConfigStore</span>
+                    </button>
+                    <button type="button" class="credential-scope-card" data-keys-scope="browser" role="tab" aria-selected="false">
+                        <strong>浏览器上游</strong><span>厂商 Key · localStorage</span>
+                    </button>
+                    <button type="button" class="credential-scope-card" data-keys-scope="callkeys" role="tab" aria-selected="false">
+                        <strong>KGM 调用钥</strong><span>运维签发 · 可吊销</span>
+                    </button>
+                </div>
+                <p class="api-keys-intro">
+                    密钥输入框不再回填现有值：<strong>留空表示保持不变</strong>，替换时输入新值，删除需显式点击“清除”。
+                </p>
+
+                <div class="api-keys-scope-panel" data-keys-panel="session">
+                    <section class="api-keys-section api-keys-admin-session">
+                        <h4 class="api-keys-section-title">KGM 管理会话（Master）</h4>
+                        <p class="api-keys-section-desc">
+                            严格模式下访问配置与运维 API。仅保存在当前标签页的 <code>sessionStorage</code>，关闭标签页自动清除。
+                        </p>
+                        <div class="api-keys-grid">
+                            <div class="api-keys-field">
+                                <label for="api-key-kgm-master">KGM_HTTP_API_KEY</label>
+                                <input type="password" id="api-key-kgm-master" autocomplete="off"
+                                    placeholder="${window.KGM_AUTH?.hasMasterKey() ? '当前会话已配置；输入新值替换' : '输入管理钥'}">
+                                <div class="api-key-field-actions">
+                                    <span class="api-key-state ${window.KGM_AUTH?.hasMasterKey() ? 'is-configured' : ''}">
+                                        ${window.KGM_AUTH?.hasMasterKey() ? '当前会话已配置' : '当前会话未配置'}
+                                    </span>
+                                    <button type="button" class="api-key-clear-btn" id="clear-kgm-master"
+                                        ${window.KGM_AUTH?.hasMasterKey() ? '' : 'disabled'}>清除会话</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="api-keys-actions api-keys-actions--session">
+                            <button type="button" class="btn btn-secondary" id="save-kgm-master">保存到当前会话</button>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="api-keys-scope-panel" data-keys-panel="server" hidden>
+                    ${serverSections.map((sec) => `
+                        <section class="api-keys-section">
+                            <h4 class="api-keys-section-title">${this.escapeHtml(sec.title)}</h4>
+                            ${sec.desc ? `<p class="api-keys-section-desc">${this.escapeHtml(sec.desc)}</p>` : ''}
+                            ${renderFields(sec)}
+                        </section>
+                    `).join('')}
+                    <div class="api-keys-actions">
+                        <button type="button" class="btn btn-primary" id="save-api-keys-server">保存服务端 YueliAI</button>
+                    </div>
+                </div>
+
+                <div class="api-keys-scope-panel" data-keys-panel="browser" hidden>
+                    <p class="api-keys-section-desc">按厂商折叠编辑。本机推理优先使用 <code>localhost</code>（及备用 <code>localhost_2/3</code>）。</p>
+                    ${browserSections.map((sec) => `
+                        <details class="api-keys-fold" ${sec.open ? 'open' : ''} id="api-keys-fold-${sec.id}">
+                            <summary class="api-keys-fold-summary">
+                                <span>${this.escapeHtml(sec.title)}</span>
+                                <span class="api-keys-fold-meta">${sec.fields.length} 项</span>
+                            </summary>
+                            ${sec.desc ? `<p class="api-keys-section-desc">${this.escapeHtml(sec.desc)}</p>` : ''}
+                            ${renderFields(sec)}
+                        </details>
+                    `).join('')}
+                    <div class="api-keys-actions">
+                        <button type="button" class="btn btn-primary" id="save-api-keys">保存浏览器凭证</button>
+                        <button type="button" class="btn btn-secondary" id="sync-maas-providers">同步浏览器 MaaS 到服务端</button>
+                    </div>
+                </div>
+
+                <div class="api-keys-scope-panel" data-keys-panel="callkeys" hidden>
+                    <section class="api-keys-section">
+                        <h4 class="api-keys-section-title">KGM 虚拟调用钥</h4>
+                        <p class="api-keys-section-desc">
+                            调用钥由运维面签发，明文仅在创建时显示一次，可绑定预算与模型白名单，支持吊销。
+                            与浏览器厂商 Key、服务端 YueliAI Key 不是同一套凭证。
+                        </p>
+                        <div class="api-keys-actions">
+                            <button type="button" class="btn btn-primary" id="manage-call-keys">前往运维 → 访问</button>
+                        </div>
+                    </section>
                 </div>
             </div>
         `;
 
-        this.modalBody.innerHTML = bodyHtml;
+        const switchScope = (scope) => {
+            this.modalBody.querySelectorAll('[data-keys-scope]').forEach((btn) => {
+                const active = btn.dataset.keysScope === scope;
+                btn.classList.toggle('is-active', active);
+                btn.setAttribute('aria-selected', active ? 'true' : 'false');
+            });
+            this.modalBody.querySelectorAll('[data-keys-panel]').forEach((panel) => {
+                panel.hidden = panel.dataset.keysPanel !== scope;
+            });
+        };
+        this.modalBody.querySelectorAll('[data-keys-scope]').forEach((btn) => {
+            btn.addEventListener('click', () => switchScope(btn.dataset.keysScope));
+        });
 
-        const saveBtn = document.getElementById('save-api-keys');
-        saveBtn.addEventListener('click', async () => {
+        document.getElementById('save-kgm-master')?.addEventListener('click', () => {
+            const input = document.getElementById('api-key-kgm-master');
+            const value = input?.value.trim();
+            if (!value) {
+                this.showToast('请输入 KGM 管理钥；留空不会覆盖当前会话', 'error');
+                return;
+            }
+            window.KGM_AUTH?.setMasterKey(value);
+            if (input) input.value = '';
+            this.showToast('管理钥已保存到当前标签页会话', 'success');
+            this.hideModal();
+            window.KGM_CONTROL_PLANE?.refresh?.().catch(() => {});
+        });
+        document.getElementById('clear-kgm-master')?.addEventListener('click', () => {
+            window.KGM_AUTH?.clearMasterKey();
+            this.showToast('当前标签页管理钥已清除', 'success');
+            this.hideModal();
+        });
+
+        this.modalBody.querySelectorAll('[data-clear-key]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const id = button.dataset.clearKey;
+                if (!window.confirm(`确认清除 ${id}？保存后生效。`)) {
+                    return;
+                }
+                const input = document.getElementById(`api-key-${id}`);
+                if (input) {
+                    input.value = '';
+                    input.dataset.clear = 'true';
+                }
+                button.textContent = '待清除';
+                button.disabled = true;
+                button.closest('.api-keys-field')?.classList.add('is-pending-clear');
+            });
+        });
+
+        const collectLocalKeys = () => {
             this.currentConfig.apiKeys = this.currentConfig.apiKeys || {};
             const root = this.modalBody.querySelector('.api-keys-modal') || this.modalBody;
             root.querySelectorAll('input[id^="api-key-"]').forEach((el) => {
                 const id = el.id.slice('api-key-'.length);
-                if (id === 'yueliaiHost' || id === 'yueliaiUpstreamPrefix') {
+                if (id === 'yueliaiHost' || id === 'yueliaiUpstreamPrefix' || id === 'kgm-master') {
                     return;
                 }
                 const value = el.value.trim();
                 if (value) {
                     this.currentConfig.apiKeys[id] = value;
-                } else {
+                } else if (el.dataset.clear === 'true') {
                     delete this.currentConfig.apiKeys[id];
                 }
             });
+        };
+
+        document.getElementById('save-api-keys')?.addEventListener('click', () => {
+            collectLocalKeys();
+            this.saveConfigToLocalStorage();
+            this.showToast('浏览器上游凭证已保存到本机', 'success');
+            this.hideModal();
+        });
+
+        document.getElementById('save-api-keys-server')?.addEventListener('click', async () => {
+            collectLocalKeys();
             const hostEl = document.getElementById('api-key-yueliaiHost');
             const prefixEl = document.getElementById('api-key-yueliaiUpstreamPrefix');
             this.currentConfig.yueliGateway = this.currentConfig.yueliGateway || {};
@@ -1275,8 +1434,11 @@ class KGMTrustProxyPlayground {
             }
             this.saveConfigToLocalStorage();
             try {
-                await this.syncGatewayConfigToServer();
-                this.showToast('API Keys 与 YueliAI 网关已保存', 'success');
+                const clearYueliApiKey =
+                    document.getElementById('api-key-yueliai')?.dataset.clear === 'true';
+                await this.syncGatewayConfigToServer({ clearApiKey: clearYueliApiKey });
+                this.showToast('YueliAI 网关已同步到服务端', 'success');
+                window.KGM_CONTROL_PLANE?.refresh?.().catch(() => {});
             } catch (err) {
                 this.showToast('本地已保存，服务端同步失败: ' + (err.message || err), 'error');
             }
@@ -1294,6 +1456,12 @@ class KGMTrustProxyPlayground {
                 }
             });
         }
+
+        document.getElementById('manage-call-keys')?.addEventListener('click', () => {
+            this.hideModal();
+            this.switchWorkspace('ops');
+            window.dispatchEvent(new CustomEvent('kgm-ops-activate', { detail: { opsTab: 'keys' } }));
+        });
 
         this.showModal();
     }
@@ -1321,11 +1489,8 @@ class KGMTrustProxyPlayground {
             host: y.host || 'https://www.yueli.com',
             upstreamPrefix: y.upstreamPrefix ?? '/api',
             enabled: y.enabled !== false,
+            apiKeyConfigured: Boolean(y.apiKeyConfigured),
         };
-        if (y.apiKey) {
-            this.currentConfig.apiKeys = this.currentConfig.apiKeys || {};
-            this.currentConfig.apiKeys.yueliai = y.apiKey;
-        }
     }
 
     parsePlaygroundConfigJson(raw) {
@@ -1408,6 +1573,9 @@ class KGMTrustProxyPlayground {
         if (name === 'config' && window.KGM_CONFIG_PANEL?.refresh) {
             window.KGM_CONFIG_PANEL.refresh().catch(() => {});
         }
+        if (['chat', 'routing', 'memory', 'ops', 'integration'].includes(name) && window.KGM_CONTROL_PLANE?.refresh) {
+            window.KGM_CONTROL_PLANE.refresh().catch(() => {});
+        }
         if (name === 'integration' && !this.activeIntegrationTab) {
             this.switchIntegrationTab('tasks');
         }
@@ -1430,19 +1598,20 @@ class KGMTrustProxyPlayground {
         });
     }
 
-    async syncGatewayConfigToServer() {
+    async syncGatewayConfigToServer(options = {}) {
         const keys = this.currentConfig.apiKeys || {};
         const gateway = this.currentConfig.yueliGateway || {};
         const apiKey = keys.yueliai || keys.yueliai_2 || keys.yueliai_3 || '';
+        const apiKeyConfigured = Boolean(gateway.apiKeyConfigured);
         const response = await fetch('/v1/kgm/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 yueliai: {
-                    enabled: Boolean(apiKey),
+                    enabled: options.clearApiKey ? false : Boolean(apiKey) || apiKeyConfigured,
                     host: gateway.host || 'https://www.yueli.com',
                     upstreamPrefix: gateway.upstreamPrefix ?? '/api',
-                    apiKey: apiKey || undefined,
+                    apiKey: options.clearApiKey ? '' : apiKey || undefined,
                     timeoutMs: 120000,
                 },
             }),
@@ -1450,6 +1619,8 @@ class KGMTrustProxyPlayground {
         if (!response.ok) {
             throw new Error(await response.text());
         }
+        const updated = await response.json();
+        this.applyYueliGatewayFromServer(updated.yueliai);
     }
 
     async syncMaasProvidersToServer() {
@@ -2677,6 +2848,9 @@ class KGMTrustProxyPlayground {
         if (this.routingVerifierEnabled) this.routingVerifierEnabled.checked = config.evaluation?.verifier?.enabled !== false;
         if (this.routingVerifierProvider) this.routingVerifierProvider.value = config.evaluation?.verifier?.target?.provider || '';
         if (this.routingVerifierModel) this.routingVerifierModel.value = config.evaluation?.verifier?.target?.model || '';
+        Object.entries(this.routingWeightInputs || {}).forEach(([key, input]) => {
+            if (input) input.value = String(config.weights?.[key] ?? 0);
+        });
     }
 
     renderTaskRoutes(routes) {
@@ -2814,6 +2988,12 @@ class KGMTrustProxyPlayground {
                 targetLatencyMs: Number(this.routingTargetLatency?.value || this.autoRoutingConfig?.thresholds?.targetLatencyMs || 3500),
                 maxCandidateCount: Number(this.routingMaxCandidates?.value || this.autoRoutingConfig?.thresholds?.maxCandidateCount || 6),
             },
+            weights: Object.fromEntries(
+                Object.entries(this.routingWeightInputs || {}).map(([key, input]) => [
+                    key,
+                    Number(input?.value || this.autoRoutingConfig?.weights?.[key] || 0),
+                ]),
+            ),
             auditEnabled: this.routingAuditEnabled?.checked !== false,
             evaluation: {
                 ...(this.autoRoutingConfig?.evaluation || {}),

@@ -44,12 +44,6 @@
     node.value = value == null ? "" : String(value);
   }
 
-  function maskKeyHint(key) {
-    if (!key) return "未设置";
-    if (key.length <= 8) return "已设置 ·••••";
-    return `已设置 · ${key.slice(0, 3)}…${key.slice(-4)}`;
-  }
-
   function embeddedSelectValue(v) {
     if (v === true) return "true";
     if (v === false) return "false";
@@ -75,7 +69,7 @@
     setInput("cfg-llm-timeout", llm.timeoutMs ?? 30000);
     setInput("cfg-llm-api-key", "");
     const llmHint = el("cfg-llm-api-key-hint");
-    if (llmHint) llmHint.textContent = maskKeyHint(llm.apiKey);
+    if (llmHint) llmHint.textContent = llm.apiKeyConfigured ? "已设置 · 不回显" : "未设置";
 
     const emb = cfg.embedding || {};
     setInput("cfg-emb-provider", emb.provider || "openai");
@@ -86,7 +80,7 @@
     setInput("cfg-emb-timeout", emb.timeoutMs ?? 15000);
     setInput("cfg-emb-api-key", "");
     const embHint = el("cfg-emb-api-key-hint");
-    if (embHint) embHint.textContent = maskKeyHint(emb.apiKey);
+    if (embHint) embHint.textContent = emb.apiKeyConfigured ? "已设置 · 不回显" : "未设置";
 
     const db = cfg.database || {};
     setInput("cfg-db-provider", db.provider || "sqlite");
@@ -97,8 +91,12 @@
     setInput("cfg-db-name", db.database || "");
     setInput("cfg-db-user", db.username || "");
     setInput("cfg-db-password", "");
+    setInput("cfg-db-ssl", db.ssl ? "true" : "false");
+    setInput("cfg-db-max-conn", db.maxConnections ?? "");
+    setInput("cfg-db-idle-timeout", db.idleTimeout ?? "");
+    setInput("cfg-db-conn-timeout", db.connectionTimeout ?? "");
     const dbHint = el("cfg-db-password-hint");
-    if (dbHint) dbHint.textContent = maskKeyHint(db.password);
+    if (dbHint) dbHint.textContent = db.passwordConfigured ? "已设置 · 不回显" : "未设置";
 
     const vector = cfg.vector || {};
     setInput("cfg-vector-backend", vector.backend || "memory");
@@ -110,6 +108,8 @@
 
     const ctx = cfg.context || {};
     setInput("cfg-retrieval-ttl", ctx.retrievalCacheTtlMs ?? 0);
+
+    syncMemoryFormState();
 
     const llama = cfg.workers?.llamaCpp || {};
     setInput("cfg-llama-enabled", llama.enabled || "auto");
@@ -160,6 +160,29 @@
       setStatus(`加载失败：${err.message}`, true);
       throw err;
     }
+  }
+
+  function syncMemoryFormState() {
+    const vectorBackend = val("cfg-vector-backend") || "memory";
+    const dbProvider = val("cfg-db-provider") || "sqlite";
+    const dbInactive = vectorBackend !== "chroma";
+    const note = el("cfg-memory-backend-note");
+    if (note) {
+      note.hidden = !dbInactive;
+      note.textContent = dbInactive
+        ? "当前 vector.backend=memory：进程使用 InMemoryStore，下方 Database 配置会被忽略。仅 chroma 时才会按 database+vector 创建 Hybrid Memory。"
+        : "";
+    }
+    const dbFieldset = el("cfg-db-fieldset");
+    if (dbFieldset) {
+      dbFieldset.classList.toggle("is-inactive", dbInactive);
+    }
+    const sqliteFields = el("cfg-db-sqlite-fields");
+    const pgFields = el("cfg-db-pg-fields");
+    const pgAdvanced = el("cfg-db-pg-advanced");
+    if (sqliteFields) sqliteFields.hidden = dbProvider !== "sqlite";
+    if (pgFields) pgFields.hidden = dbProvider !== "postgresql";
+    if (pgAdvanced) pgAdvanced.hidden = dbProvider !== "postgresql";
   }
 
   async function refreshAdapterStatus() {
@@ -232,6 +255,10 @@
         port: val("cfg-db-port") ? num("cfg-db-port") : undefined,
         database: val("cfg-db-name") || undefined,
         username: val("cfg-db-user") || undefined,
+        ssl: val("cfg-db-ssl") === "true",
+        maxConnections: val("cfg-db-max-conn") ? num("cfg-db-max-conn") : undefined,
+        idleTimeout: val("cfg-db-idle-timeout") ? num("cfg-db-idle-timeout") : undefined,
+        connectionTimeout: val("cfg-db-conn-timeout") ? num("cfg-db-conn-timeout") : undefined,
       },
       vector: {
         backend: val("cfg-vector-backend") || "memory",
@@ -285,8 +312,16 @@
       });
       fillForm(updated);
       await refreshAdapterStatus();
+      if (window.KGM_CONTROL_PLANE?.refresh) {
+        await window.KGM_CONTROL_PLANE.refresh().catch(() => {});
+      }
+      const vectorBackend = updated?.vector?.backend || patch.vector?.backend;
+      const memoryNote =
+        vectorBackend === "memory"
+          ? "（当前 memory 向量后端：Database 配置不参与建库）"
+          : "；数据库/向量后端需重启进程才重建 MemoryStore";
       setStatus(
-        `已保存 · LLM/Embedding/TTL/Worker 即时生效；数据库/向量后端需重启进程才重建 MemoryStore · ${new Date().toLocaleTimeString()}`,
+        `已保存 · LLM/Embedding/TTL/Worker 即时生效${memoryNote} · ${new Date().toLocaleTimeString()}`,
       );
     } catch (err) {
       setStatus(`保存失败：${err.message}`, true);
@@ -303,6 +338,8 @@
     el("kgm-config-refresh-adapters-btn")?.addEventListener("click", () => {
       refreshAdapterStatus().catch(() => {});
     });
+    el("cfg-vector-backend")?.addEventListener("change", syncMemoryFormState);
+    el("cfg-db-provider")?.addEventListener("change", syncMemoryFormState);
   }
 
   window.KGM_CONFIG_PANEL = {

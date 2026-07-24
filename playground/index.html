@@ -121,6 +121,12 @@
                     <span class="status-value" id="status-model-path">未设置</span>
                 </div>
             </div>
+
+            <details class="control-plane-entry">
+                <summary>服务端默认 · LLM / Embedding / 流式高级</summary>
+                <div id="chat-server-default-status" class="control-plane-status">加载中…</div>
+                <button type="button" class="btn btn-secondary" data-config-target="cfg-section-llm">编辑服务端默认</button>
+            </details>
             
             <!-- 文本输入 -->
             <div class="input-group">
@@ -299,6 +305,13 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
     </div>
 
     <div id="workspace-integration" class="workspace-view" data-workspace="integration" hidden>
+    <section class="page-section control-plane-inline">
+        <div class="routing-card">
+            <h3>前站浅层（P1）</h3>
+            <p class="section-desc">意图、重排与摘要的 effective 配置；来源为 <code>KGM_FRONTSTATION_*</code>，修改后需重启。</p>
+            <div id="integration-frontstation-status" class="control-plane-status">加载中…</div>
+        </div>
+    </section>
     <section class="integration-section page-section" id="integration-section">
         <div class="section-head">
             <h2 class="section-title">扩展集成</h2>
@@ -517,11 +530,13 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
             <article class="routing-card kgm-config-card" id="cfg-section-memory">
                 <h3>2. 记忆后端 / 检索缓存 TTL</h3>
                 <p class="helper-text">
-                    <code>database</code> + <code>vector</code> 在进程启动时创建 Hybrid Memory；改后端后需<strong>重启服务</strong>。
-                    <code>context.retrievalCacheTtlMs</code> 即时生效（0=关闭）。
+                    仅当 <code>vector.backend=chroma</code> 时，进程启动会按 <code>database</code> + <code>vector</code> 创建 Hybrid Memory；
+                    <code>memory</code> 后端一律使用进程内 <code>InMemoryStore</code>，Database 配置<strong>不生效</strong>。
+                    改后端后需<strong>重启服务</strong>。<code>context.retrievalCacheTtlMs</code> 即时生效（0=关闭）。
                 </p>
+                <p id="cfg-memory-backend-note" class="helper-text is-warn" hidden></p>
                 <div class="kgm-config-grid">
-                    <fieldset class="kgm-config-fieldset">
+                    <fieldset class="kgm-config-fieldset" id="cfg-db-fieldset">
                         <legend>Database</legend>
                         <label class="option-field"><span>provider</span>
                             <select id="cfg-db-provider">
@@ -529,19 +544,35 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
                                 <option value="postgresql">postgresql</option>
                             </select>
                         </label>
-                        <label class="option-field"><span>filePath (sqlite)</span><input id="cfg-db-file" type="text"></label>
-                        <label class="option-field"><span>journalMode</span>
-                            <select id="cfg-db-journal">
-                                <option value="WAL">WAL</option>
-                                <option value="DELETE">DELETE</option>
-                            </select>
-                        </label>
-                        <label class="option-field"><span>host</span><input id="cfg-db-host" type="text"></label>
-                        <label class="option-field"><span>port</span><input id="cfg-db-port" type="number"></label>
-                        <label class="option-field"><span>database</span><input id="cfg-db-name" type="text"></label>
-                        <label class="option-field"><span>username</span><input id="cfg-db-user" type="text"></label>
-                        <label class="option-field"><span>password（留空不改）</span><input id="cfg-db-password" type="password" autocomplete="off"></label>
-                        <p id="cfg-db-password-hint" class="helper-text">—</p>
+                        <div id="cfg-db-sqlite-fields">
+                            <label class="option-field"><span>filePath (sqlite)</span><input id="cfg-db-file" type="text"></label>
+                            <label class="option-field"><span>journalMode</span>
+                                <select id="cfg-db-journal">
+                                    <option value="WAL">WAL</option>
+                                    <option value="DELETE">DELETE</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div id="cfg-db-pg-fields" hidden>
+                            <label class="option-field"><span>host</span><input id="cfg-db-host" type="text"></label>
+                            <label class="option-field"><span>port</span><input id="cfg-db-port" type="number"></label>
+                            <label class="option-field"><span>database</span><input id="cfg-db-name" type="text"></label>
+                            <label class="option-field"><span>username</span><input id="cfg-db-user" type="text"></label>
+                            <label class="option-field"><span>password（留空不改）</span><input id="cfg-db-password" type="password" autocomplete="off"></label>
+                            <p id="cfg-db-password-hint" class="helper-text">—</p>
+                        </div>
+                        <div id="cfg-db-pg-advanced" class="kgm-config-pg-advanced" hidden>
+                            <p class="helper-text">PostgreSQL 连接池 / TLS（写入 ConfigStore；重启后生效）</p>
+                            <label class="option-field"><span>ssl</span>
+                                <select id="cfg-db-ssl">
+                                    <option value="false">false</option>
+                                    <option value="true">true</option>
+                                </select>
+                            </label>
+                            <label class="option-field"><span>maxConnections</span><input id="cfg-db-max-conn" type="number" min="1" placeholder="例如 10"></label>
+                            <label class="option-field"><span>idleTimeout (ms)</span><input id="cfg-db-idle-timeout" type="number" min="0" placeholder="例如 30000"></label>
+                            <label class="option-field"><span>connectionTimeout (ms)</span><input id="cfg-db-conn-timeout" type="number" min="0" placeholder="例如 5000"></label>
+                        </div>
                     </fieldset>
                     <fieldset class="kgm-config-fieldset">
                         <legend>Vector + TTL</legend>
@@ -571,6 +602,7 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
                 <p class="helper-text">
                     ConfigStore 优先于环境变量。
                     <code>on</code>=强制启用 · <code>off</code>=关闭 · <code>auto</code>=探测二进制。
+                    连接参数 <code>KGM_DS4_PORT</code> / <code>KGM_DS4_BASE_URL</code> 为进程 env，见实例页只读状态。
                     详见 <code>docs/ds4-worker.md</code>。
                 </p>
                 <div class="kgm-config-grid">
@@ -677,6 +709,12 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
                 <button type="button" id="memory-obs-clear-retrieval-btn" class="btn btn-secondary">清空检索缓存</button>
             </div>
         </div>
+        <div class="routing-card control-plane-inline-card">
+            <h3>记忆后端配置（可写）</h3>
+            <p class="section-desc">Database / Vector 改动在下次启动重建 MemoryStore；检索缓存 TTL 即时生效。</p>
+            <div id="memory-config-status" class="control-plane-status">加载中…</div>
+            <button type="button" class="btn btn-secondary" data-config-target="cfg-section-memory">编辑记忆后端 / TTL</button>
+        </div>
         <div class="memory-obs-toolbar">
             <label class="option-field">
                 <span>按 userId 过滤</span>
@@ -735,6 +773,19 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
                 <button id="refresh-routing-btn">刷新调度</button>
                 <button id="save-routing-btn">保存策略</button>
             </div>
+        </div>
+        <div class="routing-card control-plane-inline-card">
+            <h3>路由权重 / 熔断 / 流式（P1）</h3>
+            <p class="section-desc"><code>autoRouting.weights</code> 可热更新；熔断与 <code>KGM_STREAM_IDLE_MS</code> 为进程级只读状态。</p>
+            <div class="routing-form-grid routing-weight-grid">
+                <label class="option-field"><span>成功率</span><input id="routing-weight-success" type="number" min="0" step="0.05"></label>
+                <label class="option-field"><span>质量</span><input id="routing-weight-quality" type="number" min="0" step="0.05"></label>
+                <label class="option-field"><span>延迟</span><input id="routing-weight-latency" type="number" min="0" step="0.05"></label>
+                <label class="option-field"><span>成本</span><input id="routing-weight-cost" type="number" min="0" step="0.05"></label>
+                <label class="option-field"><span>信任</span><input id="routing-weight-trust" type="number" min="0" step="0.05"></label>
+                <label class="option-field"><span>验证</span><input id="routing-weight-verification" type="number" min="0" step="0.05"></label>
+            </div>
+            <div id="routing-resilience-status" class="control-plane-status">加载中…</div>
         </div>
         <div class="routing-grid">
             <div class="routing-card">
@@ -908,6 +959,19 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
             </div>
         </div>
 
+        <div class="routing-grid control-plane-inline">
+            <div class="routing-card">
+                <h3>HTTP 安全 / 限流（P0）</h3>
+                <p class="section-desc">只读 effective 状态；Master Key 仅显示是否配置，不返回明文。</p>
+                <div id="ops-security-status" class="control-plane-status">加载中…</div>
+            </div>
+            <div class="routing-card">
+                <h3>Native / CORS / Discovery（P2）</h3>
+                <p class="section-desc">进程级只读状态；修改 <code>KGM_NATIVE_*</code>、<code>KGM_CORS_*</code>、<code>KGM_DISCOVERY_*</code> 后重启。</p>
+                <div id="ops-platform-status" class="control-plane-status">加载中…</div>
+            </div>
+        </div>
+
         <div id="ops-panel-usage" class="ops-tab-panel">
             <div class="routing-grid">
                 <div class="routing-card">
@@ -1026,11 +1090,13 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
         </div>
     </div>
 
+    <script src="auth-fetch.js"></script>
     <script src="../src/kce/kce-engine.js"></script>
     <script src="kce-task-manager.js"></script>
     <script src="ops-panel.js"></script>
     <script src="memory-panel.js"></script>
     <script src="config-panel.js"></script>
+    <script src="control-plane-panel.js"></script>
     <script src="script.js"></script>
     <script>
       window.addEventListener('kgm-switch-workspace', (ev) => {

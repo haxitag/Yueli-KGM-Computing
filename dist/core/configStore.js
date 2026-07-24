@@ -1,4 +1,5 @@
 import { CANONICAL_EMBEDDING } from "./config.js";
+import { REDACTED_CONFIG_SECRET } from "./publicConfig.js";
 import fs from "node:fs";
 import path from "node:path";
 const defaultConfig = {
@@ -321,6 +322,11 @@ const defaultConfig = {
             installHint: "Build antirez/ds4 ds4-server; set workers.ds4.command or KGM_DS4_SERVER_CMD; KGM_DS4_ENABLED=on|off|auto. Kernels stay in ds4 — not KGM native-gpu.",
         },
     },
+    sandboxAdapters: {
+        computer: {},
+        browser: {},
+        mobile: {},
+    },
     playground: {
         skills: [
             {
@@ -417,8 +423,44 @@ function mergeConfig(base, patch) {
         autoRouting: mergeAutoRoutingConfig(base.autoRouting, patch.autoRouting),
         yueliai: mergeYueliAiGatewayConfig(base.yueliai, patch.yueliai),
         workers: mergeWorkersConfig(base.workers, patch.workers),
+        sandboxAdapters: mergeSandboxAdaptersConfig(base.sandboxAdapters, patch.sandboxAdapters),
         playground: mergePlaygroundConfig(base.playground, patch.playground),
     };
+}
+function mergeSandboxAdaptersConfig(base, patch) {
+    if (!patch) {
+        return base;
+    }
+    return {
+        computer: mergeSandboxKindConfig(base.computer, patch.computer),
+        browser: mergeSandboxKindConfig(base.browser, patch.browser),
+        mobile: mergeSandboxKindConfig(base.mobile, patch.mobile),
+    };
+}
+function mergeSandboxKindConfig(base, patch) {
+    if (!patch) {
+        return base;
+    }
+    const next = { ...base };
+    if (patch.startCommand !== undefined)
+        next.startCommand = patch.startCommand;
+    if (patch.stopCommand !== undefined)
+        next.stopCommand = patch.stopCommand;
+    if (patch.statusCommand !== undefined)
+        next.statusCommand = patch.statusCommand;
+    if (patch.endpoint !== undefined)
+        next.endpoint = patch.endpoint;
+    if (patch.hint !== undefined)
+        next.hint = patch.hint;
+    if (Object.prototype.hasOwnProperty.call(patch, "useEmbedded")) {
+        if (patch.useEmbedded == null) {
+            delete next.useEmbedded;
+        }
+        else {
+            next.useEmbedded = patch.useEmbedded;
+        }
+    }
+    return next;
 }
 function mergeWorkersConfig(base, patch) {
     if (!patch?.llamaCpp && !patch?.ds4) {
@@ -466,7 +508,28 @@ function mergePlaygroundConfig(base, patch) {
     }
     return {
         skills: patch.skills ?? base.skills,
-        mcpConnectors: patch.mcpConnectors ?? base.mcpConnectors,
+        mcpConnectors: patch.mcpConnectors
+            ? patch.mcpConnectors.map((connector) => {
+                if (!connector.headers) {
+                    return connector;
+                }
+                const previous = base.mcpConnectors.find((item) => item.id === connector.id);
+                const headers = Object.fromEntries(Object.entries(connector.headers)
+                    .map(([key, value]) => {
+                    if (value !== REDACTED_CONFIG_SECRET) {
+                        return [key, value];
+                    }
+                    const restored = previous?.headers?.[key];
+                    // Never persist the public redaction placeholder as a real secret.
+                    return restored !== undefined ? [key, restored] : null;
+                })
+                    .filter((entry) => entry !== null));
+                return {
+                    ...connector,
+                    headers: Object.keys(headers).length > 0 ? headers : undefined,
+                };
+            })
+            : base.mcpConnectors,
         outputTemplates: patch.outputTemplates ?? base.outputTemplates,
         activeSkillIds: patch.activeSkillIds ?? base.activeSkillIds,
         activeMcpIds: patch.activeMcpIds ?? base.activeMcpIds,

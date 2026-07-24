@@ -4,6 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULT_SCHEMA_IDS } from '../core/config.js';
+import { toPublicKgmConfig } from '../core/publicConfig.js';
 import { buildOpenAiModelList, createOpenAiChatCompletion } from '../openai/compat.js';
 import { OpenAiResponseStore } from '../openai/responseStore.js';
 import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
@@ -13,9 +14,11 @@ import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson } from "./httpJsonHelpers.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import { playgroundRouter } from './playgroundApi.js';
+import { createPlaygroundSpaFallbackMiddleware } from './playgroundSpaFallback.js';
 import { syncPlaygroundFromConfig } from '../playground/syncPlayground.js';
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from '../routing/routingService.js';
 import { createExpressCorsOptions } from "./corsPolicy.js";
+import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 // 获取当前文件目录
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +39,8 @@ export function createCombinedServer(params, port = 3000) {
     app.use('/generated-audio', express.static(path.join(__dirname, '../../data/generated-audio')));
     // API路由 - Playground
     app.use('/api/kgm', playgroundRouter);
+    // /dynamic 等误开路径 → Playground；浏览器 HTML 导航避免落到 JSON 404
+    app.use(createPlaygroundSpaFallbackMiddleware());
     // 用 Express 兜底桥接原生 HTTP API，避免与内置 request listener 重复响应。
     app.use(async (req, res) => {
         try {
@@ -70,7 +75,10 @@ export function createCombinedServer(params, port = 3000) {
                 return sendJson(res, 200, response);
             }
             if (req.method === "GET" && url.pathname === "/v1/kgm/config") {
-                return sendJson(res, 200, params.configStore.get());
+                return sendJson(res, 200, toPublicKgmConfig(params.configStore.get()));
+            }
+            if (req.method === "GET" && url.pathname === "/v1/kgm/ops/config-status") {
+                return sendJson(res, 200, buildControlPlaneStatus(params.configStore));
             }
             if (req.method === "GET" && url.pathname === "/v1/kgm/auto-routing") {
                 return sendJson(res, 200, params.configStore.get().autoRouting);
@@ -105,6 +113,9 @@ export function createCombinedServer(params, port = 3000) {
                         routingEntry = buildUpdateEntry(nextRouting, typed.routingNote);
                     }
                     const updated = params.configStore.update(typed);
+                    if (typed.sandboxAdapters) {
+                        params.sandboxManager?.reloadAdapters();
+                    }
                     if (params.skillRuntime) {
                         syncPlaygroundFromConfig({
                             skillRegistry: params.skillRuntime.getSkillRegistry(),
@@ -115,7 +126,7 @@ export function createCombinedServer(params, port = 3000) {
                     if (routingEntry) {
                         routingHistory.record(routingEntry);
                     }
-                    return sendJson(res, 200, updated);
+                    return sendJson(res, 200, toPublicKgmConfig(updated));
                 }
                 else {
                     return sendJson(res, 400, { error: "invalid_payload" });

@@ -3,9 +3,42 @@ import { generateId } from "../utils/id.js";
 export class SandboxManager {
     sandboxes = new Map();
     adapters;
-    constructor() {
-        this.adapters = createDefaultSandboxAdapters();
+    getOverlay;
+    constructor(options) {
+        this.getOverlay = options?.getOverlay;
+        this.adapters = createDefaultSandboxAdapters(this.overlayAsAdapterConfig());
         this.ensureDefaults();
+    }
+    /** Rebuild adapters after ConfigStore.sandboxAdapters changes (keeps instance records + PIDs). */
+    reloadAdapters() {
+        const previous = this.adapters;
+        this.adapters = createDefaultSandboxAdapters(this.overlayAsAdapterConfig());
+        for (const kind of ["computer", "browser", "mobile"]) {
+            const oldMap = previous[kind].exportProcessMap?.();
+            if (oldMap && oldMap.size > 0) {
+                this.adapters[kind].importProcessMap?.(oldMap);
+            }
+        }
+        for (const [id, sandbox] of this.sandboxes) {
+            const adapter = this.adapters[sandbox.kind];
+            this.sandboxes.set(id, {
+                ...sandbox,
+                runtimeMode: adapter.isConfigured() ? "external" : "unconfigured",
+                adapterHint: adapter.adapterHint(),
+                updatedAt: new Date().toISOString(),
+            });
+        }
+    }
+    adapterStatus() {
+        return ["computer", "browser", "mobile"].map((kind) => {
+            const adapter = this.adapters[kind];
+            return {
+                kind,
+                label: adapter.label,
+                configured: adapter.isConfigured(),
+                hint: adapter.adapterHint(),
+            };
+        });
     }
     list() {
         return Array.from(this.sandboxes.values()).map((item) => this.withPreview(item));
@@ -67,6 +100,17 @@ export class SandboxManager {
         this.sandboxes.set(id, updated);
         return this.withPreview(updated);
     }
+    overlayAsAdapterConfig() {
+        const overlay = this.getOverlay?.();
+        if (!overlay) {
+            return undefined;
+        }
+        return {
+            computer: toAdapterConfig(overlay.computer),
+            browser: toAdapterConfig(overlay.browser),
+            mobile: toAdapterConfig(overlay.mobile),
+        };
+    }
     require(id) {
         const sandbox = this.sandboxes.get(id);
         if (!sandbox) {
@@ -105,6 +149,19 @@ export class SandboxConfigurationError extends Error {
     constructor(kind, hint) {
         super(`No real ${kind} sandbox adapter is configured. ${hint}`);
     }
+}
+function toAdapterConfig(kindCfg) {
+    if (!kindCfg || Object.keys(kindCfg).length === 0) {
+        return undefined;
+    }
+    return {
+        useEmbedded: kindCfg.useEmbedded,
+        startCommand: kindCfg.startCommand,
+        stopCommand: kindCfg.stopCommand,
+        statusCommand: kindCfg.statusCommand,
+        endpoint: kindCfg.endpoint,
+        hint: kindCfg.hint,
+    };
 }
 function buildPreview(instance) {
     const now = Date.now();
@@ -161,11 +218,4 @@ function defaultNotes(kind) {
         return ["Use this sandbox to stage app/mobile-agent workflows behind an emulator adapter."];
     }
     return ["Use this sandbox to stage code execution and desktop-like workflows behind a VM adapter."];
-}
-function hash(input) {
-    let result = 0;
-    for (let index = 0; index < input.length; index += 1) {
-        result = (result * 31 + input.charCodeAt(index)) >>> 0;
-    }
-    return result;
 }
