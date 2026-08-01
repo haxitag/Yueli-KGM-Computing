@@ -2,12 +2,26 @@ import type { KgmConfig } from "./configStore.js";
 
 export const REDACTED_CONFIG_SECRET = "[REDACTED]";
 
+function publicEndpoint<T extends { apiKey?: string }>(
+  ep: T,
+): Omit<T, "apiKey"> & { apiKeyConfigured: boolean } {
+  const { apiKey, ...rest } = ep;
+  return { ...rest, apiKeyConfigured: Boolean(apiKey) };
+}
+
 export type PublicKgmConfig = Omit<
   KgmConfig,
-  "llm" | "embedding" | "database" | "adapter" | "ycb" | "yueliai" | "playground"
+  "llm" | "embedding" | "media" | "database" | "adapter" | "ycb" | "yueliai" | "playground"
 > & {
   llm: Omit<KgmConfig["llm"], "apiKey"> & { apiKeyConfigured: boolean };
   embedding: Omit<KgmConfig["embedding"], "apiKey"> & { apiKeyConfigured: boolean };
+  media: {
+    image: Omit<KgmConfig["media"]["image"], "apiKey"> & { apiKeyConfigured: boolean };
+    speech: Omit<KgmConfig["media"]["speech"], "apiKey"> & { apiKeyConfigured: boolean };
+    transcription: Omit<KgmConfig["media"]["transcription"], "apiKey"> & { apiKeyConfigured: boolean };
+    video: Omit<KgmConfig["media"]["video"], "apiKey"> & { apiKeyConfigured: boolean };
+    rerank: Omit<KgmConfig["media"]["rerank"], "apiKey"> & { apiKeyConfigured: boolean };
+  };
   database: Omit<KgmConfig["database"], "password"> & { passwordConfigured: boolean };
   adapter: Omit<KgmConfig["adapter"], "secret"> & { secretConfigured: boolean };
   ycb: Omit<KgmConfig["ycb"], "apiKey"> & { apiKeyConfigured: boolean };
@@ -42,6 +56,13 @@ export function toPublicKgmConfig(config: KgmConfig): PublicKgmConfig {
     ...config,
     llm: { ...llm, apiKeyConfigured: Boolean(llmApiKey) },
     embedding: { ...embedding, apiKeyConfigured: Boolean(embeddingApiKey) },
+    media: {
+      image: publicEndpoint(config.media.image),
+      speech: publicEndpoint(config.media.speech),
+      transcription: publicEndpoint(config.media.transcription),
+      video: publicEndpoint(config.media.video),
+      rerank: publicEndpoint(config.media.rerank),
+    },
     database: { ...database, passwordConfigured: Boolean(password) },
     adapter: { ...adapter, secretConfigured: Boolean(adapterSecret) },
     ycb: { ...ycb, apiKeyConfigured: Boolean(ycbApiKey) },

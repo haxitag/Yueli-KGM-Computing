@@ -1,22 +1,54 @@
 import { 
-  ZhipuLlmClient, 
   MinimaxLlmClient, 
-  OpenRouterLlmClient, 
-  NvidiaLlmClient, 
-  DeepSeekLlmClient, 
   OllamaLlmClient, 
-  VllmLlmClient, 
-  SglangLlmClient,
-  XiaomiLlmClient,
   GeminiLlmClient,
   AnthropicLlmClient,
-  AliyunLlmClient,
-  ModelScopeLlmClient,
-  MoonshotLlmClient,
 } from "./third-party.js";
 import { HttpLlmClient } from "./client.js";
 import type { LlmClient } from "./client.js";
 import { ApiKeyRouter, globalApiKeyRouter } from "../utils/apiKeyRouter.js";
+
+/** OpenAI-compat gateway preferred for tools/stream (Phase H). */
+export function wantsOpenAiCompatProvider(
+  config: { baseUrl?: string; extraParams?: Record<string, unknown> },
+  kind: "anthropic" | "gemini" | "ollama",
+): boolean {
+  if (config.extraParams?.useOpenAIFormat === true || config.extraParams?.openaiCompat === true) {
+    return true;
+  }
+  if (kind === "anthropic") {
+    return Boolean(process.env.ANTHROPIC_OPENAI_COMPAT_BASE_URL?.trim());
+  }
+  if (kind === "gemini") {
+    return Boolean(process.env.GEMINI_OPENAI_BASE_URL?.trim());
+  }
+  if (kind === "ollama") {
+    return Boolean(process.env.OLLAMA_OPENAI_BASE?.trim() || config.extraParams?.openaiBase);
+  }
+  return false;
+}
+
+/** Whether AutoRouting may safely forward tools to this provider type/config. */
+export function providerSupportsTools(
+  type: string,
+  config?: { baseUrl?: string; extraParams?: Record<string, unknown>; model?: string },
+): boolean {
+  switch (type) {
+    case "anthropic":
+      return wantsOpenAiCompatProvider(config ?? {}, "anthropic");
+    case "gemini":
+      return wantsOpenAiCompatProvider(config ?? {}, "gemini") || config?.extraParams?.useOpenAIFormat === true;
+    case "ollama":
+      return wantsOpenAiCompatProvider(config ?? {}, "ollama");
+    case "minimax":
+      return (
+        config?.extraParams?.useOpenAIFormat === true ||
+        Boolean(config?.model && /^minimax-/i.test(config.model))
+      );
+    default:
+      return true;
+  }
+}
 
 export type ProviderType = 
   | 'openai'
@@ -161,26 +193,16 @@ export class LlmProviderFactory {
       }
 
       case 'openrouter': {
-        const openRouterApiKey = this.selectApiKey(config, 'openrouter');
-        if (!openRouterApiKey) {
-          throw new Error('OpenRouter API key is required');
-        }
-        return new OpenRouterLlmClient({
-          baseUrl: config.baseUrl || defaultUrls.openrouter,
-          model: config.model,
-          apiKey: openRouterApiKey,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'openrouter',
+          defaultBaseUrl: defaultUrls.openrouter,
         });
       }
 
       case 'nvidia': {
-        const nvidiaApiKey = this.selectApiKey(config, 'nvidia');
-        if (!nvidiaApiKey) {
-          throw new Error('NVIDIA API key is required');
-        }
-        return new NvidiaLlmClient({
-          baseUrl: config.baseUrl || defaultUrls.nvidia,
-          model: config.model,
-          apiKey: nvidiaApiKey,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'nvidia',
+          defaultBaseUrl: defaultUrls.nvidia,
         });
       }
 
@@ -196,19 +218,23 @@ export class LlmProviderFactory {
       }
 
       case 'xiaomi':
-        if (!config.apiKey) {
-          throw new Error('Xiaomi API key is required');
-        }
-        return new XiaomiLlmClient({
-          baseUrl: config.baseUrl,
-          model: config.model,
-          apiKey: config.apiKey,
-          timeoutMs: config.timeoutMs,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'xiaomi',
+          defaultBaseUrl: defaultUrls.xiaomi,
         });
 
-      case 'gemini':
+      case 'gemini': {
         if (!config.apiKey) {
           throw new Error('Gemini API key is required');
+        }
+        if (wantsOpenAiCompatProvider(config, 'gemini')) {
+          return this.createOpenAiCompatHttp(config, {
+            routerKey: 'gemini',
+            defaultBaseUrl:
+              config.baseUrl ||
+              process.env.GEMINI_OPENAI_BASE_URL ||
+              'https://generativelanguage.googleapis.com/v1beta/openai',
+          });
         }
         return new GeminiLlmClient({
           baseUrl: config.baseUrl,
@@ -217,11 +243,22 @@ export class LlmProviderFactory {
           timeoutMs: config.timeoutMs,
           useOpenAIFormat: config.extraParams?.useOpenAIFormat as boolean,
         });
+      }
 
       case 'anthropic': {
         const apiKey = this.selectApiKey(config, 'anthropic');
         if (!apiKey) {
           throw new Error('Anthropic API key is required');
+        }
+        if (wantsOpenAiCompatProvider(config, 'anthropic')) {
+          return this.createOpenAiCompatHttp(config, {
+            routerKey: 'anthropic',
+            defaultBaseUrl:
+              config.baseUrl ||
+              process.env.ANTHROPIC_OPENAI_COMPAT_BASE_URL ||
+              process.env.ANTHROPIC_BASE_URL ||
+              'https://api.anthropic.com/v1',
+          });
         }
         return new AnthropicLlmClient({
           baseUrl: config.baseUrl,
@@ -232,28 +269,22 @@ export class LlmProviderFactory {
       }
 
       case 'aliyun': {
-        const apiKey = this.selectApiKey(config, 'aliyun');
-        if (!apiKey) {
-          throw new Error('Aliyun API key is required');
-        }
-        return new AliyunLlmClient({
-          baseUrl: config.baseUrl,
-          model: config.model,
-          apiKey: apiKey,
-          timeoutMs: config.timeoutMs,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'aliyun',
+          defaultBaseUrl:
+            config.baseUrl ||
+            process.env.ALIYUN_BASE_URL ||
+            'https://dashscope.aliyuncs.com/compatible-mode/v1',
         });
       }
 
       case 'modelscope': {
-        const apiKey = this.selectApiKey(config, 'modelscope');
-        if (!apiKey) {
-          throw new Error('ModelScope API key is required');
-        }
-        return new ModelScopeLlmClient({
-          baseUrl: config.baseUrl,
-          model: config.model,
-          apiKey: apiKey,
-          timeoutMs: config.timeoutMs,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'modelscope',
+          defaultBaseUrl:
+            config.baseUrl ||
+            process.env.MODELSCOPE_BASE_URL ||
+            'https://api-inference.modelscope.cn/v1',
         });
       }
 
@@ -268,24 +299,39 @@ export class LlmProviderFactory {
         });
       }
 
-      case 'ollama':
+      case 'ollama': {
+        const openaiBase =
+          (typeof config.extraParams?.openaiBase === 'string' && config.extraParams.openaiBase.trim()) ||
+          process.env.OLLAMA_OPENAI_BASE?.trim() ||
+          undefined;
+        if (openaiBase || config.extraParams?.useOpenAIFormat === true) {
+          return this.createOpenAiCompatHttp(
+            { ...config, baseUrl: openaiBase || config.baseUrl || 'http://127.0.0.1:11434/v1' },
+            {
+              routerKey: 'ollama',
+              defaultBaseUrl: openaiBase || 'http://127.0.0.1:11434/v1',
+              requireApiKey: false,
+            },
+          );
+        }
         return new OllamaLlmClient({
           baseUrl: config.baseUrl || defaultUrls.ollama,
           model: config.model,
         });
+      }
 
       case 'vllm':
-        return new VllmLlmClient({
-          baseUrl: config.baseUrl || defaultUrls.vllm,
-          model: config.model,
-          apiKey: config.apiKey,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'vllm',
+          defaultBaseUrl: defaultUrls.vllm,
+          requireApiKey: false,
         });
 
       case 'sglang':
-        return new SglangLlmClient({
-          baseUrl: config.baseUrl || defaultUrls.sglang,
-          model: config.model,
-          apiKey: config.apiKey,
+        return this.createOpenAiCompatHttp(config, {
+          routerKey: 'sglang',
+          defaultBaseUrl: defaultUrls.sglang,
+          requireApiKey: false,
         });
 
       /** 阿里百炼 OpenAI 兼容模式 */

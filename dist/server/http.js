@@ -2,10 +2,13 @@ import http from "node:http";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
 import { toPublicKgmConfig } from "../core/publicConfig.js";
 import { syncPlaygroundFromConfig } from "../playground/syncPlayground.js";
+import { MultiAgentRuntime } from "../agents/multiAgentRuntime.js";
 import { createAnthropicMessagesResponse, streamAnthropicMessagesJsonLines, } from "../anthropic/compat.js";
 import { postAnthropicMessages, streamAnthropicMessagesNative, } from "../llm/maas/anthropicNative.js";
 import { shouldProxyAnthropicMessagesNative } from "../llm/maas/reasoning.js";
 import { buildOpenAiModelList, createOpenAiChatCompletion, createOpenAiResponse, streamOpenAiChatCompletion, streamOpenAiResponse, } from "../openai/compat.js";
+import { proxyAudioSpeech, proxyAudioTranscriptions, proxyAudioTranscriptionsMultipart, proxyAudioTranslations, proxyImagesEdits, proxyImagesGenerations, proxyImagesVariations, proxyRerank, startVideoGenerationJob, } from "../openai/mediaCompat.js";
+import { getMediaJobStore } from "../openai/mediaJobs.js";
 import { maybeProxyNativeOpenAiStream, sendNormalizedUpstreamSse } from "../openai/passthrough.js";
 import { handleGetModelProviders, handlePutModelProviders } from "./adminModelProviders.js";
 import { ProviderConfigurationManager } from "../models/providerConfigManager.js";
@@ -22,7 +25,7 @@ import { handleObservabilityRoute } from "./routes/observability.js";
 import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 import { resolveModelAlias } from "../admin/modelAliasResolve.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
-import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText } from "./httpJsonHelpers.js";
+import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText, getKgmHttpMaxBodyBytes } from "./httpJsonHelpers.js";
 import { getOptimizer } from "../optimization/optimizer.js";
 import { memorySearchOptionsFromKgm } from "../memory/retrievalOptions.js";
 import { getKgmOpenApiV1 } from "../openapi/kgmOpenApiV1Spec.js";
@@ -68,6 +71,21 @@ export function createKgmRequestListener(params) {
                     command: worker.command,
                     installHint: worker.installHint,
                     chdir: worker.chdir,
+                };
+            },
+            tokenspeed: () => {
+                const worker = params.configStore.get().workers.tokenspeed;
+                return {
+                    enabled: worker.enabled,
+                    command: worker.command,
+                    installHint: worker.installHint,
+                    baseUrl: worker.baseUrl,
+                    port: worker.port,
+                    attach: worker.attach,
+                    toolCallParser: worker.toolCallParser,
+                    reasoningParser: worker.reasoningParser,
+                    enablePrefixCaching: worker.enablePrefixCaching,
+                    extraArgs: worker.extraArgs,
                 };
             },
         });
@@ -145,6 +163,10 @@ export function createKgmRequestListener(params) {
             return false;
         },
     };
+    const multiAgentRuntime = new MultiAgentRuntime({
+        scheduler: params.scheduler,
+        resolveAgent: (id) => agentStore.get(id),
+    });
     const taskStore = {
         tasks: {},
         create(data) {
@@ -628,6 +650,10 @@ export function createKgmRequestListener(params) {
                 if (req.method === "GET" && url.pathname === "/v1/models") {
                     const configuredOnly = url.searchParams.get("configured") === "true" ||
                         url.searchParams.get("configured_only") === "1";
+                    const typeFilter = url.searchParams.get("type")?.trim() ||
+                        url.searchParams.get("model_type")?.trim() ||
+                        url.searchParams.get("capability")?.trim() ||
+                        "";
                     let configuredProviders;
                     if (configuredOnly) {
                         const pcm = new ProviderConfigurationManager(process.env.KGM_PROVIDER_CONFIG_PATH ?? "config/model-providers.json");
@@ -635,10 +661,19 @@ export function createKgmRequestListener(params) {
                         pcm.updateFromEnvironment();
                         configuredProviders = pcm.getActiveProviderConfigs().filter((p) => p.apiKey || p.apiKeys?.length);
                     }
-                    return sendJson(res, 200, buildOpenAiModelList(params.configStore, modelManager, {
+                    const list = buildOpenAiModelList(params.configStore, modelManager, {
                         configuredOnly,
                         configuredProviders,
-                    }));
+                    });
+                    if (typeFilter) {
+                        list.data = list.data.filter((m) => {
+                            const kgm = (m.kgm ?? {});
+                            const caps = Array.isArray(kgm.capabilities) ? kgm.capabilities : [];
+                            const mt = typeof kgm.model_type === "string" ? kgm.model_type : "";
+                            return mt === typeFilter || caps.includes(typeFilter);
+                        });
+                    }
+                    return sendJson(res, 200, list);
                 }
                 if (req.method === "GET" && url.pathname === "/v1/admin/model-providers") {
                     return handleGetModelProviders(res);
@@ -764,6 +799,62 @@ export function createKgmRequestListener(params) {
                         },
                     });
                 }
+                if (req.method === "POST" && url.pathname === "/v1/images/generations") {
+                    const payload = (await readJson(req));
+                    const result = await proxyImagesGenerations(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/images/edits") {
+                    const payload = (await readJson(req));
+                    const result = await proxyImagesEdits(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/images/variations") {
+                    const payload = (await readJson(req));
+                    const result = await proxyImagesVariations(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/audio/speech") {
+                    const payload = (await readJson(req));
+                    const result = await proxyAudioSpeech(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/audio/transcriptions") {
+                    const contentType = String(req.headers["content-type"] ?? "");
+                    if (contentType.toLowerCase().includes("multipart/form-data")) {
+                        const raw = await readRawHttpBody(req);
+                        const result = await proxyAudioTranscriptionsMultipart(raw, contentType, params.configStore.get());
+                        return sendMediaProxyResult(res, result);
+                    }
+                    const payload = (await readJson(req));
+                    const result = await proxyAudioTranscriptions(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/audio/translations") {
+                    const payload = (await readJson(req));
+                    const result = await proxyAudioTranslations(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
+                if (req.method === "POST" &&
+                    (url.pathname === "/v1/videos/generations" || url.pathname === "/v1/kgm/media/video")) {
+                    const payload = (await readJson(req));
+                    const result = await startVideoGenerationJob(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/media/jobs/")) {
+                    const id = url.pathname.slice("/v1/kgm/media/jobs/".length).replace(/\/$/, "");
+                    if (!id)
+                        return sendJson(res, 400, kgmErrorBody("invalid_job_id", "Missing job id", 400));
+                    const job = getMediaJobStore().get(id);
+                    if (!job)
+                        return sendJson(res, 404, kgmErrorBody("job_not_found", `Unknown job: ${id}`, 404));
+                    return sendJson(res, 200, job);
+                }
+                if (req.method === "POST" && url.pathname === "/v1/rerank") {
+                    const payload = (await readJson(req));
+                    const result = await proxyRerank(payload, params.configStore.get());
+                    return sendMediaProxyResult(res, result);
+                }
                 if (req.method === "POST" && url.pathname === "/v1/search") {
                     const payload = (await readJson(req));
                     const topK = Math.max(1, Math.min(payload.top_k ?? 10, 50));
@@ -884,6 +975,26 @@ export function createKgmRequestListener(params) {
                         return sendJson(res, 404, { error: "agent_not_found" });
                     }
                     const payload = (await readJson(req));
+                    const collaborateWith = payload.collaborate_with ?? payload.collaborateWith;
+                    if (collaborateWith && collaborateWith.length > 0) {
+                        const run = await multiAgentRuntime.start({
+                            goal: payload.input,
+                            sessionId: payload.session_id,
+                            collaborateWith: [agentId, ...collaborateWith],
+                            maxAgentHops: payload.max_agent_hops,
+                            agents: [
+                                {
+                                    id: agent.id,
+                                    name: agent.name,
+                                    role: "supervisor",
+                                    systemPrompt: agent.systemPrompt,
+                                    model: agent.model,
+                                    tools: agent.tools,
+                                },
+                            ],
+                        });
+                        return sendJson(res, 200, run);
+                    }
                     if (payload.async) {
                         const taskId = taskStore.create({
                             type: "agent_execute",
@@ -899,10 +1010,45 @@ export function createKgmRequestListener(params) {
                         input: payload.input,
                         sessionId: payload.session_id,
                         model: agent.model,
-                        metadata: { agentId, tools: agent.tools, mode: agent.systemPrompt ? "reasoning" : "chat" },
+                        metadata: {
+                            agentId,
+                            tools: agent.tools,
+                            mode: agent.systemPrompt ? "reasoning" : "chat",
+                            system_prompt_addon: agent.systemPrompt,
+                        },
+                        toolPolicy: agent.tools.length > 0 ? { allowed: agent.tools, maxRounds: 3 } : undefined,
+                        kgm: agent.systemPrompt
+                            ? { playground: { extraSystemPrompt: agent.systemPrompt } }
+                            : undefined,
                     };
                     const response = await params.scheduler.run(kgmRequest);
                     return sendJson(res, 200, response);
+                }
+                if (req.method === "GET" && url.pathname === "/v1/agent-runs") {
+                    return sendJson(res, 200, { runs: multiAgentRuntime.listRuns() });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/agent-runs") {
+                    const payload = (await readJson(req));
+                    if (!payload.goal?.trim()) {
+                        return sendJson(res, 400, { error: "goal_required" });
+                    }
+                    const run = await multiAgentRuntime.start({
+                        goal: payload.goal,
+                        sessionId: payload.session_id,
+                        strategy: payload.strategy ?? "supervisor",
+                        maxAgentHops: payload.max_agent_hops,
+                        agents: payload.agents,
+                        collaborateWith: payload.collaborate_with,
+                    });
+                    return sendJson(res, run.status === "failed" ? 500 : 200, run);
+                }
+                if (req.method === "GET" && url.pathname.startsWith("/v1/agent-runs/")) {
+                    const id = url.pathname.replace("/v1/agent-runs/", "");
+                    const run = multiAgentRuntime.getRun(id);
+                    if (!run) {
+                        return sendJson(res, 404, { error: "agent_run_not_found" });
+                    }
+                    return sendJson(res, 200, { run });
                 }
                 if (req.method === "POST" && url.pathname === "/v1/tasks") {
                     const payload = (await readJson(req));
@@ -2039,6 +2185,37 @@ function readAnthropicApiKey(req) {
 /** @deprecated Prefer sendNormalizedUpstreamSse */
 async function relayUpstreamSse(res, upstream) {
     return relayUpstreamSseNormalized(res, upstream);
+}
+async function readRawHttpBody(req) {
+    const maxBytes = getKgmHttpMaxBodyBytes();
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of req) {
+        const buf = chunk;
+        total += buf.length;
+        if (total > maxBytes) {
+            throw new KgmRequestValidationError("request_too_large", `Request body too large. Maximum size is ${Math.round(maxBytes / (1024 * 1024))}MB`, 413);
+        }
+        chunks.push(buf);
+    }
+    return Buffer.concat(chunks);
+}
+function sendMediaProxyResult(res, result) {
+    if (!result.ok) {
+        sendJson(res, result.status, result.body);
+        return;
+    }
+    if (result.binary) {
+        if (res.headersSent)
+            return;
+        res.writeHead(result.status, {
+            "content-type": result.contentType || "application/octet-stream",
+            "content-length": result.binary.length,
+        });
+        res.end(result.binary);
+        return;
+    }
+    sendJson(res, result.status, result.json ?? {});
 }
 function parseNumber(value) {
     if (!value)

@@ -598,12 +598,12 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
             </article>
 
             <article class="routing-card kgm-config-card" id="cfg-section-workers">
-                <h3>3. Worker 门闩（llama.cpp / ds4）</h3>
+                <h3>3. Worker 门闩（llama.cpp / ds4 / TokenSpeed）</h3>
                 <p class="helper-text">
                     ConfigStore 优先于环境变量。
-                    <code>on</code>=强制启用 · <code>off</code>=关闭 · <code>auto</code>=探测二进制。
-                    连接参数 <code>KGM_DS4_PORT</code> / <code>KGM_DS4_BASE_URL</code> 为进程 env，见实例页只读状态。
-                    详见 <code>docs/ds4-worker.md</code>。
+                    <code>on</code>=强制启用 · <code>off</code>=关闭 · <code>auto</code>=探测。
+                    TokenSpeed 默认 <code>off</code>（不污染 CI）；生产推荐 <code>auto</code> + <code>baseUrl</code> attach（类 Ollama）。
+                    详见 <code>docs/deployment-and-api.md</code>。
                 </p>
                 <div class="kgm-config-grid">
                     <fieldset class="kgm-config-fieldset">
@@ -630,6 +630,29 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
                         <label class="option-field"><span>command</span><input id="cfg-ds4-command" type="text" placeholder="ds4-server"></label>
                         <label class="option-field"><span>chdir</span><input id="cfg-ds4-chdir" type="text" placeholder="可选工作目录"></label>
                         <label class="option-field"><span>installHint</span><input id="cfg-ds4-hint" type="text"></label>
+                    </fieldset>
+                    <fieldset class="kgm-config-fieldset">
+                        <legend>TokenSpeed（可选 agentic worker）</legend>
+                        <label class="option-field"><span>enabled</span>
+                            <select id="cfg-tokenspeed-enabled">
+                                <option value="off">off</option>
+                                <option value="auto">auto</option>
+                                <option value="on">on</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>baseUrl（attach 优先）</span><input id="cfg-tokenspeed-base-url" type="url" placeholder="http://127.0.0.1:8095/v1"></label>
+                        <label class="option-field"><span>command（spawn）</span><input id="cfg-tokenspeed-command" type="text" placeholder="tokenspeed"></label>
+                        <label class="option-field"><span>port</span><input id="cfg-tokenspeed-port" type="number" placeholder="8095"></label>
+                        <label class="option-field"><span>toolCallParser</span><input id="cfg-tokenspeed-tool-parser" type="text" placeholder="qwen / json / …"></label>
+                        <label class="option-field"><span>reasoningParser</span><input id="cfg-tokenspeed-reasoning-parser" type="text" placeholder="qwen3 / …"></label>
+                        <label class="option-field"><span>enablePrefixCaching</span>
+                            <select id="cfg-tokenspeed-prefix-cache">
+                                <option value="">（默认）</option>
+                                <option value="true">true</option>
+                                <option value="false">false</option>
+                            </select>
+                        </label>
+                        <label class="option-field"><span>installHint</span><input id="cfg-tokenspeed-hint" type="text"></label>
                     </fieldset>
                 </div>
             </article>

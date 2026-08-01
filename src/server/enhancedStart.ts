@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     void kgmListener(req as http.IncomingMessage, res as http.ServerResponse);
   });
 
-  const port = Number(process.env.PORT ?? 3000);
+  const port = Number(process.env.PORT ?? 58691);
   server.listen(port, () => {
     console.log(`KGM server with Playground listening on ${port}`);
     console.log(`Playground UI available at http://localhost:${port}`);

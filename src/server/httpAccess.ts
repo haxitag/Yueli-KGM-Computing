@@ -201,6 +201,15 @@ const INFERENCE_BUDGET_PREFIXES = [
   "/v1/responses",
   "/v1/messages",
   "/v1/embeddings",
+  "/v1/images/generations",
+  "/v1/images/edits",
+  "/v1/images/variations",
+  "/v1/audio/speech",
+  "/v1/audio/transcriptions",
+  "/v1/audio/translations",
+  "/v1/videos/generations",
+  "/v1/kgm/media/video",
+  "/v1/rerank",
 ];
 
 export class HttpRequestAccess {

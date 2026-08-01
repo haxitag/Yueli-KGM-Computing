@@ -99,7 +99,29 @@ export class HttpLlmClient {
                 stream: true,
             };
         const controller = new AbortController();
-        const timeoutId = this.timeoutMs ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
+        const connectTimeoutMs = this.timeoutMs ?? 0;
+        const idleEnv = process.env.KGM_STREAM_IDLE_MS;
+        const idleMs = idleEnv !== undefined && idleEnv.trim() !== ""
+            ? Number(idleEnv)
+            : connectTimeoutMs;
+        let connectTimer;
+        let idleTimer;
+        if (connectTimeoutMs > 0) {
+            connectTimer = setTimeout(() => controller.abort(), connectTimeoutMs);
+        }
+        const clearConnectTimer = () => {
+            if (connectTimer) {
+                clearTimeout(connectTimer);
+                connectTimer = undefined;
+            }
+        };
+        const resetIdleTimer = () => {
+            if (!(idleMs > 0))
+                return;
+            if (idleTimer)
+                clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => controller.abort(), idleMs);
+        };
         try {
             // 先建连再发 started，确保上游不可达时 headers 前失败 → JSON 502
             const response = await protectedFetch(url, {
@@ -111,6 +133,7 @@ export class HttpLlmClient {
                 body: JSON.stringify(payload),
                 signal: controller.signal,
             });
+            clearConnectTimer();
             if (!response.ok) {
                 const errorText = await response.text();
                 throw new Error(`HTTP error: ${response.status} - ${errorText}`);
@@ -120,14 +143,19 @@ export class HttpLlmClient {
                 throw new Error("No response body");
             }
             yield { type: "started", model: options?.model ?? this.model };
+            resetIdleTimer();
             const decoder = new TextDecoder("utf-8");
             let tokenIndex = 0;
             let buffer = "";
+            let fullText = "";
+            let lastUsage;
+            let lastRaw;
             const contentFields = ["content", "reasoning_content", "reasoning", "thinking", "thought", "text", "output_text"];
             while (true) {
                 const { done, value } = await reader.read();
                 if (done)
                     break;
+                resetIdleTimer();
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split("\n");
                 buffer = lines.pop() || "";
@@ -142,6 +170,10 @@ export class HttpLlmClient {
                         }
                         try {
                             const data = JSON.parse(dataStr);
+                            lastRaw = data;
+                            if (data.usage && typeof data.usage === "object") {
+                                lastUsage = data.usage;
+                            }
                             // 检查错误响应
                             if (data.error) {
                                 const errorMessage = typeof data.error === "string"
@@ -149,12 +181,13 @@ export class HttpLlmClient {
                                     : data.error.message || JSON.stringify(data.error);
                                 throw new Error(`Upstream error: ${errorMessage}`);
                             }
-                            if (data.choices?.[0]) {
+                            if (data.choices && Array.isArray(data.choices) && data.choices[0]) {
                                 const choice = data.choices[0];
                                 const delta = choice.delta;
                                 if (delta) {
                                     const { content, reasoning } = extractOpenAiCompatDeltaParts(delta);
                                     if (content) {
+                                        fullText += content;
                                         yield {
                                             type: "token",
                                             text: content,
@@ -174,6 +207,7 @@ export class HttpLlmClient {
                                 }
                                 const plain = choice.text;
                                 if (typeof plain === "string" && plain.length > 0) {
+                                    fullText += plain;
                                     yield { type: "token", text: plain, index: tokenIndex++, channel: "content" };
                                 }
                                 continue;
@@ -183,6 +217,9 @@ export class HttpLlmClient {
                                     const channel = field === "content" || field === "text" || field === "output_text"
                                         ? "content"
                                         : "reasoning";
+                                    if (channel === "content") {
+                                        fullText += data[field];
+                                    }
                                     yield {
                                         type: "token",
                                         text: data[field],
@@ -205,10 +242,22 @@ export class HttpLlmClient {
                     }
                 }
             }
+            yield {
+                type: "finished",
+                result: {
+                    text: fullText,
+                    raw: {
+                        ...(lastRaw ?? {}),
+                        ...(lastUsage ? { usage: lastUsage } : {}),
+                        choices: [{ message: { role: "assistant", content: fullText } }],
+                    },
+                },
+            };
         }
         finally {
-            if (timeoutId)
-                clearTimeout(timeoutId);
+            clearConnectTimer();
+            if (idleTimer)
+                clearTimeout(idleTimer);
         }
     }
 }
@@ -248,30 +297,35 @@ export class ConfigurableLlmClient {
                 timeoutMs: config.timeoutMs,
             });
     }
+    /** Test seam: replace underlying client without going through HTTP. */
+    replaceClientForTests(factory) {
+        this.createClient = factory;
+    }
     async complete(prompt, options) {
         const config = this.store.get().llm;
         const client = this.createClient();
         return client.complete(prompt, {
+            ...options,
             maxTokens: options?.maxTokens ?? config.maxTokens,
             temperature: options?.temperature ?? config.temperature,
-            stop: options?.stop,
             model: options?.model ?? config.model,
         });
     }
     async *streamComplete(prompt, options) {
         const config = this.store.get().llm;
         const client = this.createClient();
+        const merged = {
+            ...options,
+            maxTokens: options?.maxTokens ?? config.maxTokens,
+            temperature: options?.temperature ?? config.temperature,
+            model: options?.model ?? config.model,
+        };
         if (client.streamComplete) {
-            yield* client.streamComplete(prompt, {
-                maxTokens: options?.maxTokens ?? config.maxTokens,
-                temperature: options?.temperature ?? config.temperature,
-                stop: options?.stop,
-                model: options?.model ?? config.model,
-            });
+            yield* client.streamComplete(prompt, merged);
         }
         else {
             const result = await this.complete(prompt, options);
-            yield { type: "started", model: options?.model ?? config.model };
+            yield { type: "started", model: merged.model };
             if (result.text) {
                 yield { type: "token", text: result.text, index: 0 };
             }

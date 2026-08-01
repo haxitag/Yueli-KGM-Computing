@@ -41,6 +41,7 @@ export class ContextBuilder {
     evidenceCount: number;
     signalCount: number;
     graphEnabled: boolean;
+    graphSkipped?: boolean;
     ycbEvidenceCount: number;
     budgetTruncated: number;
   };
@@ -76,6 +77,24 @@ export class ContextBuilder {
     return this.getContextConfig?.() ?? this.contextConfig;
   }
 
+  private resolveGraphMaxTriples(graph: NonNullable<NonNullable<KgmRequest["kgm"]>["graph"]>): number {
+    if (typeof graph.maxTriples === "number" && Number.isFinite(graph.maxTriples) && graph.maxTriples > 0) {
+      return Math.floor(graph.maxTriples);
+    }
+    const envRaw = process.env.KGM_GRAPH_MAX_TRIPLES?.trim();
+    if (envRaw) {
+      const parsed = Number(envRaw);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.floor(parsed);
+      }
+    }
+    const fromConfig = this.resolvedContext()?.graphMaxTriples;
+    if (typeof fromConfig === "number" && Number.isFinite(fromConfig) && fromConfig > 0) {
+      return Math.floor(fromConfig);
+    }
+    return 8;
+  }
+
   async build(request: KgmRequest): Promise<ContextPack> {
     const requestId = request.requestId ?? generateId();
     const sessionId = request.sessionId ?? request.userId;
@@ -86,9 +105,24 @@ export class ContextBuilder {
         namespace: request.userId,
       });
     }
-    const graphSignal = this.graphStore && request.kgm?.graph?.enabled
-      ? await buildKnowledgeGraphSignal(this.graphStore, request.kgm.graph, request.input, request.userId)
-      : null;
+    const graphPayloadPresent = Boolean(
+      this.graphStore &&
+        (request.kgm?.graph?.triples?.length ||
+          request.kgm?.graph?.entities?.length ||
+          request.kgm?.graph?.relations?.length ||
+          request.kgm?.graph?.subgraph),
+    );
+    const graphSkipped = Boolean(graphPayloadPresent && !request.kgm?.graph?.enabled);
+    const graphSignal =
+      this.graphStore && request.kgm?.graph?.enabled
+        ? await buildKnowledgeGraphSignal(
+            this.graphStore,
+            request.kgm.graph,
+            request.input,
+            request.userId,
+            this.resolveGraphMaxTriples(request.kgm.graph),
+          )
+        : null;
     const signals = buildSignals(request.signals ?? [], graphSignal);
     const retrievalTopK = request.kgm?.retrieval?.topK ?? this.topK;
     const ycbEvidence = this.ycbClient ? await this.ycbClient.fetchEvidence(request) : [];
@@ -114,6 +148,7 @@ export class ContextBuilder {
       evidenceCount: evidence.length,
       signalCount: signals.length,
       graphEnabled: Boolean(request.kgm?.graph?.enabled),
+      graphSkipped,
       ycbEvidenceCount: ycbEvidence.length,
       budgetTruncated,
     };
@@ -206,6 +241,7 @@ export class ContextBuilder {
       evidenceCount: number;
       signalCount: number;
       graphEnabled: boolean;
+      graphSkipped?: boolean;
       ycbEvidenceCount: number;
       budgetTruncated: number;
     };
@@ -321,6 +357,7 @@ async function buildKnowledgeGraphSignal(
   graph: NonNullable<NonNullable<KgmRequest["kgm"]>["graph"]>,
   query: string,
   namespace: string,
+  maxTriples: number,
 ): Promise<Signal | null> {
   const entities = graph.entities ?? [];
   const relations = graph.relations ?? [];
@@ -328,7 +365,7 @@ async function buildKnowledgeGraphSignal(
     entities,
     relations,
     query: graph.subgraph ?? query,
-    limit: 8,
+    limit: maxTriples,
     namespace,
   });
 
@@ -340,23 +377,24 @@ async function buildKnowledgeGraphSignal(
     type: "knowledge_graph",
     source: "kgm.graph",
     title: "Knowledge graph context",
-    value: renderGraphSummary(graph.subgraph, subgraph.triples),
+    value: renderGraphSummary(graph.subgraph, subgraph.triples, maxTriples),
     metadata: {
       entities: subgraph.entities,
       relations: subgraph.relations,
       triples: subgraph.triples,
       reasoningMode: graph.reasoningMode,
+      maxTriples,
     },
   };
 }
 
-function renderGraphSummary(subgraph: string | undefined, triples: KgmGraphTriple[]): string {
+function renderGraphSummary(subgraph: string | undefined, triples: KgmGraphTriple[], maxTriples: number): string {
   const parts: string[] = [];
   if (subgraph) {
     parts.push(subgraph);
   }
   if (triples.length > 0) {
-    parts.push(triples.slice(0, 8).map((triple) => `${triple.subject} -${triple.predicate}-> ${triple.object}`).join("; "));
+    parts.push(triples.slice(0, maxTriples).map((triple) => `${triple.subject} -${triple.predicate}-> ${triple.object}`).join("; "));
   }
   return parts.join("\n");
 }

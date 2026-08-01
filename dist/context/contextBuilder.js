@@ -35,6 +35,23 @@ export class ContextBuilder {
     resolvedContext() {
         return this.getContextConfig?.() ?? this.contextConfig;
     }
+    resolveGraphMaxTriples(graph) {
+        if (typeof graph.maxTriples === "number" && Number.isFinite(graph.maxTriples) && graph.maxTriples > 0) {
+            return Math.floor(graph.maxTriples);
+        }
+        const envRaw = process.env.KGM_GRAPH_MAX_TRIPLES?.trim();
+        if (envRaw) {
+            const parsed = Number(envRaw);
+            if (Number.isFinite(parsed) && parsed > 0) {
+                return Math.floor(parsed);
+            }
+        }
+        const fromConfig = this.resolvedContext()?.graphMaxTriples;
+        if (typeof fromConfig === "number" && Number.isFinite(fromConfig) && fromConfig > 0) {
+            return Math.floor(fromConfig);
+        }
+        return 8;
+    }
     async build(request) {
         const requestId = request.requestId ?? generateId();
         const sessionId = request.sessionId ?? request.userId;
@@ -45,8 +62,14 @@ export class ContextBuilder {
                 namespace: request.userId,
             });
         }
+        const graphPayloadPresent = Boolean(this.graphStore &&
+            (request.kgm?.graph?.triples?.length ||
+                request.kgm?.graph?.entities?.length ||
+                request.kgm?.graph?.relations?.length ||
+                request.kgm?.graph?.subgraph));
+        const graphSkipped = Boolean(graphPayloadPresent && !request.kgm?.graph?.enabled);
         const graphSignal = this.graphStore && request.kgm?.graph?.enabled
-            ? await buildKnowledgeGraphSignal(this.graphStore, request.kgm.graph, request.input, request.userId)
+            ? await buildKnowledgeGraphSignal(this.graphStore, request.kgm.graph, request.input, request.userId, this.resolveGraphMaxTriples(request.kgm.graph))
             : null;
         const signals = buildSignals(request.signals ?? [], graphSignal);
         const retrievalTopK = request.kgm?.retrieval?.topK ?? this.topK;
@@ -65,6 +88,7 @@ export class ContextBuilder {
             evidenceCount: evidence.length,
             signalCount: signals.length,
             graphEnabled: Boolean(request.kgm?.graph?.enabled),
+            graphSkipped,
             ycbEvidenceCount: ycbEvidence.length,
             budgetTruncated,
         };
@@ -224,14 +248,14 @@ function buildSignals(signals, graphSignal) {
     }
     return [...signals, graphSignal];
 }
-async function buildKnowledgeGraphSignal(graphStore, graph, query, namespace) {
+async function buildKnowledgeGraphSignal(graphStore, graph, query, namespace, maxTriples) {
     const entities = graph.entities ?? [];
     const relations = graph.relations ?? [];
     const subgraph = await graphStore.querySubgraph({
         entities,
         relations,
         query: graph.subgraph ?? query,
-        limit: 8,
+        limit: maxTriples,
         namespace,
     });
     if (!graph.subgraph && subgraph.triples.length === 0 && entities.length === 0 && relations.length === 0) {
@@ -241,22 +265,23 @@ async function buildKnowledgeGraphSignal(graphStore, graph, query, namespace) {
         type: "knowledge_graph",
         source: "kgm.graph",
         title: "Knowledge graph context",
-        value: renderGraphSummary(graph.subgraph, subgraph.triples),
+        value: renderGraphSummary(graph.subgraph, subgraph.triples, maxTriples),
         metadata: {
             entities: subgraph.entities,
             relations: subgraph.relations,
             triples: subgraph.triples,
             reasoningMode: graph.reasoningMode,
+            maxTriples,
         },
     };
 }
-function renderGraphSummary(subgraph, triples) {
+function renderGraphSummary(subgraph, triples, maxTriples) {
     const parts = [];
     if (subgraph) {
         parts.push(subgraph);
     }
     if (triples.length > 0) {
-        parts.push(triples.slice(0, 8).map((triple) => `${triple.subject} -${triple.predicate}-> ${triple.object}`).join("; "));
+        parts.push(triples.slice(0, maxTriples).map((triple) => `${triple.subject} -${triple.predicate}-> ${triple.object}`).join("; "));
     }
     return parts.join("\n");
 }

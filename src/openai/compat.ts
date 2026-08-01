@@ -12,6 +12,18 @@ import { streamCompletion } from "../llm/client.js";
 import type { CompletionResult, LlmClient } from "../llm/client.js";
 import { extractAutoRoutingTrace, extractResolvedModel } from "../llm/autoRoutingClient.js";
 import { parseIntent } from "../parse/parser.js";
+import { resolveCompletionIntent, toOpenAiFunctionTools } from "../parse/nativeToolCalls.js";
+import {
+  enrichAgenticMetadata,
+  enrichRoutingHints,
+} from "../agentic/routingPreferences.js";
+import { recordAgenticRound } from "../agentic/metrics.js";
+import {
+  buildKgmRequestPerf,
+  enrichUsageWithCache,
+  extractCachedTokensFromUsage,
+  type KgmRequestPerf,
+} from "../agentic/requestStats.js";
 import { renderPrompt } from "../prompt/renderer.js";
 import type { OpenAiResponseStore } from "./responseStore.js";
 import type { SkillRuntime } from "../skills/runtime.js";
@@ -25,7 +37,7 @@ import { extractMaaSOpenAiExtras } from "../llm/maas/reasoning.js";
 import type { CompletionOptions } from "../llm/client.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
-import { annotateOpenAiModels } from "../models/modelTypeAnnotator.js";
+import { annotateOpenAiModels, appendConfiguredMediaModels } from "../models/modelTypeAnnotator.js";
 import { maybeNormalizeCompatOutput } from "../output/gfmNormalize.js";
 
 type OpenAiToolCall = {
@@ -137,6 +149,7 @@ type CompatibilityRun = {
     compatibility: Record<string, unknown>;
     tool_trace: CompatibilityToolTrace[];
     correlation?: { requestId: string; traceId: string };
+    perf?: KgmRequestPerf;
   };
   finalText: string;
   reasoningText?: string;
@@ -168,15 +181,20 @@ export function buildOpenAiModelList(
   ];
   return {
     object: "list",
-    data: annotateOpenAiModels([
-      {
-        id: "auto",
-        object: "model",
-        created: Math.floor(Date.now() / 1000),
-        owned_by: "kgm",
-      },
-      ...data,
-    ]),
+    data: annotateOpenAiModels(
+      appendConfiguredMediaModels(
+        [
+          {
+            id: "auto",
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "kgm",
+          },
+          ...data,
+        ],
+        configStore,
+      ),
+    ),
   };
 }
 
@@ -481,6 +499,7 @@ type DirectStreamSetup = {
   prompt: string;
   promptTokens: number;
   conversation: ConversationMessage[];
+  startedAtMs: number;
 };
 
 async function executeCompatibilityRun(params: ExecuteParams): Promise<CompatibilityRun> {
@@ -514,12 +533,29 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
   let completionTokens = 0;
   let finalText = "";
   let finishReason: "stop" | "tool_calls" = "stop";
+  let usedNativeToolCalls = false;
+  let roundsExecuted = 0;
+  let cachedTokensTotal = 0;
+  const startedAtMs = Date.now();
+  let firstTokenAtMs: number | undefined;
+
+  const sessionId =
+    deriveSessionId(params.metadata) ??
+    (typeof params.user === "string" && params.user.trim() ? params.user : `compat_${requestId}`);
+  const agenticMetadata = enrichAgenticMetadata(params.metadata, {
+    taskType: params.routing?.taskType,
+    input: extractLatestUserInput(conversation),
+    toolCount: effectiveTools.length,
+    sessionId,
+  });
+  const agenticRouting = enrichRoutingHints(params.routing, agenticMetadata);
 
   for (let round = 0; round < 3; round += 1) {
+    roundsExecuted = round + 1;
     const runtimeRequest: KgmRequest = applyHaxiTagAssembly({
       requestId,
       userId: params.user ?? "openai_compat",
-      sessionId: deriveSessionId(params.metadata),
+      sessionId,
       input: extractLatestUserInput(conversation),
       model,
       conversation,
@@ -531,12 +567,13 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
         allowed: effectiveTools.map((tool) => tool.name),
         maxRounds: 1,
       },
-      metadata: params.metadata,
+      metadata: agenticMetadata,
       kgm,
-      routing: params.routing,
+      routing: agenticRouting,
     });
 
     const context = await params.contextBuilder.build(runtimeRequest);
+    // Session/prefix continuity: carry tool results across rounds on the same sessionId
     context.toolResults = [...aggregatedToolResults];
     const systemPromptAddons = [
       ...collectPlaygroundSystemAddons(config),
@@ -553,21 +590,40 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
       includeSkillNames: config.context.includeSkillNames,
       systemPromptAddons,
     });
-    const completion = await params.llmClient.complete(prompt, buildMaaSCompletionOptions(params, {
+    const openAiTools =
+      effectiveTools.length > 0
+        ? (params.tools?.length ? params.tools : toOpenAiFunctionTools(effectiveTools))
+        : undefined;
+    const completion = await params.llmClient.complete(prompt, buildMaaSCompletionOptions({
+      ...params,
+      tools: openAiTools,
+      toolChoice: params.toolChoice ?? (openAiTools ? "auto" : undefined),
+    }, {
       model,
       requestId,
-      sessionId: deriveSessionId(params.metadata),
+      sessionId,
       maxTokens: params.maxTokens,
       temperature: params.temperature ?? config.llm.temperature,
-      metadata: params.metadata,
+      metadata: agenticMetadata,
       taskInput: runtimeRequest.input,
-      taskType: params.routing?.taskType,
-      taskName: params.routing?.taskName,
-      routing: params.routing,
+      taskType: agenticRouting.taskType,
+      taskName: agenticRouting.taskName,
+      routing: agenticRouting,
     }));
     latestRoutingTrace = extractAutoRoutingTrace(completion.raw);
+    if (firstTokenAtMs == null) {
+      firstTokenAtMs = Date.now();
+    }
     resolvedModel = extractResolvedModel(completion.raw) ?? resolvedModel;
     const structuredRound = extractStructuredCompletion(completion.raw, config.llm.provider);
+    const rawUsage =
+      completion.raw && typeof completion.raw === "object"
+        ? (completion.raw as { usage?: unknown }).usage
+        : undefined;
+    const cachedRound = extractCachedTokensFromUsage(rawUsage);
+    if (cachedRound != null) {
+      cachedTokensTotal += cachedRound;
+    }
     const roundUsage = mergeUsageWithEstimates(
       structuredRound,
       estimateTokens(prompt),
@@ -575,7 +631,13 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     );
     promptTokens += roundUsage.prompt_tokens;
     completionTokens += roundUsage.completion_tokens;
-    const intent = parseIntent(completion.text);
+    const resolved = resolveCompletionIntent(completion, {
+      skillNames: params.skillRuntime?.listNames(),
+    });
+    if (resolved.source === "native_tool_calls") {
+      usedNativeToolCalls = true;
+    }
+    const intent = resolved.intent;
 
     if (intent.type === "final") {
       finalText = intent.content;
@@ -686,12 +748,41 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     finalText = "max_rounds_reached";
   }
 
+  recordAgenticRound({
+    profile: typeof agenticMetadata.agentic_profile === "string" ? agenticMetadata.agentic_profile : "standard",
+    taskType: agenticRouting.taskType,
+    rounds: roundsExecuted,
+    toolInterrupts: traces.length,
+    prefixChars: extractLatestUserInput(conversation).length + finalText.length,
+    firstTokenMs: firstTokenAtMs != null ? firstTokenAtMs - startedAtMs : undefined,
+    usedNativeToolCalls,
+  });
+
   finalText = maybeNormalizeCompatOutput(
     finalText,
     kgm,
-    params.metadata,
+    agenticMetadata,
     params.requestHeaders,
   );
+
+  const finishedAtMs = Date.now();
+  const runtimeKind =
+    typeof latestRoutingTrace?.selected?.provider === "string"
+      ? latestRoutingTrace.selected.provider
+      : undefined;
+  const perf = buildKgmRequestPerf({
+    startedAtMs,
+    firstTokenAtMs,
+    finishedAtMs,
+    promptTokens,
+    completionTokens,
+    cachedTokens: cachedTokensTotal > 0 ? cachedTokensTotal : undefined,
+    toolRounds: traces.length,
+    intentSource: usedNativeToolCalls ? "native_tool_calls" : "text_json",
+    agenticProfile:
+      typeof agenticMetadata.agentic_profile === "string" ? agenticMetadata.agentic_profile : undefined,
+    runtimeKind,
+  });
 
   const responseId = `resp_${requestId}`;
   const completionId = `chatcmpl_${requestId}`;
@@ -700,8 +791,15 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     requestId,
     model: resolvedModel,
     conversation,
-    metadata: params.metadata,
+    metadata: agenticMetadata,
   });
+
+  const usageBase = {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+  };
+  const usageEnriched = enrichUsageWithCache(usageBase, perf.cachedTokens);
 
   return {
     requestId,
@@ -709,7 +807,12 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     created,
     responseId,
     completionId,
-    metadata: params.metadata ?? {},
+    metadata: {
+      ...agenticMetadata,
+      session_id: sessionId,
+      session_continuity: true,
+      intent_source: usedNativeToolCalls ? "native_tool_calls" : "text_json",
+    },
     kgm: {
       ...kgm,
       correlation: {
@@ -721,7 +824,21 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
         toolExecution: executeToolCalls ? "server" : "external",
         builtinToolsIncluded: Boolean(kgm.capabilities?.includeBuiltinTools),
         previousResponseId: params.previousResponseId,
+        finish_reason: finishReason,
+        intent_source: usedNativeToolCalls ? "native_tool_calls" : "text_json",
+        ...(latestRoutingTrace
+          ? {
+              autoRouting: latestRoutingTrace as unknown as Record<string, unknown>,
+              routing: {
+                provider: latestRoutingTrace.selected.provider,
+                baseUrlHost: latestRoutingTrace.selected.baseUrlHost,
+                routeKey: latestRoutingTrace.selected.routeKey,
+              },
+            }
+          : {}),
       },
+      tool_trace: traces,
+      perf,
       ...(latestRoutingTrace
         ? {
             autoRouting: latestRoutingTrace as unknown as Record<string, unknown>,
@@ -732,16 +849,11 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
             },
           }
         : {}),
-      tool_trace: traces,
     },
     finalText,
     finishReason,
     toolCalls: traces,
-    usage: {
-      prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      total_tokens: promptTokens + completionTokens,
-    },
+    usage: (usageEnriched ?? usageBase) as Record<string, number>,
     conversation,
   };
 }
@@ -1055,6 +1167,7 @@ async function prepareDirectStream(params: ExecuteParams): Promise<DirectStreamS
     prompt,
     promptTokens: estimateTokens(prompt),
     conversation: [...params.messages],
+    startedAtMs: Date.now(),
   };
 }
 
@@ -1084,6 +1197,17 @@ function finalizeDirectStream(
   const routingTrace = extractAutoRoutingTrace(finalResult?.raw);
   const structured = extractStructuredCompletion(finalResult?.raw, undefined);
   const usageMerged = mergeUsageWithEstimates(structured, setup.promptTokens, estimateTokens(finalText));
+  const finishedAtMs = Date.now();
+  const perf = buildKgmRequestPerf({
+    startedAtMs: setup.startedAtMs,
+    finishedAtMs,
+    promptTokens: usageMerged.prompt_tokens,
+    completionTokens: usageMerged.completion_tokens,
+    toolRounds: 0,
+    intentSource: "text_json",
+    runtimeKind:
+      typeof routingTrace?.selected?.provider === "string" ? routingTrace.selected.provider : undefined,
+  });
   const run: CompatibilityRun = {
     requestId: setup.requestId,
     model: extractResolvedModel(finalResult?.raw) ?? setup.model,
@@ -1093,6 +1217,7 @@ function finalizeDirectStream(
     metadata: setup.metadata,
     kgm: {
       ...setup.kgm,
+      perf,
       ...(routingTrace
         ? {
             autoRouting: routingTrace as unknown as Record<string, unknown>,
@@ -1108,11 +1233,18 @@ function finalizeDirectStream(
     reasoningText: streamedReasoning.trim() || undefined,
     finishReason: "stop",
     toolCalls: [],
-    usage: {
+    usage: (enrichUsageWithCache(
+      {
+        prompt_tokens: usageMerged.prompt_tokens,
+        completion_tokens: usageMerged.completion_tokens,
+        total_tokens: usageMerged.total_tokens,
+      },
+      perf.cachedTokens,
+    ) ?? {
       prompt_tokens: usageMerged.prompt_tokens,
       completion_tokens: usageMerged.completion_tokens,
       total_tokens: usageMerged.total_tokens,
-    },
+    }) as Record<string, number>,
     conversation,
   };
   responseStore?.save({

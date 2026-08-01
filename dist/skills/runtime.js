@@ -31,8 +31,14 @@ export class SkillRuntime {
         if (!skill) {
             throw new Error(`skill not found: ${skillName}`);
         }
+        if (!skill.steps || skill.steps.length === 0) {
+            throw new Error(`skill_has_no_executable_steps:${skillName};provide steps with tool bindings (systemPromptAddon alone is not executable)`);
+        }
         const results = { input };
         for (const step of skill.steps) {
+            if (!step.tool?.trim()) {
+                throw new Error(`skill_step_missing_tool:${skillName}:${step.id}`);
+            }
             const resolvedInput = resolveStepInput(step.input, results);
             results[step.id] = await this.tools.execute(step.tool, resolvedInput);
         }

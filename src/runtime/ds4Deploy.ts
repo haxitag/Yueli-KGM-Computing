@@ -80,6 +80,22 @@ export function probeDs4Deploy(overrides?: Partial<Ds4DeployConfig>): Ds4DeployS
     };
   }
 
+  const attachRaw = process.env.KGM_DS4_ATTACH?.trim().toLowerCase();
+  const attachForced = attachRaw === "1" || attachRaw === "true" || attachRaw === "on" || attachRaw === "yes";
+  const attachBase =
+    process.env.KGM_DS4_BASE_URL?.trim() || process.env.DS4_BASE_URL?.trim() || undefined;
+  if (attachForced && attachBase) {
+    return {
+      config,
+      selectable: true,
+      installed: true,
+      reason: "ds4_attach_base_url",
+      remediation: [
+        "Attached via KGM_DS4_ATTACH=1 + BASE_URL (OpenAI-compat). Omit ATTACH (or set 0) to force local spawn.",
+      ],
+    };
+  }
+
   const resolved = resolveCommandPath(config.command);
   if (!resolved) {
     return {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import type { ConfigStore } from "../core/configStore.js";
 import { probeLlamaCppDeploy } from "./llamaCppDeploy.js";
 import { probeDs4Deploy } from "./ds4Deploy.js";
+import { probeTokenSpeedDeploy } from "./tokenspeedDeploy.js";
 
 export type RuntimeIssue = {
   code: string;
@@ -114,6 +115,42 @@ export function collectRuntimeDiagnostics(configStore: ConfigStore): { issues: R
       message: "ds4 worker is disabled by deploy config",
       affectedFeatures: ["runtime.ds4"],
       suggestedFix: "Set workers.ds4.enabled=auto|on or KGM_DS4_ENABLED=auto|on for DeepSeek V4 / GLM specialized local throughput",
+    });
+  }
+
+  const tokenspeed = probeTokenSpeedDeploy({
+    enabled: config.workers.tokenspeed?.enabled,
+    command: config.workers.tokenspeed?.command,
+    installHint: config.workers.tokenspeed?.installHint,
+    baseUrl: config.workers.tokenspeed?.baseUrl,
+    port: config.workers.tokenspeed?.port,
+  });
+  if (config.workers.tokenspeed?.enabled === "on" && !tokenspeed.installed) {
+    issues.push({
+      code: "TOKENSPEED_REQUIRED_BUT_MISSING",
+      severity: "error",
+      stage: "workers.tokenspeed",
+      message: "TokenSpeed is required by deploy config but binary/BASE_URL was not found",
+      affectedFeatures: ["runtime.tokenspeed"],
+      suggestedFix: tokenspeed.remediation.join(" "),
+    });
+  } else if (config.workers.tokenspeed?.enabled === "auto" && !tokenspeed.installed) {
+    issues.push({
+      code: "TOKENSPEED_OPTIONAL_NOT_INSTALLED",
+      severity: "info",
+      stage: "workers.tokenspeed",
+      message: "TokenSpeed optional worker not installed; default builds remain unaffected",
+      affectedFeatures: ["runtime.tokenspeed"],
+      suggestedFix: tokenspeed.remediation.join(" "),
+    });
+  } else if (config.workers.tokenspeed?.enabled === "off" || config.workers.tokenspeed?.enabled == null) {
+    issues.push({
+      code: "TOKENSPEED_DISABLED",
+      severity: "info",
+      stage: "workers.tokenspeed",
+      message: "TokenSpeed worker is disabled (default) — optional OpenAI-compat backend, not KGM intent/skills",
+      affectedFeatures: ["runtime.tokenspeed"],
+      suggestedFix: "Set KGM_TOKENSPEED_ENABLED=on|auto only when intentionally using TokenSpeed",
     });
   }
 

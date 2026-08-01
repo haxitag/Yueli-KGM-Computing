@@ -2,7 +2,7 @@ import { z } from 'zod';
 const envSchema = z.object({
     // Basic
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-    PORT: z.string().default('3000'),
+    PORT: z.string().default('58691'),
     // LLM Configuration
     KGM_LLM_BASE_URL: z.string().url().optional(),
     KGM_LLM_API_KEY: z.string().optional(),

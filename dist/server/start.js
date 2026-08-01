@@ -24,7 +24,7 @@ async function main() {
         artifactStore: runtime.artifactStore,
         sessionStore: runtime.sessionStore,
     });
-    const port = Number(process.env.PORT ?? 3000);
+    const port = Number(process.env.PORT ?? 58691);
     server.listen(port, () => {
         console.log(`KGM server listening on ${port}`);
     });

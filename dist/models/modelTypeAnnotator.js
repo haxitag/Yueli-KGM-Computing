@@ -1,3 +1,5 @@
+import { listConfiguredMediaModels } from "../openai/mediaCompat.js";
+const CHAT_CAPABILITIES = ["chat"];
 export function annotateOpenAiModels(models) {
     return models.map((model) => {
         const existing = (model.kgm ?? {});
@@ -5,22 +7,59 @@ export function annotateOpenAiModels(models) {
         if (model.id === "auto") {
             modelType = "routing-entry";
         }
+        else if (existing.modelType === "media-model" || existing.mediaKind) {
+            modelType = "media-model";
+        }
         else if (existing.runtime === "native") {
             modelType = "native-loaded";
         }
         else if (existing.cloud || existing.provider || isCloudOwner(model.owned_by)) {
             modelType = "cloud-model";
         }
+        const capabilities = Array.isArray(existing.capabilities)
+            ? existing.capabilities
+            : modelType === "routing-entry"
+                ? ["proxy_aggregation", "chat"]
+                : modelType === "media-model"
+                    ? []
+                    : [...CHAT_CAPABILITIES];
+        const model_type = typeof existing.model_type === "string"
+            ? existing.model_type
+            : modelType === "routing-entry"
+                ? "proxy_aggregation"
+                : modelType === "media-model"
+                    ? String(existing.model_type ?? "task_specific")
+                    : "chat";
         return {
             ...model,
             kgm: {
                 ...existing,
                 modelType,
+                model_type: existing.model_type ?? model_type,
+                capabilities: capabilities.length > 0 ? capabilities : existing.capabilities,
                 ...(modelType === "routing-entry" ? { description: "KGM auto routing" } : {}),
                 ...(existing.runtime ? { engine: existing.runtime } : {}),
             },
         };
     });
+}
+/** Append configured media upstream models into an OpenAI model list (before annotate). */
+export function appendConfiguredMediaModels(models, configStore) {
+    const created = Math.floor(Date.now() / 1000);
+    const media = listConfiguredMediaModels(configStore.get());
+    const extra = media.map((m) => ({
+        id: m.id,
+        object: "model",
+        created,
+        owned_by: "kgm-media",
+        kgm: {
+            modelType: "media-model",
+            model_type: m.model_type,
+            capabilities: m.capabilities,
+            mediaKind: m.kind,
+        },
+    }));
+    return [...models, ...extra];
 }
 export function buildEffectiveModels(params) {
     const created = Math.floor(Date.now() / 1000);

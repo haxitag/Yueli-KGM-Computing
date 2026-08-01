@@ -122,6 +122,19 @@
     setInput("cfg-ds4-chdir", ds4.chdir || "");
     setInput("cfg-ds4-hint", ds4.installHint || "");
 
+    const tokenspeed = cfg.workers?.tokenspeed || {};
+    setInput("cfg-tokenspeed-enabled", tokenspeed.enabled || "off");
+    setInput("cfg-tokenspeed-base-url", tokenspeed.baseUrl || "");
+    setInput("cfg-tokenspeed-command", tokenspeed.command || "");
+    setInput("cfg-tokenspeed-port", tokenspeed.port ?? 8095);
+    setInput("cfg-tokenspeed-tool-parser", tokenspeed.toolCallParser || "");
+    setInput("cfg-tokenspeed-reasoning-parser", tokenspeed.reasoningParser || "");
+    setInput(
+      "cfg-tokenspeed-prefix-cache",
+      tokenspeed.enablePrefixCaching === true ? "true" : tokenspeed.enablePrefixCaching === false ? "false" : "",
+    );
+    setInput("cfg-tokenspeed-hint", tokenspeed.installHint || "");
+
     for (const kind of ["computer", "browser", "mobile"]) {
       const a = cfg.sandboxAdapters?.[kind] || {};
       setInput(`cfg-sbx-${kind}-embedded`, embeddedSelectValue(a.useEmbedded));
@@ -282,6 +295,21 @@
           command: val("cfg-ds4-command") || "ds4-server",
           chdir: val("cfg-ds4-chdir") || undefined,
           installHint: val("cfg-ds4-hint") || undefined,
+        },
+        tokenspeed: {
+          enabled: val("cfg-tokenspeed-enabled") || "off",
+          command: val("cfg-tokenspeed-command") || "tokenspeed",
+          baseUrl: val("cfg-tokenspeed-base-url") || undefined,
+          port: Number(val("cfg-tokenspeed-port")) || 8095,
+          toolCallParser: val("cfg-tokenspeed-tool-parser") || undefined,
+          reasoningParser: val("cfg-tokenspeed-reasoning-parser") || undefined,
+          enablePrefixCaching: (() => {
+            const raw = val("cfg-tokenspeed-prefix-cache");
+            if (raw === "true") return true;
+            if (raw === "false") return false;
+            return undefined;
+          })(),
+          installHint: val("cfg-tokenspeed-hint") || undefined,
         },
       },
       sandboxAdapters: {

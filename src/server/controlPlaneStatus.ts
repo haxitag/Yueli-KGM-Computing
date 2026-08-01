@@ -4,6 +4,8 @@ import { resolveWorkerAutoRestartConfig } from "../models/workerRestartPolicy.js
 import { circuitBreakerGroup } from "../observability/circuitBreaker.js";
 import { parseStreamIdleMs } from "../openai/sseStreamNormalize.js";
 import { resolveDs4ServingHints } from "../runtime/ds4SessionKv.js";
+import { probeTokenSpeedDeploy } from "../runtime/tokenspeedDeploy.js";
+import { getAgenticMetricsSnapshot } from "../agentic/metrics.js";
 import { resolveCorsPolicy } from "./corsPolicy.js";
 import { createHttpAccessConfigFromEnv } from "./httpAccess.js";
 
@@ -96,6 +98,12 @@ export function buildControlPlaneStatus(configStore: ConfigStore) {
         liveStates: circuitBreakerGroup.getAllStates(),
       },
       streamIdleMs: setting("KGM_STREAM_IDLE_MS", parseStreamIdleMs()),
+      agentic: {
+        value: getAgenticMetricsSnapshot(),
+        source: "runtime" as const,
+        restartRequired: false,
+        note: "in-process agentic counters (not Prometheus SLA); see docs/worker-provider-session-tools-slo-eval-audit.md",
+      },
     },
     workers: {
       gates: {
@@ -113,6 +121,18 @@ export function buildControlPlaneStatus(configStore: ConfigStore) {
             ? ("default" as const)
             : ("env" as const),
         restartRequired: true as const,
+      },
+      tokenspeed: {
+        value: probeTokenSpeedDeploy({
+          enabled: config.workers.tokenspeed?.enabled,
+          command: config.workers.tokenspeed?.command,
+          installHint: config.workers.tokenspeed?.installHint,
+          baseUrl: config.workers.tokenspeed?.baseUrl,
+          port: config.workers.tokenspeed?.port,
+        }),
+        source: "env+configStore" as const,
+        restartRequired: true as const,
+        note: "Optional OpenAI-compat worker; default off — not KGM intent/skills layer",
       },
       ds4: {
         value: {

@@ -2809,6 +2809,7 @@ class KGMTrustProxyPlayground {
                             <span>Native loaded: ${(native.loadedModels || []).length}</span>
                             <span>llama.cpp: ${workers.llamaCpp?.selectable ? 'ready' : (workers.llamaCpp?.reason || 'n/a')}</span>
                             <span>ds4: ${workers.ds4?.selectable ? 'ready' : (workers.ds4?.reason || 'n/a')}</span>
+                            <span>tokenspeed: ${workers.tokenspeed?.selectable ? 'ready' : (workers.tokenspeed?.reason || 'off')}</span>
                         </div>`;
                 } else {
                     this.routingHealthPanel.textContent = `健康状态不可用 (${healthResponse.status})`;

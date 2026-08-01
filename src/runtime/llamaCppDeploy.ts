@@ -77,6 +77,22 @@ export function probeLlamaCppDeploy(overrides?: Partial<LlamaCppDeployConfig>): 
     };
   }
 
+  const attachRaw = process.env.KGM_LLAMA_CPP_ATTACH?.trim().toLowerCase();
+  const attachForced = attachRaw === "1" || attachRaw === "true" || attachRaw === "on" || attachRaw === "yes";
+  const attachBase =
+    process.env.KGM_LLAMA_CPP_BASE_URL?.trim() || process.env.LLAMA_CPP_BASE_URL?.trim() || undefined;
+  if (attachForced && attachBase) {
+    return {
+      config,
+      selectable: true,
+      installed: true,
+      reason: "llama_cpp_attach_base_url",
+      remediation: [
+        "Attached via KGM_LLAMA_CPP_ATTACH=1 + BASE_URL. Omit ATTACH (or set 0) to force local spawn.",
+      ],
+    };
+  }
+
   const resolved = resolveCommandPath(config.command);
   if (!resolved) {
     const reason = "llama_cpp_binary_not_found";

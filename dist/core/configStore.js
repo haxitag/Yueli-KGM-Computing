@@ -17,11 +17,24 @@ const defaultConfig = {
         baseUrl: "https://api.openai.com/v1",
         apiKey: "",
         model: "gpt-4o-mini",
-        path: "/completions",
-        mode: "completions",
+        path: "/chat/completions",
+        mode: "chat",
         temperature: 0.2,
         maxTokens: 512,
         timeoutMs: 30000,
+    },
+    media: {
+        image: { baseUrl: "", path: "/images/generations" },
+        speech: { baseUrl: "", path: "/audio/speech" },
+        transcription: { baseUrl: "", path: "/audio/transcriptions" },
+        video: {
+            baseUrl: "",
+            path: "/videos/generations",
+            maxDurationSec: 30,
+            resultMode: "url",
+            maxConcurrent: 2,
+        },
+        rerank: { baseUrl: "", path: "/rerank" },
     },
     database: {
         provider: "sqlite",
@@ -62,7 +75,7 @@ const defaultConfig = {
     },
     ycb: {
         enabled: false,
-        baseUrl: "http://localhost:8787",
+        baseUrl: "http://localhost:58692",
         path: "/api/v1/context/for-kgm",
         apiKey: "",
         timeoutMs: 5000,
@@ -261,7 +274,7 @@ const defaultConfig = {
             },
         },
         evaluation: {
-            enabled: true,
+            enabled: false,
             fallbackToHeuristics: true,
             judge: {
                 enabled: true,
@@ -320,6 +333,13 @@ const defaultConfig = {
             enabled: "auto",
             command: "ds4-server",
             installHint: "Build antirez/ds4 ds4-server; set workers.ds4.command or KGM_DS4_SERVER_CMD; KGM_DS4_ENABLED=on|off|auto. Kernels stay in ds4 — not KGM native-gpu.",
+        },
+        tokenspeed: {
+            enabled: "off",
+            command: "tokenspeed",
+            installHint: "Optional: TokenSpeed OpenAI-compat worker (like Ollama). Prefer KGM_TOKENSPEED_BASE_URL attach; set KGM_TOKENSPEED_ENABLED=auto|on. Default off — not intent/skills layer.",
+            port: 8095,
+            enablePrefixCaching: true,
         },
     },
     sandboxAdapters: {
@@ -414,6 +434,13 @@ function mergeConfig(base, patch) {
     return {
         embedding: { ...base.embedding, ...(patch.embedding ?? {}) },
         llm: { ...base.llm, ...(patch.llm ?? {}) },
+        media: {
+            image: { ...base.media.image, ...(patch.media?.image ?? {}) },
+            speech: { ...base.media.speech, ...(patch.media?.speech ?? {}) },
+            transcription: { ...base.media.transcription, ...(patch.media?.transcription ?? {}) },
+            video: { ...base.media.video, ...(patch.media?.video ?? {}) },
+            rerank: { ...base.media.rerank, ...(patch.media?.rerank ?? {}) },
+        },
         database: { ...base.database, ...(patch.database ?? {}) },
         vector: { ...base.vector, ...(patch.vector ?? {}) },
         context: { ...base.context, ...(patch.context ?? {}) },
@@ -463,7 +490,7 @@ function mergeSandboxKindConfig(base, patch) {
     return next;
 }
 function mergeWorkersConfig(base, patch) {
-    if (!patch?.llamaCpp && !patch?.ds4) {
+    if (!patch?.llamaCpp && !patch?.ds4 && !patch?.tokenspeed) {
         return base;
     }
     return {
@@ -483,9 +510,25 @@ function mergeWorkersConfig(base, patch) {
                 enabled: patch.ds4.enabled ?? base.ds4.enabled,
                 command: patch.ds4.command?.trim() || base.ds4.command,
                 installHint: patch.ds4.installHint ?? base.ds4.installHint,
-                chdir: patch.ds4.chdir?.trim() || base.ds4.chdir,
+                chdir: patch.ds4.chdir ?? base.ds4.chdir,
             }
             : base.ds4,
+        tokenspeed: patch?.tokenspeed
+            ? {
+                ...base.tokenspeed,
+                ...patch.tokenspeed,
+                enabled: patch.tokenspeed.enabled ?? base.tokenspeed.enabled,
+                command: patch.tokenspeed.command?.trim() || base.tokenspeed.command,
+                installHint: patch.tokenspeed.installHint ?? base.tokenspeed.installHint,
+                baseUrl: patch.tokenspeed.baseUrl ?? base.tokenspeed.baseUrl,
+                port: patch.tokenspeed.port ?? base.tokenspeed.port,
+                attach: patch.tokenspeed.attach ?? base.tokenspeed.attach,
+                toolCallParser: patch.tokenspeed.toolCallParser ?? base.tokenspeed.toolCallParser,
+                reasoningParser: patch.tokenspeed.reasoningParser ?? base.tokenspeed.reasoningParser,
+                enablePrefixCaching: patch.tokenspeed.enablePrefixCaching ?? base.tokenspeed.enablePrefixCaching,
+                extraArgs: patch.tokenspeed.extraArgs ?? base.tokenspeed.extraArgs,
+            }
+            : base.tokenspeed,
     };
 }
 function mergeYueliAiGatewayConfig(base, patch) {
@@ -588,7 +631,10 @@ function normalizeOptions(options) {
     if (!options) {
         return {};
     }
-    if ("persistPath" in options || "loadFromDisk" in options || "autoPersist" in options) {
+    if ("persistPath" in options ||
+        "loadFromDisk" in options ||
+        "autoPersist" in options ||
+        "initial" in options) {
         return options;
     }
     return { initial: options };

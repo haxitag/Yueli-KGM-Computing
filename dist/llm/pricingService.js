@@ -17,7 +17,8 @@ export class StaticPricingService {
                 return found;
             }
         }
-        return this.defaultPricing;
+        // No match → undefined so AutoRouting.resolvePricing can apply routeKey / managed:* / default:openai:* overrides
+        return undefined;
     }
     async warmup() {
     }
@@ -46,7 +47,12 @@ export class DynamicPricingService {
         catch (error) {
             console.warn(`Failed to fetch dynamic pricing for ${provider}:${model}:`, error);
         }
-        return this.staticCache.getPricing(model, provider);
+        const staticPricing = await this.staticCache.getPricing(model, provider);
+        if (staticPricing) {
+            return staticPricing;
+        }
+        // Fall through to AutoRouting key table when static has no override match
+        return undefined;
     }
     async warmup() {
         const popularModels = [

@@ -17,7 +17,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 ## 它能做什么
 
 - **兼容网关**：`/v1/chat/completions`、`/v1/responses`、Anthropic `/v1/messages`
-- **本地推理**：llama.cpp / vLLM / SGLang / ds4 等受管 Worker
+- **本地推理**：llama.cpp / vLLM / SGLang / ds4 / TokenSpeed 等受管 Worker
 - **Playground**：配置 LLM/Embedding、记忆后端、Worker 门闩、沙箱、Keys 分域
 - **控制面**：HTTP 安全、前站、熔断/流式、Native/CORS/Discovery 只读状态
 
@@ -36,13 +36,13 @@ npm run dev:enhanced
 
 ---
 
-## 0.3.5
+## 0.3.6
 
-配置控制面与安全加固：
+Worker/Provider 完备性与 AutoRouting 契约加固：
 
-- Playground 可写：默认 LLM/Embedding、记忆 TTL、Worker 门闩、Sandbox adapter
-- Keys 分域：管理会话 / 服务端 YueliAI / 浏览器凭证 / KGM 调用钥
-- 配置 API 脱敏；Sandbox reload 保留 PID；MCP `[REDACTED]` 防误写
+- TokenSpeed worker、runtimeId 会话亲和、显式 `KGM_*_ATTACH`、probe/健康语义对齐
+- 薄厂商（nvidia/xiaomi/aliyun/modelscope 等）→ `HttpLlmClient`（tools/stream）；pricing / failover / 流式 idle+finished
+- 图谱 `maxTriples` 可配；三份审计文档；CI 挂亲和/tokenspeed/phase-h 单测
 
 完整变更见 [`CHANGELOG.md`](./CHANGELOG.md)。
 
@@ -63,6 +63,9 @@ npm run dev:enhanced
 ---
 
 ## 历史版本摘要
+
+### 0.3.5：配置控制面 · Keys 分域
+- Playground 可写 LLM/Embedding/记忆/Worker/Sandbox；Keys 安全分域；配置脱敏
 
 ### 0.3.4：前站 encoder 浅层 · Trace · Compose sidecar
 - Trace / Request ID 对齐；前站意图 + Cross-Encoder + 抽取式摘要；`frontstation-worker` sidecar
@@ -94,7 +97,7 @@ npm run dev:enhanced
 | 能力类别 | 支持内容 |
 |---------|---------|
 | **多厂商支持** | 30+ 主流 LLM 提供商 |
-| **本地推理引擎** | Ollama、vLLM、SGLang、LM Studio、llama.cpp、ds4 |
+| **本地推理引擎** | Ollama、vLLM、SGLang、LM Studio、llama.cpp、ds4、TokenSpeed（可选 agentic worker） |
 | **统一 API** | OpenAI Chat/Completions、Anthropic Messages 兼容 |
 | **智能路由** | 多 API Key 轮询、自动故障转移 |
 | **知识图谱** | 图检索、社区发现、规则推理 |
@@ -121,12 +124,15 @@ npm run dev:enhanced
 
 KGM 主包聚焦统一推理入口、模型与引擎生命周期、动态路由、运行时可观测性。以下能力不由 KGM 主包持有：
 
-- KGM 不管理应用层 session / 对话历史
-- KGM 不执行应用业务 skill；只承载 OpenAI Compatible 的 `tools` / `tool_choice` 协议
-- KGM 不做 multi-agent orchestration
+- KGM 不管理应用层 session / 对话历史（编排层可选用 SessionStore；应用仍应自持权威对话状态）
+- KGM 不执行应用业务 skill 逻辑本身；承载 OpenAI Compatible 的 `tools` / `tool_choice` 协议，以及可执行 steps 的技能运行时
 - KGM 不持有应用端 UI 状态
 
-Agent、Workflow、Skills registry 等高层能力建议以 plugin extension 形式挂载，避免主包承担应用编排职责。
+**Multi-agent**：KGM 提供有界 **supervisor + specialists** 协作（`POST /v1/agent-runs`），不是无限 swarm / 自治复制。Skills registry 与 Workflow 仍建议以可替换扩展形式演进，避免主包承担任意应用编排。
+
+**TokenSpeed**：与 Ollama 同级的可选 OpenAI-compat **managed worker**（生产推荐 `KGM_TOKENSPEED_ENABLED=auto` + `KGM_TOKENSPEED_BASE_URL` attach；默认 off）。吸收其 agentic 服务模式（会话连续性、原生 tool_calls、RequestStats / `kgm.perf`），**不是** KGM 的意图/技能层；内核不并入 native-gpu。专节：[`docs/tokenspeed-worker.md`](./docs/tokenspeed-worker.md)。
+
+**Worker / Provider 覆盖审计**：会话 · 工具 · SLO · 评测四维以代码为准，见 [`docs/worker-provider-session-tools-slo-eval-audit.md`](./docs/worker-provider-session-tools-slo-eval-audit.md)。控制面「Agentic 计数」为进程内快照，**不是** Prometheus SLA。
 
 **Evaluation / FDE**：Context 层选型评估框架（FDE）由**独立组件**承载，**不在 KGM 主包实现**。KGM 仅提供可运行的 ContextBuilder / YCB 汇合面，供外部 FDE 挂接评测。
 
@@ -139,7 +145,7 @@ mkdir kgm-host && cd kgm-host
 npm init -y
 npm install @haxitag/yueli-kgm-computing@latest
 
-export PORT=3000
+export PORT=58691
 export KGM_LLM_BASE_URL="https://api.openai.com/v1"
 export KGM_LLM_API_KEY="sk-..."
 export KGM_LLM_MODEL="gpt-4o-mini"
@@ -212,7 +218,7 @@ docker compose up --build
 
 ```bash
 export KGM_DISCOVERY_ENABLED=1
-export KGM_DISCOVERY_PORTS="11434 8002 8080 1234 8000 5000"
+export KGM_DISCOVERY_PORTS="11434 8002 8080 1234 8000 5000 8095"
 export KGM_DISCOVERY_TIMEOUT_MS=2000
 ```
 
@@ -251,7 +257,7 @@ const server = createKgmServer({
   sessionStore: runtime.sessionStore
 });
 
-server.listen(process.env.PORT || 3000);
+server.listen(process.env.PORT || 58691);
 ```
 
 更细的实战步骤与排错仍以官网文档为准。
@@ -714,7 +720,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.5
+npm install @haxitag/yueli-kgm-computing@0.3.6
 ```
 
 ### 开源仓库同步（维护者）
@@ -740,9 +746,9 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前：`0.3.5`）
+## 版本说明（当前：`0.3.6`）
 
-详见上方「0.3.5」与 [`CHANGELOG.md`](./CHANGELOG.md)。历史版本摘要见「历史版本摘要」一节。
+详见上方「0.3.6」与 [`CHANGELOG.md`](./CHANGELOG.md)。历史版本摘要见「历史版本摘要」一节。
 
 ### 本地 GPU 推理支持
 

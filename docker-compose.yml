@@ -31,10 +31,10 @@ services:
   kgm:
     build: .
     ports:
-      - "3000:3000"
+      - "58691:58691"
     environment:
       NODE_ENV: production
-      PORT: 3000
+      PORT: 58691
       KGM_HTTP_SECURITY_MODE: strict
       KGM_HTTP_API_KEY: ${KGM_HTTP_API_KEY:?Set KGM_HTTP_API_KEY before starting compose}
       KGM_HTTP_RATE_LIMIT_MAX: ${KGM_HTTP_RATE_LIMIT_MAX:-120}

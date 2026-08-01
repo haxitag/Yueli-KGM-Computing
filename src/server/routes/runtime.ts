@@ -7,7 +7,9 @@ import { resolveRuntimeTopology } from "../../runtime/topologyResolver.js";
 import { explainRuntimeRoute } from "../../runtime/routeExplainer.js";
 import { probeLlamaCppDeploy } from "../../runtime/llamaCppDeploy.js";
 import { probeDs4Deploy } from "../../runtime/ds4Deploy.js";
+import { probeTokenSpeedDeploy } from "../../runtime/tokenspeedDeploy.js";
 import { resolveDs4ServingHints } from "../../runtime/ds4SessionKv.js";
+import { getAgenticMetricsSnapshot } from "../../agentic/metrics.js";
 
 export type RuntimeRouteParams = {
   method: string;
@@ -77,6 +79,13 @@ export async function handleRuntimeRoute(params: RuntimeRouteParams): Promise<bo
           }),
           servingHints: resolveDs4ServingHints(),
         },
+        tokenspeed: probeTokenSpeedDeploy({
+          enabled: config.workers.tokenspeed?.enabled,
+          command: config.workers.tokenspeed?.command,
+          installHint: config.workers.tokenspeed?.installHint,
+          baseUrl: config.workers.tokenspeed?.baseUrl,
+          port: config.workers.tokenspeed?.port,
+        }),
       },
       blockingIssues: diagnostics.issues.filter((issue) => issue.severity === "error"),
     });
@@ -103,6 +112,27 @@ export async function handleRuntimeRoute(params: RuntimeRouteParams): Promise<bo
         chdir: config.workers.ds4.chdir,
       }),
       servingHints: resolveDs4ServingHints(),
+    });
+  }
+  if (method === "GET" && pathname === "/v1/runtime/workers/tokenspeed") {
+    const config = params.configStore.get();
+    return send(
+      params,
+      200,
+      probeTokenSpeedDeploy({
+        enabled: config.workers.tokenspeed?.enabled,
+        command: config.workers.tokenspeed?.command,
+        installHint: config.workers.tokenspeed?.installHint,
+        baseUrl: config.workers.tokenspeed?.baseUrl,
+        port: config.workers.tokenspeed?.port,
+      }),
+    );
+  }
+  if (method === "GET" && pathname === "/v1/runtime/agentic") {
+    return send(params, 200, {
+      note: "In-process agentic counters — not a Prometheus SLA. See docs/worker-provider-session-tools-slo-eval-audit.md",
+      kvOwner: "worker",
+      snapshot: getAgenticMetricsSnapshot(),
     });
   }
   if (method === "GET" && pathname === "/v1/runtime/topology") {

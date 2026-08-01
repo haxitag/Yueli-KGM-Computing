@@ -14,6 +14,7 @@ import { detectJangInModelDirectory } from "../native/jang.js";
 import { assessArtifactExecution, resolveRuntimeKind } from "../native/executionPolicy.js";
 import { assertLlamaCppCallable, resolveLlamaCppDeployConfig } from "../runtime/llamaCppDeploy.js";
 import { assertDs4Callable, resolveDs4DeployConfig } from "../runtime/ds4Deploy.js";
+import { assertTokenSpeedCallable, buildTokenSpeedServerArgs, resolveTokenSpeedDeployConfig, } from "../runtime/tokenspeedDeploy.js";
 import { isDs4SpecializedGguf } from "../runtime/ds4Artifacts.js";
 import { buildDs4ServerArgs, resolveDs4ServingHints } from "../runtime/ds4SessionKv.js";
 import { DEFAULT_CLOUD_MODEL_CATALOG, isProviderConfigured, resolveCloudModelAlias, } from "./cloudModelCatalog.js";
@@ -51,6 +52,7 @@ export class ManagedModelManager {
     healthTimer;
     llamaCppOverrides;
     ds4Overrides;
+    tokenspeedOverrides;
     workerRestartConfig;
     /** 主动 stop 的 runtime，exit 回调不触发自动重启 */
     intentionalStops = new Set();
@@ -64,6 +66,7 @@ export class ManagedModelManager {
         this.healthIntervalMs = parseNumber(process.env.KGM_MODEL_HEALTHCHECK_INTERVAL_MS) ?? 15000;
         this.llamaCppOverrides = options?.llamaCpp;
         this.ds4Overrides = options?.ds4;
+        this.tokenspeedOverrides = options?.tokenspeed;
         this.workerRestartConfig = resolveWorkerAutoRestartConfig();
         fs.mkdirSync(this.stateRoot, { recursive: true });
         fs.mkdirSync(this.artifactDir, { recursive: true });
@@ -91,6 +94,10 @@ export class ManagedModelManager {
     resolveDs4Config() {
         const raw = typeof this.ds4Overrides === "function" ? this.ds4Overrides() : this.ds4Overrides;
         return resolveDs4DeployConfig(raw);
+    }
+    resolveTokenSpeedConfig() {
+        const raw = typeof this.tokenspeedOverrides === "function" ? this.tokenspeedOverrides() : this.tokenspeedOverrides;
+        return resolveTokenSpeedDeployConfig(raw);
     }
     close() {
         if (this.healthTimer) {
@@ -320,15 +327,26 @@ export class ManagedModelManager {
     findRuntimeForModel(modelName) {
         return this.state.runtimes.find((runtime) => runtime.status === "running" && runtime.modelName === modelName);
     }
+    /** Prefer explicit runtime id (session affinity); fall back to modelName. */
+    findRuntimeForExecution(modelName, options) {
+        const runtimeId = resolvePreferredRuntimeId(options);
+        if (runtimeId) {
+            const byId = this.state.runtimes.find((runtime) => runtime.status === "running" && runtime.id === runtimeId);
+            if (byId) {
+                return byId;
+            }
+        }
+        return this.findRuntimeForModel(modelName);
+    }
     async completeWithManagedRuntime(modelName, prompt, options) {
-        const runtime = this.findRuntimeForModel(modelName);
+        const runtime = this.findRuntimeForExecution(modelName, options);
         if (!runtime) {
             return null;
         }
         return this.executeRuntimeCompletion(runtime, prompt, options);
     }
     streamWithManagedRuntime(modelName, prompt, options) {
-        const runtime = this.findRuntimeForModel(modelName);
+        const runtime = this.findRuntimeForExecution(modelName, options);
         if (!runtime) {
             return null;
         }
@@ -488,21 +506,33 @@ export class ManagedModelManager {
         const assessment = assessArtifactExecution(artifact);
         const llamaCpp = this.resolveLlamaCppConfig();
         const ds4 = this.resolveDs4Config();
+        const tokenspeed = this.resolveTokenSpeedConfig();
         const runtime = resolveRuntimeKind({
             requested: request.runtime,
             artifact,
             llamaCpp,
             ds4,
+            tokenspeed,
         });
         if (runtime === "llama.cpp") {
-            assertLlamaCppCallable(llamaCpp);
+            if (!wouldAttachManagedKind("llama.cpp")) {
+                assertLlamaCppCallable(llamaCpp);
+            }
         }
         if (runtime === "ds4") {
-            assertDs4Callable(ds4);
+            if (!wouldAttachManagedKind("ds4")) {
+                assertDs4Callable(ds4);
+            }
+        }
+        if (runtime === "tokenspeed") {
+            assertTokenSpeedCallable(tokenspeed);
         }
         const host = request.host ?? "127.0.0.1";
-        const port = request.port ?? defaultPort(runtime);
-        const baseUrl = request.baseUrl ?? defaultBaseUrl(runtime, host, port);
+        const port = request.port ?? (runtime === "tokenspeed" ? tokenspeed.port : defaultPort(runtime));
+        const baseUrl = request.baseUrl ??
+            (runtime === "tokenspeed" && tokenspeed.baseUrl
+                ? tokenspeed.baseUrl
+                : defaultBaseUrl(runtime, host, port));
         const apiPath = request.apiPath ?? defaultApiPath(runtime);
         const mode = request.mode ?? "chat";
         const modelName = request.modelName ?? artifact?.modelName ?? `managed-${runtime}-${port}`;
@@ -566,7 +596,63 @@ export class ManagedModelManager {
         if (next.runtime === "openai-compatible") {
             this.ensureRuntimeState(next);
             this.patchRuntime(id, { status: "running", healthStatus: "unknown" });
+            const attached = this.requireRuntime(id);
+            const ok = await this.probeEndpoint(attached);
+            this.patchRuntime(id, { healthStatus: ok ? "healthy" : "degraded" });
             return this.requireRuntime(id);
+        }
+        if (next.runtime === "tokenspeed") {
+            try {
+                const tsCfg = this.resolveTokenSpeedConfig();
+                const status = assertTokenSpeedCallable(tsCfg);
+                // Attach-first (Ollama-style): BASE_URL / ATTACH / runtime already has external baseUrl
+                const attachPreferred = status.attachPreferred ||
+                    Boolean(status.config.baseUrl) ||
+                    Boolean(next.baseUrl && next.notes?.some((n) => n.startsWith("tokenspeed_attach:")));
+                if (attachPreferred && (status.config.baseUrl || next.baseUrl)) {
+                    const baseUrl = status.config.baseUrl ?? next.baseUrl;
+                    this.ensureRuntimeState(next);
+                    this.patchRuntime(id, {
+                        status: "running",
+                        healthStatus: "unknown",
+                        baseUrl,
+                        notes: Array.from(new Set([
+                            ...(next.notes ?? []),
+                            `tokenspeed_attach:${baseUrl}`,
+                            "tokenspeed_kernels_external:not_merged_into_native_gpu",
+                            "tokenspeed_mode:attach",
+                        ])),
+                        metadata: {
+                            ...next.metadata,
+                            tokenspeedMode: "attach",
+                        },
+                    });
+                    const attached = this.requireRuntime(id);
+                    const ok = await this.probeEndpoint(attached);
+                    this.patchRuntime(id, { healthStatus: ok ? "healthy" : "degraded" });
+                    return this.requireRuntime(id);
+                }
+                if (status.resolvedCommand) {
+                    this.patchRuntime(id, {
+                        command: status.resolvedCommand,
+                        notes: Array.from(new Set([
+                            ...(next.notes ?? []),
+                            `tokenspeed_binary:${status.resolvedCommand}`,
+                            ...(status.version ? [`tokenspeed_version:${status.version}`] : []),
+                            "tokenspeed_kernels_external:not_merged_into_native_gpu",
+                            "tokenspeed_mode:spawn",
+                        ])),
+                        metadata: {
+                            ...next.metadata,
+                            tokenspeedMode: "spawn",
+                        },
+                    });
+                }
+            }
+            catch (error) {
+                this.patchRuntime(id, { status: "error", lastError: String(error) });
+                throw error;
+            }
         }
         if (next.runtime === "native") {
             const artifact = next.artifactId ? this.requireArtifact(next.artifactId) : undefined;
@@ -645,6 +731,32 @@ export class ManagedModelManager {
                 healthStatus: "unknown",
                 notes: [...next.notes, "Assuming external Ollama daemon is already serving on the configured endpoint."],
             });
+            const attached = this.requireRuntime(id);
+            const ok = await this.probeEndpoint(attached);
+            this.patchRuntime(id, { healthStatus: ok ? "healthy" : "degraded" });
+            return this.requireRuntime(id);
+        }
+        // Attach only when KGM_*_ATTACH=1 or prefer meta/notes (BASE_URL alone serves provider)
+        const attachBaseUrl = resolveManagedAttachBaseUrl(next);
+        if (attachBaseUrl) {
+            this.ensureRuntimeState(next);
+            this.patchRuntime(id, {
+                status: "running",
+                healthStatus: "unknown",
+                baseUrl: attachBaseUrl,
+                notes: Array.from(new Set([
+                    ...(next.notes ?? []),
+                    `${next.runtime}_attach:${attachBaseUrl}`,
+                    `${next.runtime}_mode:attach`,
+                ])),
+                metadata: {
+                    ...next.metadata,
+                    attachMode: "attach",
+                },
+            });
+            const attached = this.requireRuntime(id);
+            const ok = await this.probeEndpoint(attached);
+            this.patchRuntime(id, { healthStatus: ok ? "healthy" : "degraded" });
             return this.requireRuntime(id);
         }
         if (next.runtime === "llama.cpp") {
@@ -720,13 +832,22 @@ export class ManagedModelManager {
             this.scheduleWorkerAutoRestart(id, code);
         });
         this.patchRuntime(id, {
-            status: "running",
+            status: "starting",
             healthStatus: "unknown",
             pid: child.pid,
             command: spawnConfig.command,
             args: spawnConfig.args,
         });
         await delay(800);
+        const afterDelay = this.requireRuntime(id);
+        if (afterDelay.status === "error" || !this.processes.has(id)) {
+            return afterDelay;
+        }
+        const ok = await this.probeEndpoint(afterDelay);
+        this.patchRuntime(id, {
+            status: "running",
+            healthStatus: ok ? "healthy" : "degraded",
+        });
         return this.requireRuntime(id);
     }
     stopRuntime(id) {
@@ -1174,24 +1295,32 @@ export class ManagedModelManager {
             return this.nativeRuntimes.get(runtime.id)?.isExecutable() ?? false;
         }
         const candidates = buildProbeUrls(runtime);
+        const timeoutMs = parseNumber(process.env.KGM_MODEL_RUNTIME_PROBE_TIMEOUT_MS) ?? 2500;
         for (const url of candidates) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
             try {
                 const response = await fetch(url, {
                     method: "GET",
                     headers: runtime.apiKey ? { authorization: `Bearer ${runtime.apiKey}` } : {},
+                    signal: controller.signal,
                 });
-                if (response.ok || response.status === 401 || response.status === 404) {
+                // Auth required still means the endpoint is reachable; 404 is not healthy.
+                if (response.ok || response.status === 401 || response.status === 403) {
                     return true;
                 }
             }
             catch {
                 // keep trying
             }
+            finally {
+                clearTimeout(timer);
+            }
         }
         return false;
     }
     async pullFromOllama(artifact, resolved) {
-        const base = process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434";
+        const base = normalizeOllamaDaemonBase(process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434");
         const response = await fetch(joinUrl(base, "/api/pull"), {
             method: "POST",
             headers: {
@@ -1356,10 +1485,30 @@ export class ManagedModelManager {
                     command: runtime.command ?? defaultCommand("ollama"),
                     args: runtime.args ?? ["serve"],
                 };
+            case "tokenspeed": {
+                const ts = this.resolveTokenSpeedConfig();
+                return {
+                    command: runtime.command ?? defaultCommand("tokenspeed"),
+                    args: runtime.args ??
+                        buildTokenSpeedServerArgs({
+                            host: runtime.host,
+                            port: runtime.port,
+                            modelPath: artifact?.localPath,
+                            toolCallParser: ts.toolCallParser,
+                            reasoningParser: ts.reasoningParser,
+                            enablePrefixCaching: ts.enablePrefixCaching,
+                            extraArgs: ts.extraArgs,
+                        }),
+                };
+            }
             case "native":
                 throw new Error("Yueli KGM Runtime is single process and does not spawn external workers");
-            default:
-                throw new Error(`unsupported_runtime:${runtime.runtime}`);
+            case "openai-compatible":
+                throw new Error("openai-compatible runtime attaches to an external endpoint and does not spawn");
+            default: {
+                const _exhaustive = runtime.runtime;
+                throw new Error(`unsupported_runtime:${_exhaustive}`);
+            }
         }
     }
     validateSpawnConfig(config) {
@@ -1440,7 +1589,7 @@ export class ManagedModelManager {
      */
     attachLoraAdapters(runtimeId, adapters) {
         const runtime = this.requireRuntime(runtimeId);
-        if (runtime.runtime === "native" || runtime.runtime === "openai-compatible" || runtime.runtime === "ollama") {
+        if (runtime.runtime === "native" || runtime.runtime === "openai-compatible" || runtime.runtime === "ollama" || runtime.runtime === "tokenspeed") {
             throw new Error(`lora_not_supported_for_runtime:${runtime.runtime}`);
         }
         const normalized = adapters
@@ -1922,6 +2071,9 @@ function runtimeNotes(runtime, artifact) {
             notes.push(`serving:kv_disk_dir=${hints.sessionKv.diskDir};kv_disk_space_mb=${hints.sessionKv.diskSpaceMb}`);
         }
     }
+    else if (runtime === "tokenspeed") {
+        notes.push("Optional TokenSpeed OpenAI-compat worker (preview). Kernels stay in TokenSpeed — not merged into KGM native-gpu. Default deploy gate is off.");
+    }
     else if (runtime === "vllm") {
         notes.push("Requires vLLM runtime on a GPU-capable host.");
     }
@@ -1944,6 +2096,8 @@ function defaultPort(runtime) {
             return 8080;
         case "ds4":
             return parseNumber(process.env.KGM_DS4_PORT) ?? 8090;
+        case "tokenspeed":
+            return parseNumber(process.env.KGM_TOKENSPEED_PORT) ?? 8095;
         case "ollama":
             return 11434;
         case "vllm":
@@ -1956,19 +2110,48 @@ function defaultPort(runtime) {
             return 9000;
     }
 }
-function buildProbeUrls(runtime) {
+/** Exported for unit tests — OpenAI-compat attach often uses `…/v1` as baseUrl. */
+export function buildProbeUrls(runtime) {
     const baseUrl = runtime.baseUrl.replace(/\/$/, "");
+    const origin = baseUrl.replace(/\/v1$/i, "");
+    const healthPath = runtime.healthPath?.startsWith("/")
+        ? runtime.healthPath
+        : `/${runtime.healthPath ?? "health"}`;
     const urls = new Set();
-    urls.add(`${baseUrl}${runtime.healthPath?.startsWith("/") ? runtime.healthPath : `/${runtime.healthPath ?? "health"}`}`);
-    urls.add(`${baseUrl}/models`);
+    // Prefer origin-level health so attach baseUrl `http://host:port/v1` does not probe `/v1/health`
+    urls.add(`${origin}${healthPath}`);
+    if (origin !== baseUrl) {
+        urls.add(`${baseUrl}${healthPath}`);
+    }
+    // OpenAI-compat workers: probe /v1/models then /models
+    if (runtime.runtime === "tokenspeed" ||
+        runtime.runtime === "openai-compatible" ||
+        runtime.runtime === "vllm" ||
+        runtime.runtime === "sglang" ||
+        runtime.runtime === "llama.cpp" ||
+        runtime.runtime === "ds4" ||
+        runtime.runtime === "mlx" ||
+        runtime.runtime === "ollama") {
+        if (origin !== baseUrl) {
+            urls.add(`${baseUrl}/models`);
+        }
+        else {
+            urls.add(`${baseUrl}/v1/models`);
+            urls.add(`${baseUrl}/models`);
+        }
+    }
+    else {
+        urls.add(`${baseUrl}/models`);
+    }
     urls.add(baseUrl);
+    urls.add(origin);
     return Array.from(urls);
 }
 function defaultMaxConcurrent(runtime) {
     if (runtime === "native") {
         return parseNumber(process.env.KGM_NATIVE_MAX_CONCURRENT_REQUESTS) ?? 8;
     }
-    if (runtime === "llama.cpp" || runtime === "ollama" || runtime === "ds4") {
+    if (runtime === "llama.cpp" || runtime === "ollama" || runtime === "ds4" || runtime === "tokenspeed") {
         return 2;
     }
     return 8;
@@ -1977,7 +2160,7 @@ function defaultMaxQueueSize(runtime) {
     if (runtime === "native") {
         return parseNumber(process.env.KGM_NATIVE_MAX_QUEUE_SIZE) ?? 64;
     }
-    if (runtime === "llama.cpp" || runtime === "ollama" || runtime === "ds4") {
+    if (runtime === "llama.cpp" || runtime === "ollama" || runtime === "ds4" || runtime === "tokenspeed") {
         return 16;
     }
     return 128;
@@ -1998,6 +2181,7 @@ function defaultBaseUrl(runtime, host, port) {
     if (runtime === "llama.cpp" || runtime === "ds4") {
         return `http://${host}:${port}`;
     }
+    // OpenAI-compat workers (ollama/vllm/sglang/mlx/tokenspeed): base ends with /v1
     return `http://${host}:${port}/v1`;
 }
 function defaultApiPath(runtime) {
@@ -2011,7 +2195,8 @@ function defaultApiPath(runtime) {
         || runtime === "ollama"
         || runtime === "vllm"
         || runtime === "sglang"
-        || runtime === "mlx") {
+        || runtime === "mlx"
+        || runtime === "tokenspeed") {
         return "/chat/completions";
     }
     return "/chat/completions";
@@ -2042,6 +2227,8 @@ function defaultCommand(runtime) {
             return resolveLlamaCppDeployConfig().command;
         case "ds4":
             return resolveDs4DeployConfig().command;
+        case "tokenspeed":
+            return resolveTokenSpeedDeployConfig().command;
         case "ollama":
             return process.env.KGM_OLLAMA_CMD ?? "ollama";
         case "vllm":
@@ -2209,6 +2396,11 @@ function sanitizeFilename(value) {
 function joinUrl(base, pathname) {
     return `${base.replace(/\/$/, "")}${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
 }
+/** Strip trailing `/api` so `OLLAMA_BASE_URL=…/api` + `/api/pull` does not become `/api/api/pull`. */
+export function normalizeOllamaDaemonBase(baseUrl) {
+    const trimmed = baseUrl.replace(/\/$/, "");
+    return trimmed.replace(/\/api$/i, "") || "http://127.0.0.1:11434";
+}
 function parseNumber(value) {
     if (!value) {
         return undefined;
@@ -2238,6 +2430,67 @@ function parseValidatedNumber(value, defaultValue, min, max, paramName) {
 }
 function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function resolvePreferredRuntimeId(options) {
+    const fromMeta = options?.metadata?.native_runtime_id;
+    if (typeof fromMeta === "string" && fromMeta.trim()) {
+        return fromMeta.trim();
+    }
+    const fromTarget = options?.routing?.target?.runtimeId;
+    if (typeof fromTarget === "string" && fromTarget.trim()) {
+        return fromTarget.trim();
+    }
+    return undefined;
+}
+/** Env BASE_URL attach for spawn-managed OpenAI-compat workers (TokenSpeed/Ollama-style). */
+export function wouldAttachManagedKind(kind) {
+    return Boolean(resolveManagedAttachBaseUrl({
+        runtime: kind,
+        baseUrl: "http://127.0.0.1:9/v1",
+        notes: [],
+        metadata: {},
+    }));
+}
+export function resolveManagedAttachBaseUrl(runtime) {
+    const kind = runtime.runtime;
+    if (kind !== "vllm" &&
+        kind !== "sglang" &&
+        kind !== "llama.cpp" &&
+        kind !== "ds4" &&
+        kind !== "mlx") {
+        return undefined;
+    }
+    const attachEnvKey = kind === "llama.cpp"
+        ? "KGM_LLAMA_CPP_ATTACH"
+        : kind === "ds4"
+            ? "KGM_DS4_ATTACH"
+            : kind === "vllm"
+                ? "KGM_VLLM_ATTACH"
+                : kind === "sglang"
+                    ? "KGM_SGLANG_ATTACH"
+                    : "KGM_MLX_ATTACH";
+    const attachRaw = process.env[attachEnvKey]?.trim().toLowerCase();
+    if (attachRaw === "0" || attachRaw === "false" || attachRaw === "off") {
+        return undefined;
+    }
+    const envBase = kind === "vllm"
+        ? process.env.KGM_VLLM_BASE_URL?.trim() || process.env.VLLM_BASE_URL?.trim()
+        : kind === "sglang"
+            ? process.env.KGM_SGLANG_BASE_URL?.trim() || process.env.SGLANG_BASE_URL?.trim()
+            : kind === "llama.cpp"
+                ? process.env.KGM_LLAMA_CPP_BASE_URL?.trim() || process.env.LLAMA_CPP_BASE_URL?.trim()
+                : kind === "ds4"
+                    ? process.env.KGM_DS4_BASE_URL?.trim() || process.env.DS4_BASE_URL?.trim()
+                    : process.env.KGM_MLX_BASE_URL?.trim() || process.env.MLX_BASE_URL?.trim();
+    const forceAttach = attachRaw === "1" || attachRaw === "true" || attachRaw === "on";
+    const preferFromMeta = runtime.metadata?.attachMode === "attach" ||
+        runtime.metadata?.preferAttach === true ||
+        Boolean(runtime.notes?.some((n) => n.includes("_mode:attach") || n.startsWith(`${kind}_attach:`)));
+    // Explicit attach only (KGM_*_ATTACH=1 or prefer meta). BASE_URL alone serves provider path.
+    if (preferFromMeta || forceAttach) {
+        return envBase || runtime.baseUrl;
+    }
+    return undefined;
 }
 function createRuntimeMetrics(runtime) {
     return {

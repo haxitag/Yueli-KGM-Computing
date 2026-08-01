@@ -1,5 +1,5 @@
 import { joinUrl } from "../utils/url.js";
-const DEFAULT_PORTS = [11434, 8002, 8080, 1234, 8000, 5000];
+const DEFAULT_PORTS = [11434, 8002, 8080, 1234, 8000, 5000, 7860, 8765, 8095, 8090];
 const PRIORITY = ["ollama", "vmlx", "llama.cpp", "lmstudio", "vllm", "openai-compat"];
 export class InferenceDiscoveryService {
     lastResult;
@@ -92,6 +92,13 @@ function inferEngineType(port) {
         return "lmstudio";
     if (port === 8000)
         return "vllm";
+    // SGLang default OpenAI-compat (7860) / MLX (8765) — typed as openai-compat until engine taxonomy expands
+    if (port === 7860 || port === 8765)
+        return "openai-compat";
+    if (port === 8095)
+        return "openai-compat"; // TokenSpeed default OpenAI-compat port
+    if (port === 8090)
+        return "openai-compat"; // ds4 default
     return "openai-compat";
 }
 function parsePorts(value) {

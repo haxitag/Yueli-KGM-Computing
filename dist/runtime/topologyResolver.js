@@ -18,7 +18,11 @@ export function resolveRuntimeTopology(params) {
     for (const model of running) {
         providers.push({
             id: model.runtimeId ?? model.id,
-            type: model.runtime === "ollama" ? "ollama" : model.runtime === "llama.cpp" ? "llama.cpp" : "openai-compat",
+            type: model.runtime === "ollama"
+                ? "ollama"
+                : model.runtime === "llama.cpp"
+                    ? "llama.cpp"
+                    : "openai-compat", // tokenspeed / vllm / sglang / ds4 / openai-compatible
             baseUrl: model.baseUrl ?? "",
             healthy: true,
             models: [{ id: model.modelName, capabilities: inferModelCapabilities(model.modelName) }],

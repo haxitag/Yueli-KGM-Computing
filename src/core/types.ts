@@ -107,6 +107,8 @@ export type KgmGraphOptions = {
   triples?: KgmGraphTriple[];
   subgraph?: string;
   reasoningMode?: "entity" | "path" | "subgraph";
+  /** Cap triples injected into the knowledge_graph signal (default 8). */
+  maxTriples?: number;
 };
 
 export type KgmOpsMetadata = {

@@ -40,12 +40,14 @@
         const gates = workers.gates?.value || {};
         const restart = workers.autoRestart?.value || {};
         const ds4 = workers.ds4?.value || {};
+        const tokenspeed = workers.tokenspeed?.value || {};
         const connection = ds4.connection || {};
         workerPolicyEl.innerHTML = [
-            policyRow('llama.cpp / ds4 门闩', {
+            policyRow('llama.cpp / ds4 / tokenspeed 门闩', {
                 llamaCpp: gates.llamaCpp?.enabled,
                 ds4: gates.ds4?.enabled,
-            }, 'ConfigStore · 即时'),
+                tokenspeed: gates.tokenspeed?.enabled ?? 'off',
+            }, 'ConfigStore · TokenSpeed 默认 off'),
             policyRow('自动重启', restart, `${workers.autoRestart?.source || 'default'} · 重启进程`),
             policyRow('ds4 连接', {
                 enabled: connection.enabled ?? gates.ds4?.enabled,
@@ -63,6 +65,12 @@
                 diskSpaceMb: ds4.sessionKv?.diskSpaceMb ?? null,
                 ssdCacheExperts: ds4.ssdStreamingCacheExperts || null,
             }, `${workers.ds4?.source || 'default'} · token 交错由 ds4-server 负责`),
+            policyRow('TokenSpeed', {
+                selectable: tokenspeed.selectable,
+                reason: tokenspeed.reason,
+                baseUrl: tokenspeed.config?.baseUrl || null,
+                command: tokenspeed.config?.command || null,
+            }, `${workers.tokenspeed?.source || 'env+configStore'} · 可选推理后端，非意图层`),
         ].join('');
     }
 

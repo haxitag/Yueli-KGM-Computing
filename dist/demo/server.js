@@ -13,7 +13,7 @@ const server = createKgmServer({
     configStore: runtime.configStore,
     skillRuntime: runtime.skillRuntime,
 });
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(process.env.PORT ?? 58691);
 server.listen(port, () => {
     console.log(`KGM server listening on ${port}`);
 });

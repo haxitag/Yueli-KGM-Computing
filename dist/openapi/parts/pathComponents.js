@@ -59,7 +59,139 @@ export function buildOpenApiPathsV1() {
             get: { summary: "同 /openapi.json", security: [], responses: { "200": { description: "OpenAPI" } } },
         },
         "/v1/models": {
-            get: { summary: "OpenAI 模型列表", responses: { "200": j200("OpenAiListModels"), ...getOnly() } },
+            get: {
+                summary: "OpenAI 模型列表（含 kgm.capabilities / kgm.model_type；?type=|model_type|capability 过滤）",
+                parameters: [
+                    {
+                        name: "type",
+                        in: "query",
+                        required: false,
+                        schema: { type: "string" },
+                        description: "按 kgm.model_type 或 capabilities 过滤（亦接受 model_type / capability）",
+                    },
+                ],
+                responses: { "200": j200("OpenAiListModels"), ...getOnly() },
+            },
+        },
+        "/v1/images/generations": {
+            post: {
+                summary: "OpenAI Images Generations（KGM 薄代理；未配置上游返回 501）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: {
+                    "200": { description: "upstream JSON" },
+                    "501": R.ni,
+                    ...postWithBody(),
+                },
+            },
+        },
+        "/v1/images/edits": {
+            post: {
+                summary: "OpenAI Images Edits（复用 image 上游；未配置 501）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: { "200": { description: "upstream JSON" }, "501": R.ni, ...postWithBody() },
+            },
+        },
+        "/v1/images/variations": {
+            post: {
+                summary: "OpenAI Images Variations（复用 image 上游；未配置 501）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: { "200": { description: "upstream JSON" }, "501": R.ni, ...postWithBody() },
+            },
+        },
+        "/v1/audio/speech": {
+            post: {
+                summary: "OpenAI Audio Speech / TTS（KGM 薄代理；可返回 audio/* 二进制）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: {
+                    "200": { description: "audio binary or JSON" },
+                    "501": R.ni,
+                    ...postWithBody(),
+                },
+            },
+        },
+        "/v1/audio/transcriptions": {
+            post: {
+                summary: "OpenAI Audio Transcriptions / ASR（JSON+base64 或 multipart）",
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": { schema: { type: "object", additionalProperties: true } },
+                        "multipart/form-data": { schema: { type: "object", additionalProperties: true } },
+                    },
+                },
+                responses: {
+                    "200": { description: "transcription JSON" },
+                    "501": R.ni,
+                    ...postWithBody(),
+                },
+            },
+        },
+        "/v1/audio/translations": {
+            post: {
+                summary: "OpenAI Audio Translations（复用 STT 上游）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: { "200": { description: "translation JSON" }, "501": R.ni, ...postWithBody() },
+            },
+        },
+        "/v1/videos/generations": {
+            post: {
+                summary: "视频生成（异步 job；202 + GET /v1/kgm/media/jobs/{id}；未配置 501）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: {
+                    "202": { description: "kgm.media_job queued/processing" },
+                    "501": R.ni,
+                    ...postWithBody(),
+                },
+            },
+        },
+        "/v1/kgm/media/video": {
+            post: {
+                summary: "同 /v1/videos/generations（KGM 别名）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: {
+                    "202": { description: "kgm.media_job" },
+                    "501": R.ni,
+                    ...postWithBody(),
+                },
+            },
+        },
+        "/v1/kgm/media/jobs/{id}": {
+            get: {
+                summary: "查询媒体异步任务状态",
+                parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+                responses: { "200": { description: "kgm.media_job" }, ...getOnly() },
+            },
+        },
+        "/v1/rerank": {
+            post: {
+                summary: "可选 Rerank 薄代理（Forge RAG 自管时可不用）",
+                requestBody: {
+                    required: true,
+                    content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+                },
+                responses: { "200": { description: "upstream JSON" }, "501": R.ni, ...postWithBody() },
+            },
         },
         "/v1/chat/completions": {
             post: {
@@ -261,6 +393,18 @@ export function buildOpenApiPathsV1() {
             get: {
                 summary: "ds4 部署探测（DeepSeek V4 / GLM specialized；含 SSD streaming / micro-batch servingHints）",
                 responses: { "200": { description: "Ds4DeployStatus + servingHints" }, ...getOnly() },
+            },
+        },
+        "/v1/runtime/workers/tokenspeed": {
+            get: {
+                summary: "TokenSpeed 部署探测（OpenAI-compat attach；prefix cache / parsers）",
+                responses: { "200": { description: "TokenSpeedDeployStatus" }, ...getOnly() },
+            },
+        },
+        "/v1/runtime/agentic": {
+            get: {
+                summary: "Agentic 计数（工具调用 / 会话亲和相关运行时计数）",
+                responses: { "200": { description: "AgenticCounters" }, ...getOnly() },
             },
         },
         "/v1/kgm/multimodal/embed": {

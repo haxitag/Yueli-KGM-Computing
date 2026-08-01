@@ -26,6 +26,12 @@ import type { CompletionOptions, CompletionResult, CompletionStreamEvent, LlmCli
 import { createPricingService, type PricingService } from "./pricingService.js";
 import { classifyIntent, classifyIntentSync, intentToRoutingTaskType } from "../frontstation/index.js";
 import { recordOpsUsage } from "../admin/recordOpsUsage.js";
+import {
+  agenticCandidateBias,
+  detectAgenticProfile,
+  type AgenticProfile,
+} from "../agentic/routingPreferences.js";
+import { providerSupportsTools } from "./providerFactory.js";
 
 type RoutingCandidate = {
   routeKey: string;
@@ -43,6 +49,8 @@ type RoutingCandidate = {
   trust: number;
   verification: number;
   score: number;
+  /** false = thin client without tools; tool requests skip/deprioritize */
+  supportsTools?: boolean;
 };
 
 type RoutingSelection = {
@@ -138,8 +146,8 @@ export class AutoRoutingLlmClient implements LlmClient {
       const result = await this.executeCandidate(selection.selected, prompt, options);
       return await this.wrapResult(result, selection, prompt, options, Date.now() - startedAt);
     } catch (error) {
-      const fallbackCandidate = selection.candidates.find((item) => item.source === "default");
-      if (!fallbackCandidate || fallbackCandidate.routeKey === selection.selected.routeKey) {
+      const chain = this.pickFailoverCandidates(selection, selection.selected.routeKey);
+      if (chain.length === 0) {
         this.recordAudit(selection, prompt, options, Date.now() - startedAt, {
           success: false,
           error: String(error),
@@ -160,25 +168,50 @@ export class AutoRoutingLlmClient implements LlmClient {
         throw error;
       }
 
-      const result = await this.executeCandidate(fallbackCandidate, prompt, options);
-      const effective = {
-        ...selection,
-        selected: fallbackCandidate,
-      };
-      return await this.wrapResult(
-        {
-          text: result.text,
-          raw: {
-            fallbackFrom: selection.selected.routeKey,
-            error: String(error),
-            result: result.raw,
-          },
-        },
-        effective,
-        prompt,
-        options,
-        Date.now() - startedAt,
-      );
+      let lastError: unknown = error;
+      for (const fallbackCandidate of chain) {
+        try {
+          const result = await this.executeCandidate(fallbackCandidate, prompt, options);
+          const effective = {
+            ...selection,
+            selected: fallbackCandidate,
+          };
+          return await this.wrapResult(
+            {
+              text: result.text,
+              raw: {
+                fallbackFrom: selection.selected.routeKey,
+                error: String(lastError),
+                result: result.raw,
+              },
+            },
+            effective,
+            prompt,
+            options,
+            Date.now() - startedAt,
+          );
+        } catch (nextError) {
+          lastError = nextError;
+        }
+      }
+      this.recordAudit(selection, prompt, options, Date.now() - startedAt, {
+        success: false,
+        error: String(lastError),
+        promptTokens: estimateTokens(prompt),
+        completionTokens: 0,
+        totalTokens: estimateTokens(prompt),
+        actualCost: selection.selected.estimatedCost,
+        evaluationPromptTokens: 0,
+        evaluationCompletionTokens: 0,
+        evaluationTotalTokens: 0,
+        evaluationCost: 0,
+        qualityScore: 0,
+        confidence: 0,
+        verificationAttempted: false,
+        verificationPassed: false,
+        evaluation: createHeuristicEvaluationRecord(selection.verifiable ? "heuristic" : "not_applicable"),
+      });
+      throw lastError;
     }
   }
 
@@ -243,14 +276,10 @@ export class AutoRoutingLlmClient implements LlmClient {
         result: synthetic,
       };
     } catch (error) {
-      const fallbackCandidate = selection.candidates.find((item) => item.source === "default");
-      const canFailover =
-        !emittedStarted &&
-        output.length === 0 &&
-        Boolean(fallbackCandidate) &&
-        fallbackCandidate!.routeKey !== selection.selected.routeKey;
+      const chain = this.pickFailoverCandidates(selection, selection.selected.routeKey);
+      const canFailover = !emittedStarted && output.length === 0 && chain.length > 0;
 
-      if (!canFailover || !fallbackCandidate) {
+      if (!canFailover) {
         this.recordAudit(selection, prompt, options, Date.now() - startedAt, {
           success: false,
           error: String(error),
@@ -271,46 +300,77 @@ export class AutoRoutingLlmClient implements LlmClient {
         throw error;
       }
 
-      // 与 complete() 对齐：仅在尚未向客户端交付任何 token 时做路由 failover
-      const effective = {
-        ...selection,
-        selected: fallbackCandidate,
-      };
-      let fallbackOutput = "";
-      let fallbackFinal: CompletionResult | undefined;
-      let fallbackStarted = false;
+      // 与 complete() 对齐：仅在尚未向客户端交付任何 token 时做路由 failover（次优 → default）
+      let lastError: unknown = error;
+      for (const fallbackCandidate of chain) {
+        try {
+          const effective = {
+            ...selection,
+            selected: fallbackCandidate,
+          };
+          let fallbackOutput = "";
+          let fallbackFinal: CompletionResult | undefined;
+          let fallbackStarted = false;
 
-      for await (const event of this.executeCandidateStream(fallbackCandidate, prompt, options)) {
-        if (event.type === "started") {
+          for await (const event of this.executeCandidateStream(fallbackCandidate, prompt, options)) {
+            if (event.type === "started") {
+              if (!fallbackStarted) {
+                fallbackStarted = true;
+                yield {
+                  type: "started",
+                  model: event.model ?? fallbackCandidate.model,
+                };
+              }
+              continue;
+            }
+            if (!fallbackStarted) {
+              fallbackStarted = true;
+              yield {
+                type: "started",
+                model: fallbackCandidate.model,
+              };
+            }
+            if (event.type === "token") {
+              fallbackOutput += event.text;
+              yield event;
+              continue;
+            }
+            if (event.type === "finished") {
+              fallbackFinal = await this.wrapResult(
+                {
+                  text: event.result.text,
+                  raw: {
+                    fallbackFrom: selection.selected.routeKey,
+                    error: String(lastError),
+                    result: event.result.raw,
+                  },
+                },
+                effective,
+                prompt,
+                options,
+                Date.now() - startedAt,
+              );
+              yield {
+                type: "finished",
+                result: fallbackFinal,
+              };
+              return;
+            }
+            yield event;
+          }
+
           if (!fallbackStarted) {
-            fallbackStarted = true;
             yield {
               type: "started",
-              model: event.model ?? fallbackCandidate.model,
+              model: fallbackCandidate.model,
             };
           }
-          continue;
-        }
-        if (!fallbackStarted) {
-          fallbackStarted = true;
-          yield {
-            type: "started",
-            model: fallbackCandidate.model,
-          };
-        }
-        if (event.type === "token") {
-          fallbackOutput += event.text;
-          yield event;
-          continue;
-        }
-        if (event.type === "finished") {
-          fallbackFinal = await this.wrapResult(
+          const synthetic = await this.wrapResult(
             {
-              text: event.result.text,
+              text: fallbackOutput,
               raw: {
                 fallbackFrom: selection.selected.routeKey,
-                error: String(error),
-                result: event.result.raw,
+                error: String(lastError),
               },
             },
             effective,
@@ -320,38 +380,46 @@ export class AutoRoutingLlmClient implements LlmClient {
           );
           yield {
             type: "finished",
-            result: fallbackFinal,
+            result: synthetic,
           };
           return;
+        } catch (nextError) {
+          lastError = nextError;
         }
-        yield event;
       }
-
-      if (!fallbackStarted) {
-        yield {
-          type: "started",
-          model: fallbackCandidate.model,
-        };
-      }
-      const synthetic = await this.wrapResult(
-        {
-          text: fallbackFinal?.text ?? fallbackOutput,
-          raw: {
-            fallbackFrom: selection.selected.routeKey,
-            error: String(error),
-            result: fallbackFinal?.raw ?? {},
-          },
-        },
-        effective,
-        prompt,
-        options,
-        Date.now() - startedAt,
-      );
-      yield {
-        type: "finished",
-        result: synthetic,
-      };
+      this.recordAudit(selection, prompt, options, Date.now() - startedAt, {
+        success: false,
+        error: String(lastError),
+        promptTokens: estimateTokens(prompt),
+        completionTokens: estimateTokens(output),
+        totalTokens: estimateTokens(prompt) + estimateTokens(output),
+        actualCost: selection.selected.estimatedCost,
+        evaluationPromptTokens: 0,
+        evaluationCompletionTokens: 0,
+        evaluationTotalTokens: 0,
+        evaluationCost: 0,
+        qualityScore: 0,
+        confidence: 0,
+        verificationAttempted: false,
+        verificationPassed: false,
+        evaluation: createHeuristicEvaluationRecord(selection.verifiable ? "heuristic" : "not_applicable"),
+      });
+      throw lastError;
     }
+  }
+
+  /** Prefer up to 2 non-default scored candidates, then default. */
+  private pickFailoverCandidates(selection: RoutingSelection, failedRouteKey: string): RoutingCandidate[] {
+    const others = selection.candidates
+      .filter((item) => item.routeKey !== failedRouteKey)
+      .sort((a, b) => b.score - a.score);
+    const nonDefault = others.filter((item) => item.source !== "default").slice(0, 2);
+    const def = others.find((item) => item.source === "default");
+    const ordered = [...nonDefault];
+    if (def && !ordered.some((item) => item.routeKey === def.routeKey)) {
+      ordered.push(def);
+    }
+    return ordered;
   }
 
   getAuditSummary(limit?: number) {
@@ -365,22 +433,39 @@ export class AutoRoutingLlmClient implements LlmClient {
   private async selectCandidate(prompt: string, options?: CompletionOptions): Promise<RoutingSelection> {
     const config = this.configStore.get().autoRouting;
     const hints = normalizeHints(options?.routing, options?.metadata);
-    const profile = normalizeProfile(hints.profile ?? config.defaultProfile);
     const taskInput = options?.taskInput ?? prompt;
     const taskType =
       options?.taskType ??
       hints.taskType ??
       (await detectTaskTypeAsync(taskInput, config.defaultTaskType));
+    const agenticProfile = detectAgenticProfile({
+      taskType,
+      input: taskInput,
+      toolCount: Array.isArray(options?.tools) ? options.tools.length : undefined,
+      metadata: options?.metadata,
+    });
+    const profile = normalizeProfile(
+      hints.profile ??
+        (agenticProfile === "coding" || agenticProfile === "tool_heavy"
+          ? "quality_first"
+          : config.defaultProfile),
+    );
     const taskName = options?.taskName ?? hints.taskName;
     const verifiable = hints.verificationExpected ?? isVerifiableTask(taskInput, taskType, prompt);
     const complexity = estimateComplexity(taskInput);
-    const candidates = await this.buildCandidates(prompt, options, {
+    const candidatesRaw = await this.buildCandidates(prompt, options, {
       profile,
       taskInput,
       taskType,
       verifiable,
       complexity,
+      agenticProfile,
     });
+    const needsTools = Array.isArray(options?.tools) && options.tools.length > 0;
+    const candidates =
+      needsTools && candidatesRaw.some((c) => c.supportsTools !== false)
+        ? candidatesRaw.filter((c) => c.supportsTools !== false)
+        : candidatesRaw;
 
     const explicitTarget = options?.model
       ? { model: options.model }
@@ -464,6 +549,7 @@ export class AutoRoutingLlmClient implements LlmClient {
       taskType: string;
       verifiable: boolean;
       complexity: number;
+      agenticProfile: AgenticProfile;
     },
   ): Promise<RoutingCandidate[]> {
     const config = this.configStore.get();
@@ -499,9 +585,13 @@ export class AutoRoutingLlmClient implements LlmClient {
       autoRouting,
       maxCost,
       defaultCost,
+      route.agenticProfile,
     );
 
-    candidates.push(defaultCandidate);
+    candidates.push({
+      ...defaultCandidate,
+      supportsTools: true,
+    });
 
     for (const runtime of this.manager.listRunningModels()) {
       const metrics = runtime.runtimeId ? this.manager.getRuntimeMetrics(runtime.runtimeId) : runtime.metrics;
@@ -522,11 +612,13 @@ export class AutoRoutingLlmClient implements LlmClient {
             quality: stats?.avgQuality ?? defaultQualityForTask(route.taskType, 0.08),
             trust: stats?.avgConfidence ?? 0.78,
             verification: route.verifiable ? stats?.verificationPassRate ?? 0.82 : 0.6,
+            supportsTools: true,
           },
           route.profile,
           autoRouting,
           maxCost,
           0,
+          route.agenticProfile,
         ),
       );
     }
@@ -562,11 +654,13 @@ export class AutoRoutingLlmClient implements LlmClient {
               quality: stats?.avgQuality ?? defaultQualityForTask(route.taskType, 0.02),
               trust: stats?.avgConfidence ?? 0.62,
               verification: route.verifiable ? stats?.verificationPassRate ?? 0.7 : 0.54,
+              supportsTools: providerSupportsTools(provider.type, provider),
             },
             route.profile,
             autoRouting,
             maxCost,
             estimatedCost,
+            route.agenticProfile,
           ),
         );
       }
@@ -593,6 +687,7 @@ export class AutoRoutingLlmClient implements LlmClient {
     config: AutoRoutingConfig,
     maxCost: number,
     estimatedCost: number,
+    agenticProfile: AgenticProfile = "standard",
   ): RoutingCandidate {
     const bias = profile === "cost_first"
       ? { cost: 0.12, latency: 0.1, quality: -0.05, trust: -0.04 }
@@ -601,13 +696,23 @@ export class AutoRoutingLlmClient implements LlmClient {
         : { cost: 0, latency: 0, quality: 0, trust: 0 };
     const latencyScore = 1 - normalizeScore(candidate.latencyMs, config.thresholds.targetLatencyMs * 2);
     const costScore = 1 - normalizeScore(estimatedCost, Math.max(maxCost, 0.0001));
+    const agenticBias = agenticCandidateBias({
+      profile: agenticProfile,
+      source: candidate.source,
+      provider: candidate.provider,
+      tokensPerSecond:
+        candidate.runtimeMetrics?.lastOutputTokensPerSecond ??
+        candidate.runtimeMetrics?.avgOutputTokensPerSecond,
+      preferLongContext: agenticProfile === "coding" || agenticProfile === "tool_heavy",
+    });
     const score =
       (config.weights.successRate * candidate.successRate) +
       ((config.weights.quality + bias.quality) * candidate.quality) +
       ((config.weights.trust + bias.trust) * candidate.trust) +
       (config.weights.verification * candidate.verification) +
       ((config.weights.latency + bias.latency) * latencyScore) +
-      ((config.weights.cost + bias.cost) * costScore);
+      ((config.weights.cost + bias.cost) * costScore) +
+      agenticBias;
     return {
       ...candidate,
       estimatedCost,
@@ -728,6 +833,18 @@ export class AutoRoutingLlmClient implements LlmClient {
       const managed = await this.manager.completeWithManagedRuntime(candidate.model, prompt, {
         ...options,
         model: candidate.model,
+        metadata: {
+          ...(options?.metadata ?? {}),
+          ...(candidate.runtimeId ? { native_runtime_id: candidate.runtimeId } : {}),
+        },
+        routing: {
+          ...(options?.routing ?? {}),
+          target: {
+            ...(options?.routing?.target ?? {}),
+            ...(candidate.runtimeId ? { runtimeId: candidate.runtimeId } : {}),
+            model: candidate.model,
+          },
+        },
       });
       if (!managed) {
         throw new Error(`managed_runtime_unavailable:${candidate.model}`);
@@ -756,6 +873,18 @@ export class AutoRoutingLlmClient implements LlmClient {
       const managed = this.manager.streamWithManagedRuntime(candidate.model, prompt, {
         ...options,
         model: candidate.model,
+        metadata: {
+          ...(options?.metadata ?? {}),
+          ...(candidate.runtimeId ? { native_runtime_id: candidate.runtimeId } : {}),
+        },
+        routing: {
+          ...(options?.routing ?? {}),
+          target: {
+            ...(options?.routing?.target ?? {}),
+            ...(candidate.runtimeId ? { runtimeId: candidate.runtimeId } : {}),
+            model: candidate.model,
+          },
+        },
       });
       if (!managed) {
         throw new Error(`managed_runtime_unavailable:${candidate.model}`);
@@ -1110,7 +1239,11 @@ export class AutoRoutingLlmClient implements LlmClient {
         metadata: {
           ...(options?.metadata ?? {}),
           auto_routing_evaluation: true,
+          ...(target.runtimeId ? { native_runtime_id: target.runtimeId } : {}),
         },
+        routing: target.runtimeId
+          ? { target: { runtimeId: target.runtimeId, model: target.model } }
+          : options?.routing,
       });
       if (!managed) {
         throw new Error(`managed_runtime_unavailable:${target.model}`);

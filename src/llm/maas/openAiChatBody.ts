@@ -135,6 +135,28 @@ export function buildOpenAiChatCompletionsBody(params: BuildOpenAiChatBodyParams
     body.think = true;
   }
 
+  // Session fingerprint + full options.metadata merge for upstream affinity / tenant hints
+  if (options?.sessionId && body.user === undefined) {
+    body.user = options.sessionId;
+  }
+  const sessionFingerprint: Record<string, unknown> = {
+    ...(options?.metadata && typeof options.metadata === "object" ? options.metadata : {}),
+  };
+  if (options?.sessionId) {
+    sessionFingerprint.kgm_session_id = options.sessionId;
+  }
+  const nativeRuntimeId = options?.metadata?.native_runtime_id;
+  if (typeof nativeRuntimeId === "string" && nativeRuntimeId.trim()) {
+    sessionFingerprint.native_runtime_id = nativeRuntimeId.trim();
+  }
+  if (Object.keys(sessionFingerprint).length > 0) {
+    const existing =
+      body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+        ? (body.metadata as Record<string, unknown>)
+        : {};
+    body.metadata = { ...existing, ...sessionFingerprint };
+  }
+
   if (extras.extraBody) {
     Object.assign(body, extras.extraBody);
   }

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { ConfigStore } from "../core/configStore.js";
 import { HashEmbedder } from "../embedding/canonical.js";
@@ -186,6 +189,43 @@ async function main(): Promise<void> {
   assert.match(chatStream, /search_web/);
   assert.match(chatStream, /\[DONE\]/);
 
+  const modelsList = await getJson(`${baseUrl}/v1/models`);
+  assert.ok(Array.isArray(modelsList.data));
+  const autoEntry = modelsList.data.find((m: { id: string }) => m.id === "auto");
+  assert.ok(autoEntry?.kgm?.capabilities?.includes?.("proxy_aggregation") || autoEntry?.kgm?.modelType === "routing-entry");
+
+  const mediaRes = await fetch(`${baseUrl}/v1/images/generations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "smoke" }),
+  });
+  assert.equal(mediaRes.status, 501);
+  const mediaBody = (await mediaRes.json()) as { error?: { code?: string } };
+  assert.equal(mediaBody.error?.code, "image_generation_provider_not_configured");
+
+  const videoRes = await fetch(`${baseUrl}/v1/videos/generations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "smoke video" }),
+  });
+  assert.equal(videoRes.status, 501);
+  const videoBody = (await videoRes.json()) as { error?: { code?: string } };
+  assert.equal(videoBody.error?.code, "video_generation_provider_not_configured");
+
+  const editsRes = await fetch(`${baseUrl}/v1/images/edits`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "smoke edit" }),
+  });
+  assert.equal(editsRes.status, 501);
+
+  const rerankRes = await fetch(`${baseUrl}/v1/rerank`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ query: "q", documents: ["a"] }),
+  });
+  assert.equal(rerankRes.status, 501);
+
   let sandboxStatus: string | undefined;
   let managedRuntimeStatus: string | undefined;
   let managedModelCount: number | undefined;
@@ -249,16 +289,9 @@ async function main(): Promise<void> {
     ),
   );
 
-  try {
-    runtime.modelManager.close();
-  } catch {
-    /* ignore */
-  }
-  await new Promise<void>((resolve, reject) => {
-    server.close((err) => (err ? reject(err) : resolve()));
-  });
-  /** CLI 脚本：避免 undici/fetch 连接池等残留 handle 阻止进程退出（CI `npm run smoke` 链式执行依赖明确退出）。 */
-  process.exit(0);
+  // Marker for ./openai-compat-smoke.mjs — then SIGKILL to skip ONNX teardown abort.
+  fs.writeFileSync(path.join(os.tmpdir(), "kgm-openai-compat-smoke.ok"), "ok\n");
+  process.kill(process.pid, "SIGKILL");
 }
 
 async function waitUntilTrue(

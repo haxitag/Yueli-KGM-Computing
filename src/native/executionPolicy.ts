@@ -7,6 +7,7 @@ import type { ManagedModelArtifact, ManagedModelRuntimeKind } from "../models/mo
 import { detectWeightFormat, type WeightFormatKind } from "./weightCapabilities.js";
 import { isLlamaCppSelectable, type LlamaCppDeployConfig } from "../runtime/llamaCppDeploy.js";
 import { isDs4Selectable, type Ds4DeployConfig } from "../runtime/ds4Deploy.js";
+import { isTokenSpeedSelectable, type TokenSpeedDeployConfig } from "../runtime/tokenspeedDeploy.js";
 import { classifyDs4Artifact } from "../runtime/ds4Artifacts.js";
 
 export type ExecutionPath = "native_in_process" | "via_worker" | "metadata_only";
@@ -21,6 +22,7 @@ export type ArtifactExecutionAssessment = {
 
 const WORKER_KINDS: ManagedModelRuntimeKind[] = [
   "ds4",
+  "tokenspeed",
   "vllm",
   "sglang",
   "openai-compatible",
@@ -127,16 +129,19 @@ export function resolveRuntimeKind(params: {
   artifact?: ManagedModelArtifact;
   llamaCpp?: Partial<LlamaCppDeployConfig>;
   ds4?: Partial<Ds4DeployConfig>;
+  tokenspeed?: Partial<TokenSpeedDeployConfig>;
 }): ManagedModelRuntimeKind {
   const assessment = assessArtifactExecution(params.artifact);
   const requested = params.requested ?? "auto";
   const llamaOk = isLlamaCppSelectable(params.llamaCpp);
   const ds4Ok = isDs4Selectable(params.ds4);
+  const tokenspeedOk = isTokenSpeedSelectable(params.tokenspeed);
 
   const filterCallable = (kinds: ManagedModelRuntimeKind[]): ManagedModelRuntimeKind[] =>
     kinds.filter((kind) => {
       if (kind === "llama.cpp") return llamaOk;
       if (kind === "ds4") return ds4Ok;
+      if (kind === "tokenspeed") return tokenspeedOk;
       return true;
     });
 
@@ -161,6 +166,12 @@ export function resolveRuntimeKind(params: {
   if (requested === "ds4" && !ds4Ok) {
     throw new Error(
       "ds4_unavailable:enable_and_install_ds4-server;set_KGM_DS4_ENABLED=on|auto_and_KGM_DS4_SERVER_CMD",
+    );
+  }
+
+  if (requested === "tokenspeed" && !tokenspeedOk) {
+    throw new Error(
+      "tokenspeed_unavailable:set_KGM_TOKENSPEED_ENABLED=on|auto_and_KGM_TOKENSPEED_SERVER_CMD_or_BASE_URL",
     );
   }
 

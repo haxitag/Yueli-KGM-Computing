@@ -1,10 +1,12 @@
 import { buildMemoryChunk } from "../memory/store.js";
 import { renderPrompt } from "../prompt/renderer.js";
-import { parseIntent } from "../parse/parser.js";
+import { resolveCompletionIntent, toOpenAiFunctionTools } from "../parse/nativeToolCalls.js";
 import { validateAgainstSchema } from "../schema/validator.js";
 import { extractAutoRoutingTrace, extractResolvedModel } from "../llm/autoRoutingClient.js";
 import { collectPlaygroundSystemAddons } from "../playground/systemAddons.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
+import { enrichAgenticMetadata, enrichRoutingHints, } from "../agentic/routingPreferences.js";
+import { recordAgenticRound } from "../agentic/metrics.js";
 export class Scheduler {
     deps;
     constructor(deps) {
@@ -14,7 +16,23 @@ export class Scheduler {
         const request = applyHaxiTagAssembly(initial);
         const sessionId = request.sessionId ?? request.userId;
         const toolResults = [];
-        let latestRouting = request.metadata;
+        let usedNativeToolCalls = false;
+        let roundsExecuted = 0;
+        const metadata = enrichAgenticMetadata(request.metadata, {
+            taskType: request.routing?.taskType,
+            input: request.input,
+            toolCount: request.toolPolicy?.allowed?.length,
+            sessionId,
+            nativeRuntimeId: typeof request.metadata?.native_runtime_id === "string"
+                ? request.metadata.native_runtime_id
+                : typeof request.routing?.target?.runtimeId === "string"
+                    ? request.routing.target.runtimeId
+                    : undefined,
+        });
+        const routing = enrichRoutingHints(request.routing, metadata);
+        request.metadata = metadata;
+        request.routing = routing;
+        let latestRouting = metadata;
         if (this.deps.sessionStore) {
             this.deps.sessionStore.append(sessionId, {
                 timestamp: new Date().toISOString(),
@@ -33,17 +51,32 @@ export class Scheduler {
                     content,
                 });
             }
+            const profile = typeof metadata.agentic_profile === "string" ? metadata.agentic_profile : "standard";
+            recordAgenticRound({
+                profile,
+                taskType: routing.taskType,
+                rounds: roundsExecuted,
+                toolInterrupts: toolResults.length,
+                prefixChars: request.input.length + content.length,
+                usedNativeToolCalls,
+            });
             return {
                 requestId: context.requestId,
                 type: "final",
                 content,
                 toolResults,
                 metadata: latestRouting && Object.keys(latestRouting).length > 0
-                    ? latestRouting
+                    ? {
+                        ...latestRouting,
+                        session_id: sessionId,
+                        session_continuity: true,
+                        intent_source: usedNativeToolCalls ? "native_tool_calls" : latestRouting.intent_source,
+                    }
                     : undefined,
             };
         };
         for (let round = 0; round < context.toolPolicy.maxRounds; round += 1) {
+            roundsExecuted = round + 1;
             const tools = this.deps.toolRegistry.listDefinitions(context.toolPolicy.allowed);
             const cfg = this.deps.configStore?.get();
             const systemPromptAddons = cfg
@@ -52,10 +85,18 @@ export class Scheduler {
                     ...(request.kgm?.playground?.extraSystemPrompt?.trim()
                         ? [request.kgm.playground.extraSystemPrompt.trim()]
                         : []),
+                    ...(typeof metadata.system_prompt_addon === "string" && metadata.system_prompt_addon.trim()
+                        ? [metadata.system_prompt_addon.trim()]
+                        : []),
                 ]
-                : request.kgm?.playground?.extraSystemPrompt?.trim()
-                    ? [request.kgm.playground.extraSystemPrompt.trim()]
-                    : [];
+                : [
+                    ...(request.kgm?.playground?.extraSystemPrompt?.trim()
+                        ? [request.kgm.playground.extraSystemPrompt.trim()]
+                        : []),
+                    ...(typeof metadata.system_prompt_addon === "string" && metadata.system_prompt_addon.trim()
+                        ? [metadata.system_prompt_addon.trim()]
+                        : []),
+                ];
             const prompt = renderPrompt({
                 context,
                 tools,
@@ -70,18 +111,40 @@ export class Scheduler {
                 requestId: context.requestId,
                 sessionId,
                 maxTokens: context.constraints.maxTokens ?? 512,
-                metadata: request.metadata,
+                metadata,
                 taskInput: request.input,
-                taskType: request.routing?.taskType,
-                taskName: request.routing?.taskName,
-                routing: request.routing,
+                taskType: routing.taskType,
+                taskName: routing.taskName,
+                routing,
+                tools: tools.length > 0 ? toOpenAiFunctionTools(tools) : undefined,
+                toolChoice: tools.length > 0 ? "auto" : undefined,
             });
             latestRouting = {
-                ...(request.metadata ?? {}),
+                ...metadata,
                 ...(extractAutoRoutingTrace(completion.raw) ? { routing: extractAutoRoutingTrace(completion.raw) } : {}),
                 ...(extractResolvedModel(completion.raw) ? { resolved_model: extractResolvedModel(completion.raw) } : {}),
             };
-            const intent = parseIntent(completion.text);
+            const routingTrace = extractAutoRoutingTrace(completion.raw);
+            if (routingTrace?.selected?.runtimeId && typeof latestRouting.native_runtime_id !== "string") {
+                latestRouting.native_runtime_id = routingTrace.selected.runtimeId;
+                // Keep affinity for subsequent tool rounds
+                metadata.native_runtime_id = routingTrace.selected.runtimeId;
+                request.metadata = metadata;
+                if (!request.routing)
+                    request.routing = {};
+                request.routing.target = {
+                    ...(request.routing.target ?? {}),
+                    runtimeId: routingTrace.selected.runtimeId,
+                };
+            }
+            const resolved = resolveCompletionIntent(completion, {
+                skillNames: this.deps.skillRuntime?.listNames(),
+            });
+            if (resolved.source === "native_tool_calls") {
+                usedNativeToolCalls = true;
+            }
+            latestRouting.intent_source = resolved.source;
+            const intent = resolved.intent;
             if (this.deps.schemaRecord) {
                 const validation = validateAgainstSchema(this.deps.schemaRecord.schema, intent);
                 if (!validation.ok) {
@@ -96,6 +159,7 @@ export class Scheduler {
                 return finalize("policy_reject");
             }
             toolResults.push(toolResult);
+            // Keep same sessionId / request metadata for prefix continuity across tool rounds
             context = await this.appendToolResult(context, toolResult, sessionId);
         }
         return finalize("max_rounds_reached");

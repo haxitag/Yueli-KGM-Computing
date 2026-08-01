@@ -86,6 +86,21 @@ export function createRuntime(params: {
         chdir: worker.chdir,
       };
     },
+    tokenspeed: () => {
+      const worker = configStore.get().workers.tokenspeed;
+      return {
+        enabled: worker.enabled,
+        command: worker.command,
+        installHint: worker.installHint,
+        baseUrl: worker.baseUrl,
+        port: worker.port,
+        attach: worker.attach,
+        toolCallParser: worker.toolCallParser,
+        reasoningParser: worker.reasoningParser,
+        enablePrefixCaching: worker.enablePrefixCaching,
+        extraArgs: worker.extraArgs,
+      };
+    },
   });
   const autoRoutingAuditStore = new AutoRoutingAuditStore();
 

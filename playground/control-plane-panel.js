@@ -92,6 +92,15 @@
         row("Circuit", `timeout ${valueOf(cb.timeoutMs)} ms · threshold ${valueOf(cb.errorThreshold)} · reset ${valueOf(cb.resetTimeoutMs)} ms`, "env/default · 重启"),
         row("Live states", live, "opossum 按 host 分桶"),
         row("Stream idle", `${valueOf(r.streamIdleMs) || 0} ms`, "0=关闭 · 重启"),
+        row(
+          "Agentic 计数",
+          (() => {
+            const a = valueOf(r.agentic);
+            if (!a || typeof a !== "object") return "—";
+            return `reqs=${a.requestsTotal ?? 0} · coding=${a.codingRequests ?? 0} · toolHeavy=${a.toolHeavyRequests ?? 0} · nativeTC=${a.nativeToolCallsRequests ?? 0} · avgRounds=${Number(a.avgRounds ?? 0).toFixed(2)} · lastTTFT=${a.lastFirstTokenMs ?? "—"}ms`;
+          })(),
+          "进程内快照 · 非 Prometheus SLA · 见 docs/worker-provider-session-tools-slo-eval-audit.md",
+        ),
       ].join("");
     }
 
