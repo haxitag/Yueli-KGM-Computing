@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "noEmit": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "dist",
+    "demo",
+    "tests",
+    "scripts",
+    "node_modules",
+    "src/cluster/**",
+    "src/errors/**",
+    "src/telemetry/**",
+    "src/optimization/**",
+    "src/sdk/typescript/**",
+    "src/inference/**",
+    "src/context/enhancedContextBuilder.ts",
+    "src/memory/hybridRetriever.ts",
+    "src/models/enhancedManager.ts"
+  ]
+}

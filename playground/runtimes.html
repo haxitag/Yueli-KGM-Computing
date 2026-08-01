@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>推理实例 - KGM Playground</title>
+    <link rel="stylesheet" href="design-system.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="runtime-subpage-body">
+    <nav class="top-nav top-nav-subpage">
+        <a href="index.html" class="nav-back-link">← 返回 Playground</a>
+        <span class="nav-title nav-title-subpage">推理实例</span>
+    </nav>
+
+    <main class="runtime-page-main">
+        <section class="runtime-page-intro-block">
+            <p>此处<strong>仅展示</strong>当前 <code>status=running</code> 的推理进程，避免在主配置页加载全部实例造成卡顿。新建实例在启动成功进入 running 后会出现在下方。</p>
+            <div class="runtime-page-toolbar">
+                <button type="button" id="runtime-page-refresh" class="secondary-btn">刷新</button>
+            </div>
+        </section>
+
+        <section class="model-panel runtime-page-panel">
+            <div class="sandbox-header">
+                <div>
+                    <h2>Worker 门闩与高级状态</h2>
+                    <p>门闩来自 ConfigStore，可在 Playground 配置中修改；自动重启与 ds4 KV/SSD 为进程环境变量，修改后需重启。</p>
+                </div>
+                <a href="index.html" class="btn btn-secondary">打开 Playground 配置</a>
+            </div>
+            <div id="runtime-worker-policy" class="control-plane-status">加载中…</div>
+        </section>
+
+        <section class="model-panel runtime-page-panel">
+            <h2>创建 Runtime</h2>
+            <div class="model-runtime-grid">
+                <label class="option-field">
+                    <span>Artifact</span>
+                    <select id="runtime-artifact-select">
+                        <option value="">选择已拉取模型</option>
+                    </select>
+                </label>
+                <label class="option-field">
+                    <span>Runtime</span>
+                    <select id="runtime-kind-select">
+                        <option value="native">native</option>
+                        <option value="ds4">ds4（DeepSeek V4 / GLM）</option>
+                        <option value="llama.cpp">llama.cpp</option>
+                        <option value="ollama">ollama</option>
+                        <option value="tokenspeed">tokenspeed（OpenAI-compat agentic）</option>
+                        <option value="vllm">vLLM</option>
+                        <option value="sglang">SGLang</option>
+                        <option value="mlx">MLX (Apple Silicon / JANG)</option>
+                        <option value="openai-compatible">OpenAI Compatible</option>
+                    </select>
+                </label>
+                <label class="option-field">
+                    <span>Runtime 模型名</span>
+                    <input id="runtime-model-name" type="text" placeholder="例如 qwen-local">
+                </label>
+                <label class="option-field">
+                    <span>端口</span>
+                    <input id="runtime-port" type="number" placeholder="8090(ds4) / 8080 / 8000 / 7860">
+                </label>
+                <div class="model-actions">
+                    <button type="button" id="create-runtime-btn">创建 Runtime</button>
+                </div>
+            </div>
+
+            <h3 class="runtime-list-heading">运行中的实例</h3>
+            <div id="model-runtime-list" class="managed-list"></div>
+        </section>
+    </main>
+
+    <script src="auth-fetch.js"></script>
+    <script src="runtimes-page.js"></script>
+</body>
+</html>

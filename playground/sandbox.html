@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>沙箱控制 - KGM Playground</title>
+    <link rel="stylesheet" href="design-system.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="runtime-subpage-body">
+    <nav class="top-nav top-nav-subpage">
+        <a href="index.html" class="nav-back-link">← 返回 Playground</a>
+        <span class="nav-title nav-title-subpage">Sandbox Control</span>
+    </nav>
+
+    <main class="runtime-page-main">
+        <section class="runtime-page-intro-block">
+            <p>
+                虚拟计算机 / 浏览器 / 移动端沙箱的<strong>真实控制面</strong>（<code>/v1/kgm/sandboxes</code>）。
+                未配置 adapter 时实例为 <code>unconfigured</code>：可创建与列表，但<strong>启动会 503</strong>。
+                可在主页「配置 → 沙箱 adapter」写入 ConfigStore，或设置 <code>KGM_SANDBOX_*_USE_EMBEDDED=1</code> / START/STOP/STATUS 命令。
+            </p>
+        </section>
+
+        <section class="sandbox-adapter-panel">
+            <h2>Adapter 状态</h2>
+            <p class="helper-text">来源 <code>GET /v1/kgm/sandboxes/adapters</code>。改配置后点刷新，或回主页「配置」保存。</p>
+            <div id="sandbox-adapter-status"></div>
+            <div class="sandbox-actions" style="margin-top:10px">
+                <button type="button" id="refresh-adapters-btn" class="btn btn-secondary">刷新 adapter</button>
+                <a href="index.html" class="btn btn-secondary">打开 Playground 配置</a>
+            </div>
+        </section>
+
+        <section class="sandbox-panel">
+            <div class="sandbox-header">
+                <div>
+                    <h2>Sandbox Control</h2>
+                    <p>创建、刷新与启停沙箱实例；列表与首页分离以降低主页面负载。</p>
+                </div>
+                <div class="sandbox-actions">
+                    <select id="sandbox-kind-select" aria-label="沙箱类型">
+                        <option value="computer">Virtual Computer</option>
+                        <option value="browser">Virtual Browser</option>
+                        <option value="mobile">Virtual Mobile</option>
+                    </select>
+                    <button type="button" id="create-sandbox-btn" class="btn btn-secondary">创建 Sandbox</button>
+                    <button type="button" id="refresh-sandbox-btn" class="btn btn-secondary">刷新状态</button>
+                </div>
+            </div>
+            <div id="sandbox-list" class="sandbox-list"></div>
+        </section>
+    </main>
+
+    <script src="auth-fetch.js"></script>
+    <script src="sandbox-page.js"></script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+{
+  "providers": [
+    {
+      "type": "vllm",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "apiKey": "EMPTY",
+      "extraParams": {}
+    },
+    {
+      "type": "ollama",
+      "baseUrl": "http://127.0.0.1:11434/api",
+      "model": "qwen2.5:7b-instruct",
+      "extraParams": {}
+    }
+  ],
+  "activeProviders": [
+    "vllm:Qwen/Qwen2.5-7B-Instruct",
+    "ollama:qwen2.5:7b-instruct"
+  ],
+  "defaultProvider": "vllm:Qwen/Qwen2.5-7B-Instruct",
+  "providerRoutingRules": [
+    {
+      "name": "Local Private Tasks",
+      "condition": "local|private|offline|confidential",
+      "provider": "ollama:qwen2.5:7b-instruct",
+      "priority": 10
+    },
+    {
+      "name": "General Reasoning",
+      "condition": "reason|analysis|plan|tool|graph|retrieval",
+      "provider": "vllm:Qwen/Qwen2.5-7B-Instruct",
+      "priority": 8
+    }
+  ]
+}
