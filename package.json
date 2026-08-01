@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "private": false,
   "workspaces": [
     "packages/*"
@@ -113,7 +113,7 @@
     "test:e2e:journey": "tsx --test tests/e2e/user-journey-matrix.e2e.test.ts",
     "test:e2e:critical": "tsx --test tests/e2e/critical-review-matrix.e2e.test.ts",
     "test:e2e:proxy": "tsx --test tests/e2e/upstream-proxy.e2e.test.ts",
-    "test:unit:media-compat": "node --import tsx --test tests/unit/media_compat.test.ts",
+    "test:unit:media-compat": "node --import tsx --test tests/unit/media_compat.test.ts tests/unit/media_providers.test.ts",
     "test:unit:http-access": "node --import tsx --test tests/unit/http_access.test.ts",
     "test:unit:worker-restart": "node --import tsx --test tests/unit/worker_restart_policy.test.ts",
     "test:unit:managed-worker-affinity": "node --import tsx --test tests/unit/managed_worker_affinity_attach.test.ts",

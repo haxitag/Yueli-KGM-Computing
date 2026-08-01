@@ -16,4 +16,6 @@ export const openApiResponseComponents = {
     NotImplemented: err("服务未启用该能力（如可选模块未配置）"),
     RateLimited: err("超过 HTTP 限流（见 Retry-After 响应头）"),
     ServerError: err("服务内部错误"),
+    BadGateway: err("上游失败（媒体/LLM）；HTTP 恒为 502，厂商原始状态仅在 error.details.upstreamStatus"),
+    GatewayTimeout: err("上游轮询/网关超时（如 media_poll_timeout）"),
 };

@@ -8,6 +8,7 @@ import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
 import { KgmStructuredError } from "../errors/structuredError.js";
 import { protectedFetch } from "../observability/circuitBreaker.js";
+import { LlmProviderApiError } from "./providerApiError.js";
 
 /**
  * 进程内「上游 LLM」访问统一走 **HTTP + OpenAI Chat/Completions 形 JSON**：
@@ -15,6 +16,9 @@ import { protectedFetch } from "../observability/circuitBreaker.js";
  * - **Anthropic `/v1/messages`**：在 **`src/anthropic/compat.ts`** 转为 OpenAI Chat 请求后再调用同一 **`LlmClient`**，不另设专用 HTTP 客户端类。
  * - **Ollama**：仍用 **`OllamaLlmClient`**（非 OpenAI 路径）。
  */
+
+/** Upstream auth header style. Xiaomi MiMo docs use `api-key`; OpenAI SDK uses Bearer. */
+export type LlmAuthStyle = "bearer" | "api-key" | "both";
 
 export type CompletionOptions = {
   model?: string;
@@ -115,10 +119,12 @@ export class HttpLlmClient implements LlmClient {
   private apiKey?: string;
   private mode: "completions" | "chat";
   private timeoutMs?: number;
+  private authStyle: LlmAuthStyle;
 
   /**
    * @param params.path - 相对 `baseUrl` 的路径，如 `/v1/chat/completions`；与 **`KGM_LLM_PATH`** / **`ConfigStore.llm.path`** 对齐。
    * @param params.mode - `chat` 发 messages 体，`completions` 发 prompt 体。
+   * @param params.authStyle - `bearer`（默认）| `api-key`（Xiaomi MiMo curl 形）| `both`
    */
   constructor(params: {
     baseUrl: string;
@@ -127,6 +133,7 @@ export class HttpLlmClient implements LlmClient {
     apiKey?: string;
     mode?: "completions" | "chat";
     timeoutMs?: number;
+    authStyle?: LlmAuthStyle;
   }) {
     this.baseUrl = params.baseUrl;
     this.model = params.model;
@@ -134,6 +141,7 @@ export class HttpLlmClient implements LlmClient {
     this.apiKey = params.apiKey;
     this.mode = params.mode ?? "completions";
     this.timeoutMs = params.timeoutMs;
+    this.authStyle = params.authStyle ?? "bearer";
   }
 
   async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
@@ -159,7 +167,7 @@ export class HttpLlmClient implements LlmClient {
           };
 
     const data = (await postJson(joinUrl(this.baseUrl, this.path), payload, {
-      headers: buildAuthHeaders(this.apiKey),
+      headers: buildAuthHeaders(this.apiKey, this.authStyle),
       timeoutMs: this.timeoutMs,
     })) as {
       choices?: Array<Record<string, unknown>>;
@@ -228,7 +236,7 @@ export class HttpLlmClient implements LlmClient {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...buildAuthHeaders(this.apiKey),
+          ...buildAuthHeaders(this.apiKey, this.authStyle),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -237,7 +245,17 @@ export class HttpLlmClient implements LlmClient {
       clearConnectTimer();
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`HTTP error: ${response.status} - ${errorText}`);
+        let json: unknown = errorText;
+        try {
+          json = errorText ? JSON.parse(errorText) : {};
+        } catch {
+          /* keep */
+        }
+        const msg =
+          json && typeof json === "object" && (json as { error?: { message?: string } }).error?.message
+            ? String((json as { error: { message: string } }).error.message)
+            : errorText.slice(0, 500) || `Upstream failed with HTTP ${response.status}`;
+        throw new LlmProviderApiError("http-llm", msg, { httpStatus: response.status });
       }
 
       const reader = response.body?.getReader();
@@ -403,6 +421,7 @@ export class ConfigurableLlmClient implements LlmClient {
           apiKey: config.apiKey,
           mode: config.mode,
           timeoutMs: config.timeoutMs,
+          authStyle: inferLlmAuthStyle(config.baseUrl),
         });
   }
 
@@ -444,9 +463,37 @@ export class ConfigurableLlmClient implements LlmClient {
   }
 }
 
-function buildAuthHeaders(apiKey?: string): Record<string, string> {
+export function buildAuthHeaders(
+  apiKey?: string,
+  style: LlmAuthStyle = "bearer",
+): Record<string, string> {
   if (!apiKey) {
     return {};
   }
+  if (style === "api-key") {
+    return { "api-key": apiKey };
+  }
+  if (style === "both") {
+    return {
+      authorization: `Bearer ${apiKey}`,
+      "api-key": apiKey,
+    };
+  }
   return { authorization: `Bearer ${apiKey}` };
+}
+
+/** Infer auth style from base URL / env (MiMo OpenAPI / Token Plan). */
+export function inferLlmAuthStyle(baseUrl?: string, explicit?: unknown): LlmAuthStyle {
+  if (explicit === "bearer" || explicit === "api-key" || explicit === "both") {
+    return explicit;
+  }
+  const env = process.env.KGM_LLM_AUTH_STYLE?.trim().toLowerCase();
+  if (env === "bearer" || env === "api-key" || env === "both") {
+    return env;
+  }
+  const url = (baseUrl || "").toLowerCase();
+  if (url.includes("xiaomimimo.com") || url.includes("api.xiaomi.ai")) {
+    return "both";
+  }
+  return "bearer";
 }

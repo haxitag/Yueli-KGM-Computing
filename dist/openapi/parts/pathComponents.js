@@ -5,6 +5,8 @@ const R = {
     ni: { $ref: "#/components/responses/NotImplemented" },
     rl: { $ref: "#/components/responses/RateLimited" },
     err5: { $ref: "#/components/responses/ServerError" },
+    badGw: { $ref: "#/components/responses/BadGateway" },
+    gwTimeout: { $ref: "#/components/responses/GatewayTimeout" },
 };
 function j200(name, desc) {
     return {
@@ -23,6 +25,38 @@ function postOrGet() {
 }
 function postBodyNoGet404() {
     return { "400": R.bad, "401": R.unauth, "429": R.rl, "500": R.err5 };
+}
+/** Media thin-proxy: KGM-owned statuses only (vendor codes never passthrough). */
+function mediaProxyResponses(extra) {
+    return {
+        "400": {
+            description: "Client/config selection error — codes: media_provider_not_found, media_template_missing_var, video_duration_exceeded",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+        },
+        "401": R.unauth,
+        "404": {
+            description: "job_not_found (async media jobs)",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+        },
+        "429": {
+            description: "video_concurrency_limit or HTTP rate limit",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+        },
+        "501": {
+            description: "*_provider_not_configured — soft-degrade; do not treat as 500",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+        },
+        "502": {
+            description: "media_upstream_error / unreachable / failed — vendor HTTP status only in error.details.upstreamStatus",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+        },
+        "504": {
+            description: "media_poll_timeout / video_poll_timeout",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+        },
+        "500": R.err5,
+        ...extra,
+    };
 }
 /**
  * 全部 `paths`：含 `requestBody` 与主要 `responses` 的 `application/json` schema。
@@ -75,49 +109,48 @@ export function buildOpenApiPathsV1() {
         },
         "/v1/images/generations": {
             post: {
-                summary: "OpenAI Images Generations（KGM 薄代理；未配置上游返回 501）",
+                summary: "OpenAI Images Generations（KGM 薄代理；错误体见 KgmError，上游状态不透传）",
+                description: "未配置 → 501 image_generation_provider_not_configured；未知 provider id → 400 media_provider_not_found；上游失败 → 502 media_upstream_error（details.upstreamStatus）。",
                 requestBody: {
                     required: true,
                     content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
                 },
                 responses: {
-                    "200": { description: "upstream JSON" },
-                    "501": R.ni,
-                    ...postWithBody(),
+                    "200": { description: "normalized / upstream JSON" },
+                    ...mediaProxyResponses(),
                 },
             },
         },
         "/v1/images/edits": {
             post: {
-                summary: "OpenAI Images Edits（复用 image 上游；未配置 501）",
+                summary: "OpenAI Images Edits（复用 image 上游）",
                 requestBody: {
                     required: true,
                     content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
                 },
-                responses: { "200": { description: "upstream JSON" }, "501": R.ni, ...postWithBody() },
+                responses: { "200": { description: "upstream JSON" }, ...mediaProxyResponses() },
             },
         },
         "/v1/images/variations": {
             post: {
-                summary: "OpenAI Images Variations（复用 image 上游；未配置 501）",
+                summary: "OpenAI Images Variations（复用 image 上游）",
                 requestBody: {
                     required: true,
                     content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
                 },
-                responses: { "200": { description: "upstream JSON" }, "501": R.ni, ...postWithBody() },
+                responses: { "200": { description: "upstream JSON" }, ...mediaProxyResponses() },
             },
         },
         "/v1/audio/speech": {
             post: {
-                summary: "OpenAI Audio Speech / TTS（KGM 薄代理；可返回 audio/* 二进制）",
+                summary: "OpenAI Audio Speech / TTS（可返回 audio/* 二进制）",
                 requestBody: {
                     required: true,
                     content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
                 },
                 responses: {
                     "200": { description: "audio binary or JSON" },
-                    "501": R.ni,
-                    ...postWithBody(),
+                    ...mediaProxyResponses(),
                 },
             },
         },
@@ -133,8 +166,7 @@ export function buildOpenApiPathsV1() {
                 },
                 responses: {
                     "200": { description: "transcription JSON" },
-                    "501": R.ni,
-                    ...postWithBody(),
+                    ...mediaProxyResponses(),
                 },
             },
         },
@@ -145,20 +177,20 @@ export function buildOpenApiPathsV1() {
                     required: true,
                     content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
                 },
-                responses: { "200": { description: "translation JSON" }, "501": R.ni, ...postWithBody() },
+                responses: { "200": { description: "translation JSON" }, ...mediaProxyResponses() },
             },
         },
         "/v1/videos/generations": {
             post: {
-                summary: "视频生成（异步 job；202 + GET /v1/kgm/media/jobs/{id}；未配置 501）",
+                summary: "视频生成（异步 job；202 + GET /v1/kgm/media/jobs/{id}）",
+                description: "202 kgm.media_job；501 未配置；400 duration；429 并发；上游失败记入 job.error（轮询见 504 media_poll_timeout）。",
                 requestBody: {
                     required: true,
                     content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
                 },
                 responses: {
                     "202": { description: "kgm.media_job queued/processing" },
-                    "501": R.ni,
-                    ...postWithBody(),
+                    ...mediaProxyResponses(),
                 },
             },
         },
@@ -171,8 +203,7 @@ export function buildOpenApiPathsV1() {
                 },
                 responses: {
                     "202": { description: "kgm.media_job" },
-                    "501": R.ni,
-                    ...postWithBody(),
+                    ...mediaProxyResponses(),
                 },
             },
         },
@@ -180,7 +211,14 @@ export function buildOpenApiPathsV1() {
             get: {
                 summary: "查询媒体异步任务状态",
                 parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
-                responses: { "200": { description: "kgm.media_job" }, ...getOnly() },
+                responses: {
+                    "200": { description: "kgm.media_job" },
+                    ...getOnly(),
+                    "404": {
+                        description: "job_not_found（含跨租户不可见）",
+                        content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+                    },
+                },
             },
         },
         "/v1/rerank": {
@@ -190,14 +228,21 @@ export function buildOpenApiPathsV1() {
                     required: true,
                     content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
                 },
-                responses: { "200": { description: "upstream JSON" }, "501": R.ni, ...postWithBody() },
+                responses: { "200": { description: "upstream JSON" }, ...mediaProxyResponses() },
             },
         },
         "/v1/chat/completions": {
             post: {
                 summary: "OpenAI Chat Completions",
                 requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ChatCompletionRequest" } } } },
-                responses: { "200": j200("ChatCompletionResponse", "非 stream"), ...postWithBody() },
+                responses: {
+                    "200": j200("ChatCompletionResponse", "非 stream"),
+                    "502": {
+                        description: "LLM_UPSTREAM_ERROR / LLM_UPSTREAM_UNREACHABLE — 厂商状态仅在 details.upstreamStatus",
+                        content: { "application/json": { schema: { $ref: "#/components/schemas/KgmError" } } },
+                    },
+                    ...postWithBody(),
+                },
             },
         },
         "/v1/responses": {

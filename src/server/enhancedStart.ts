@@ -8,7 +8,7 @@ import {
   createRuntimeWithStorage,
 } from "../index.js";
 import type { KgmConfigPatch } from "../core/configStore.js";
-import { playgroundRouter } from "./playgroundApi.js";
+import { configurePlaygroundApi, playgroundRouter } from "./playgroundApi.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import { createPlaygroundSpaFallbackMiddleware } from "./playgroundSpaFallback.js";
 import { createKgmRequestListener } from "./http.js";
@@ -61,7 +61,8 @@ async function main(): Promise<void> {
   app.use('/generated-videos', express.static(path.join(__dirname, '../../data/generated-videos')));
   app.use('/generated-audio', express.static(path.join(__dirname, '../../data/generated-audio')));
 
-  // API路由 - Playground
+  // API路由 - Playground（与 /v1 共用 AutoRouting llmClient）
+  configurePlaygroundApi({ llmClient: runtime.llmClient });
   app.use('/api/kgm', playgroundRouter);
 
   // /dynamic 等误开路径 → Playground；浏览器 HTML 导航避免落到 JSON 404

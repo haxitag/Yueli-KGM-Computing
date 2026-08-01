@@ -10,6 +10,7 @@ import { classifyIntent, classifyIntentSync, intentToRoutingTaskType } from "../
 import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 import { agenticCandidateBias, detectAgenticProfile, } from "../agentic/routingPreferences.js";
 import { providerSupportsTools } from "./providerFactory.js";
+import { modelsMatchByAlias, resolveCloudModelAlias } from "../models/cloudModelCatalog.js";
 export class AutoRoutingLlmClient {
     fallback;
     manager;
@@ -319,13 +320,24 @@ export class AutoRoutingLlmClient {
         const candidates = needsTools && candidatesRaw.some((c) => c.supportsTools !== false)
             ? candidatesRaw.filter((c) => c.supportsTools !== false)
             : candidatesRaw;
-        const explicitTarget = options?.model
+        const rawTarget = options?.model
             ? { model: options.model }
             : hints.target?.model || hints.target?.provider || hints.target?.runtimeId
                 ? hints.target
                 : undefined;
-        if (explicitTarget) {
-            const matched = this.selectByTarget(candidates, explicitTarget, profile);
+        // Strip model=auto so we fall through to scored selection (unless provider/runtime pinned).
+        const pinnedTarget = rawTarget
+            ? {
+                ...rawTarget,
+                model: rawTarget.model &&
+                    rawTarget.model.trim() &&
+                    rawTarget.model.trim().toLowerCase() !== "auto"
+                    ? rawTarget.model.trim()
+                    : undefined,
+            }
+            : undefined;
+        if (pinnedTarget && (pinnedTarget.model || pinnedTarget.provider || pinnedTarget.runtimeId)) {
+            const matched = this.selectByTarget(candidates, pinnedTarget, profile);
             if (matched) {
                 return {
                     profile,
@@ -337,7 +349,7 @@ export class AutoRoutingLlmClient {
                     selected: matched,
                 };
             }
-            const directTarget = this.createDirectTargetCandidate(candidates, explicitTarget);
+            const directTarget = this.createDirectTargetCandidate(candidates, pinnedTarget);
             if (directTarget) {
                 return {
                     profile,
@@ -441,7 +453,7 @@ export class AutoRoutingLlmClient {
         }
         if (this.isProviderRoutingEnabled()) {
             await this.ensureProviderManager();
-            const providers = this.providerManager?.getActiveProviderConfigs() ?? [];
+            const providers = this.providerManager?.getRoutableProviderConfigs() ?? [];
             for (const provider of providers) {
                 const routeKey = `provider:${provider.type}:${provider.model}`;
                 const stats = this.auditStore.getCandidateStats(routeKey, route.taskType);
@@ -512,6 +524,11 @@ export class AutoRoutingLlmClient {
         };
     }
     selectByTarget(candidates, target, profile) {
+        const modelMatches = (candidateModel, wanted) => {
+            if (!wanted)
+                return true;
+            return modelsMatchByAlias(candidateModel, wanted);
+        };
         const exact = candidates.find((candidate) => {
             if (target.runtimeId && candidate.runtimeId !== target.runtimeId) {
                 return false;
@@ -519,7 +536,7 @@ export class AutoRoutingLlmClient {
             if (target.provider && candidate.provider !== target.provider) {
                 return false;
             }
-            if (target.model && candidate.model !== target.model) {
+            if (target.model && !modelMatches(candidate.model, target.model)) {
                 return false;
             }
             return true;
@@ -532,13 +549,13 @@ export class AutoRoutingLlmClient {
                 return candidate.runtimeId === target.runtimeId;
             }
             if (target.provider && target.model) {
-                return candidate.provider === target.provider && candidate.model === target.model;
+                return candidate.provider === target.provider && modelMatches(candidate.model, target.model);
             }
             if (target.provider) {
                 return candidate.provider === target.provider;
             }
             if (target.model) {
-                return candidate.model === target.model;
+                return modelMatches(candidate.model, target.model);
             }
             return false;
         });
@@ -558,8 +575,19 @@ export class AutoRoutingLlmClient {
         }
         const llm = this.configStore.get().llm;
         const fallback = candidates.find((item) => item.source === "default");
+        const canonicalModel = target.model ? resolveCloudModelAlias(target.model) : undefined;
+        // Prefer an existing provider/managed candidate that matches the canonical id
+        // (selectByTarget may have missed if only provider differed).
+        if (canonicalModel) {
+            const byAlias = candidates.find((c) => modelsMatchByAlias(c.model, canonicalModel) &&
+                (!target.provider || c.provider === target.provider) &&
+                (!target.runtimeId || c.runtimeId === target.runtimeId));
+            if (byAlias) {
+                return { ...byAlias, model: byAlias.model };
+            }
+        }
         const effProvider = target.provider ?? fallback?.provider ?? llm.provider;
-        const effModel = target.model ?? fallback?.model ?? llm.model;
+        const effModel = canonicalModel ?? target.model ?? fallback?.model ?? llm.model;
         const routeSeg = target.provider != null ? effProvider : configuredLlmRouteSegment(llm.provider);
         return {
             ...(fallback ?? {
@@ -1063,10 +1091,16 @@ export class AutoRoutingLlmClient {
         }
         await this.providerLoadPromise;
     }
+    /**
+     * Provider cloud routing is ON by default.
+     * Opt out: KGM_PROVIDER_ROUTING_ENABLED=0|false|off
+     */
     isProviderRoutingEnabled() {
-        return (Boolean(process.env.KGM_PROVIDER_CONFIG_PATH) ||
-            process.env.KGM_PROVIDER_ROUTING_ENABLED === "1" ||
-            process.env.KGM_PROVIDER_ROUTING_ENABLED === "true");
+        const flag = process.env.KGM_PROVIDER_ROUTING_ENABLED?.trim().toLowerCase();
+        if (flag === "0" || flag === "false" || flag === "off" || flag === "no") {
+            return false;
+        }
+        return true;
     }
 }
 export function extractAutoRoutingTrace(raw) {

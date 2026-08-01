@@ -1,4 +1,6 @@
 import { generateId } from "../utils/id.js";
+import { LlmProviderApiError, parseHttpStatusFromErrorMessage } from "../llm/providerApiError.js";
+import { canonicalizePublicErrorStatus } from "../utils/kgmHttpErrors.js";
 export class KgmStructuredError extends Error {
     code;
     type;
@@ -33,6 +35,7 @@ export function structuredErrorBody(error) {
         error: {
             code: structured.code || "INTERNAL_ERROR",
             message: structured.message || "KGM internal error",
+            status: canonicalizePublicErrorStatus(structured.status),
             type: structured.type || "kgm_internal_error",
             param: structured.param,
             details: structured.details,
@@ -44,11 +47,70 @@ export function structuredErrorBody(error) {
         },
     };
 }
+/** Host-facing envelope: KgmError fields + structured type/kgm; vendor status only in details. */
+export function toHostKgmError(error) {
+    if (error instanceof LlmProviderApiError && error.httpStatus != null) {
+        const structured = toKgmStructuredError(error);
+        const body = structuredErrorBody(structured);
+        return { status: body.error.status, body };
+    }
+    const structured = toKgmStructuredError(error);
+    const body = structuredErrorBody(structured);
+    return { status: body.error.status, body };
+}
 export function toKgmStructuredError(error) {
     if (error instanceof KgmStructuredError) {
         return error;
     }
+    if (error instanceof LlmProviderApiError) {
+        const upstreamStatus = error.httpStatus;
+        if (upstreamStatus != null) {
+            return new KgmStructuredError({
+                code: "LLM_UPSTREAM_ERROR",
+                message: error.message || "LLM upstream returned an error",
+                type: "kgm_upstream_error",
+                status: 502,
+                details: {
+                    upstreamStatus,
+                    provider: error.provider,
+                    ...(error.upstreamCode ? { upstreamCode: error.upstreamCode } : {}),
+                },
+                stage: "inference.llm_provider",
+                path: "llmProvider",
+                routeAttempted: true,
+                suggestedFix: "Check provider credentials/baseUrl; vendor HTTP status is in error.details.upstreamStatus (not the host HTTP code).",
+                affectedFeatures: ["chat", "completions", "responses"],
+            });
+        }
+        return new KgmStructuredError({
+            code: "LLM_UPSTREAM_UNREACHABLE",
+            message: error.message || "LLM upstream is unreachable",
+            type: "kgm_upstream_error",
+            status: 502,
+            details: { provider: error.provider },
+            stage: "inference.llm_provider",
+            path: "llmProvider",
+            routeAttempted: true,
+            suggestedFix: "Check KGM_LLM_BASE_URL, KGM_LLM_PATH, network reachability, and /v1/runtime/discovery.",
+            affectedFeatures: ["chat", "completions", "responses"],
+        });
+    }
     const message = error instanceof Error ? error.message : String(error);
+    const parsedStatus = parseHttpStatusFromErrorMessage(message);
+    if (parsedStatus != null && parsedStatus >= 400) {
+        return new KgmStructuredError({
+            code: "LLM_UPSTREAM_ERROR",
+            message: message || "LLM upstream returned an error",
+            type: "kgm_upstream_error",
+            status: 502,
+            details: { upstreamStatus: parsedStatus },
+            stage: "inference.llm_provider",
+            path: "llmProvider",
+            routeAttempted: true,
+            suggestedFix: "Vendor HTTP status is in error.details.upstreamStatus; host always returns 502 for upstream failures.",
+            affectedFeatures: ["chat", "completions", "responses"],
+        });
+    }
     const lower = message.toLowerCase();
     if (lower.includes("embedding") && lower.includes("apikey")) {
         return new KgmStructuredError({
@@ -117,7 +179,7 @@ function defaultStatus(code) {
     if (code === "ROUTE_NO_CANDIDATE" || code === "PROVIDER_NOT_CONFIGURED" || code === "NATIVE_MODEL_NOT_LOADED") {
         return 400;
     }
-    if (code === "LLM_UPSTREAM_UNREACHABLE") {
+    if (code === "LLM_UPSTREAM_UNREACHABLE" || code === "LLM_UPSTREAM_ERROR") {
         return 502;
     }
     if (code === "CIRCUIT_BREAKER_OPEN") {

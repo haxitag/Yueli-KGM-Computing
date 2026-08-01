@@ -2,12 +2,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import { extractAutoRoutingTrace } from '../llm/autoRoutingClient.js';
 import { HttpLlmClient } from '../llm/client.js';
-import { ProviderRoutedLlmClient } from '../llm/providerRoutedClient.js';
 import { MultimodalProcessor } from '../multimodal/processor.js';
 import { LanguageAsAService } from '../multimodal/languageService.js';
 import { parseSkillMd } from '../playground/skillMd.js';
+import { kgmFail } from '../utils/kgmHttpErrors.js';
 export const playgroundRouter = express.Router();
+/** Injected by combined/enhanced servers so trust-proxy shares HTTP AutoRouting. */
+let playgroundLlmClient;
+export function configurePlaygroundApi(options) {
+    if (options.llmClient) {
+        playgroundLlmClient = options.llmClient;
+    }
+}
+function resolvePlaygroundLlmClient() {
+    return playgroundLlmClient ?? createPlaygroundEnvFallbackClient();
+}
 // 初始化多模态处理器和语言服务 - 信任委托与代理服务
 const multimodalProcessor = new MultimodalProcessor();
 const langService = new LanguageAsAService(multimodalProcessor, {
@@ -160,10 +171,8 @@ playgroundRouter.post('/trust-proxy-process', async (req, res) => {
         const { prompt, model, temperature = 0.7, maxTokens = 1024, mediaInputs } = req.body;
         const providerAlias = normalizeProviderAlias(model);
         const requestedModel = providerAlias ? undefined : normalizeRequestedModel(model);
-        const client = new ProviderRoutedLlmClient({
-            fallback: createPlaygroundFallbackClient(),
-            forcedProviderType: providerAlias,
-        });
+        // Same client as /v1/chat/completions (AutoRouting); stream vs auto stay separate stages.
+        const client = resolvePlaygroundLlmClient();
         // 添加基本输入
         let finalPrompt = prompt;
         // 信任委托 - 通过知识图谱补全和上下文丰富性处理多模态内容
@@ -186,6 +195,12 @@ playgroundRouter.post('/trust-proxy-process', async (req, res) => {
             model: requestedModel,
             temperature,
             maxTokens,
+            routing: providerAlias
+                ? { target: { provider: providerAlias } }
+                : undefined,
+            metadata: providerAlias
+                ? { provider_preference: providerAlias }
+                : undefined,
         });
         console.log('[Trust Proxy] Completion result received, applying audit trail');
         // 信任代理 - 生成可审计的响应
@@ -198,15 +213,14 @@ playgroundRouter.post('/trust-proxy-process', async (req, res) => {
             trustDelegationActive: true,
             auditTrail: true,
             providerRouting: extractProviderRouting(result.raw),
+            autoRouting: extractAutoRoutingTrace(result.raw),
         };
         res.json(response);
     }
     catch (error) {
         console.error('Playground API Error:', error);
-        res.status(500).json({
-            error: '处理请求时发生错误',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        });
+        const fail = kgmFail('playground_trust_proxy_failed', error instanceof Error ? error.message : 'Unknown error', 500, { cause: 'trust-proxy-process' });
+        res.status(fail.status).json(fail.body);
     }
 });
 /**
@@ -289,7 +303,8 @@ function normalizeMediaList(value, type) {
         return { type, data: String(item) };
     }).filter((item) => item.data.trim());
 }
-function createPlaygroundFallbackClient() {
+/** Standalone playgroundServer only — prefer configurePlaygroundApi(llmClient) in production. */
+function createPlaygroundEnvFallbackClient() {
     return new HttpLlmClient({
         baseUrl: process.env.KGM_LLM_BASE_URL || 'https://api.openai.com/v1',
         model: process.env.KGM_LLM_MODEL || 'gpt-4o-mini',
@@ -373,6 +388,8 @@ const DEFAULT_CLOUD_PRICING = {
     'glm-5.0': { inputPer1k: 0.0005, outputPer1k: 0.0005, currency: 'USD' },
     'glm-5.1': { inputPer1k: 0.001, outputPer1k: 0.001, currency: 'USD' },
     'glm-5.2': { inputPer1k: 0.0012, outputPer1k: 0.0012, currency: 'USD' },
+    'mimo-v2.5-pro': { inputPer1k: 0.000435, outputPer1k: 0.00087, currency: 'USD' },
+    'mimo-v2.5': { inputPer1k: 0.00014, outputPer1k: 0.00028, currency: 'USD' },
     'mimo-2.5': { inputPer1k: 0.0008, outputPer1k: 0.0008, currency: 'USD' },
     'claude-sonnet-4.6': { inputPer1k: 0.003, outputPer1k: 0.015, currency: 'USD' },
     'claude-opus-4.7': { inputPer1k: 0.015, outputPer1k: 0.075, currency: 'USD' },

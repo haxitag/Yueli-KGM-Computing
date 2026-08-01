@@ -44,3 +44,13 @@ export function stringifyLlmProviderErrorPayload(error: unknown): string {
     return String(error);
   }
 }
+
+/** Parse http status from legacy Error messages like `http 401: ...` / `HTTP error: 401 - ...`. */
+export function parseHttpStatusFromErrorMessage(message: string): number | undefined {
+  const m =
+    message.match(/\bhttp(?:\s+error)?[:\s]+(\d{3})\b/i) ||
+    message.match(/\(http:\s*(\d{3})\)/i);
+  if (!m?.[1]) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : undefined;
+}

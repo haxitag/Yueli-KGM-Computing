@@ -31,6 +31,17 @@
       "extraParams": {}
     },
     {
+      "type": "xiaomi",
+      "baseUrl": "https://api.xiaomimimo.com/v1",
+      "model": "mimo-v2.5-pro",
+      "apiKey": null,
+      "extraParams": {
+        "authStyle": "both",
+        "path": "/chat/completions",
+        "mode": "chat"
+      }
+    },
+    {
       "type": "deepseek",
       "baseUrl": "https://api.deepseek.com/v1",
       "model": "deepseek-chat",

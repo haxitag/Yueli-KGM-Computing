@@ -39,6 +39,7 @@ import {
   proxyImagesVariations,
   proxyRerank,
   startVideoGenerationJob,
+  toCanonicalMediaProxyFailure,
   type MediaProxyResult,
 } from "../openai/mediaCompat.js";
 import { getMediaJobStore } from "../openai/mediaJobs.js";
@@ -75,6 +76,7 @@ import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
 import { handleObservabilityRoute } from "./routes/observability.js";
 import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 import { resolveModelAlias } from "../admin/modelAliasResolve.js";
+import { mediaFail } from "../openai/mediaErrors.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText, getKgmHttpMaxBodyBytes } from "./httpJsonHelpers.js";
 import { getOptimizer } from "../optimization/optimizer.js";
@@ -103,7 +105,11 @@ import {
 import { inferRuntimeHintsForModelPath } from "../models/modelManager.js";
 import { planGpuThroughput } from "../inference/gpuThroughputRouter.js";
 import type { ManagedLoraAdapter } from "../models/modelManager.js";
-import { structuredErrorBody, toKgmStructuredError } from "../errors/structuredError.js";
+import { toHostKgmError, toKgmStructuredError } from "../errors/structuredError.js";
+import {
+  assertVirtualKeyModelAllowed,
+  modelFromBody,
+} from "./virtualKeyModelGuard.js";
 import { appendHttpAccessLog, snapshotHttpAccessLog } from "./httpRequestRing.js";
 import { handleYueliaiRoute } from "../yueliai/routes.js";
 import {
@@ -1083,24 +1089,32 @@ export function createKgmRequestListener(
 
       if (req.method === "POST" && url.pathname === "/v1/images/generations") {
         const payload = (await readJson(req)) as Record<string, unknown>;
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const result = await proxyImagesGenerations(payload, params.configStore.get());
         return sendMediaProxyResult(res, result);
       }
 
       if (req.method === "POST" && url.pathname === "/v1/images/edits") {
         const payload = (await readJson(req)) as Record<string, unknown>;
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const result = await proxyImagesEdits(payload, params.configStore.get());
         return sendMediaProxyResult(res, result);
       }
 
       if (req.method === "POST" && url.pathname === "/v1/images/variations") {
         const payload = (await readJson(req)) as Record<string, unknown>;
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const result = await proxyImagesVariations(payload, params.configStore.get());
         return sendMediaProxyResult(res, result);
       }
 
       if (req.method === "POST" && url.pathname === "/v1/audio/speech") {
         const payload = (await readJson(req)) as Record<string, unknown>;
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const result = await proxyAudioSpeech(payload, params.configStore.get());
         return sendMediaProxyResult(res, result);
       }
@@ -1108,6 +1122,8 @@ export function createKgmRequestListener(
       if (req.method === "POST" && url.pathname === "/v1/audio/transcriptions") {
         const contentType = String(req.headers["content-type"] ?? "");
         if (contentType.toLowerCase().includes("multipart/form-data")) {
+          const allow = assertVirtualKeyModelAllowed(auth, []);
+          if (!allow.ok) return sendJson(res, allow.status, allow.body);
           const raw = await readRawHttpBody(req);
           const result = await proxyAudioTranscriptionsMultipart(
             raw,
@@ -1117,12 +1133,16 @@ export function createKgmRequestListener(
           return sendMediaProxyResult(res, result);
         }
         const payload = (await readJson(req)) as Record<string, unknown>;
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const result = await proxyAudioTranscriptions(payload, params.configStore.get());
         return sendMediaProxyResult(res, result);
       }
 
       if (req.method === "POST" && url.pathname === "/v1/audio/translations") {
         const payload = (await readJson(req)) as Record<string, unknown>;
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const result = await proxyAudioTranslations(payload, params.configStore.get());
         return sendMediaProxyResult(res, result);
       }
@@ -1132,20 +1152,28 @@ export function createKgmRequestListener(
         (url.pathname === "/v1/videos/generations" || url.pathname === "/v1/kgm/media/video")
       ) {
         const payload = (await readJson(req)) as Record<string, unknown>;
-        const result = await startVideoGenerationJob(payload, params.configStore.get());
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
+        const result = await startVideoGenerationJob(payload, params.configStore.get(), undefined, {
+          ownerKeyId: auth.keyId,
+        });
         return sendMediaProxyResult(res, result);
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/media/jobs/")) {
         const id = url.pathname.slice("/v1/kgm/media/jobs/".length).replace(/\/$/, "");
         if (!id) return sendJson(res, 400, kgmErrorBody("invalid_job_id", "Missing job id", 400));
-        const job = getMediaJobStore().get(id);
-        if (!job) return sendJson(res, 404, kgmErrorBody("job_not_found", `Unknown job: ${id}`, 404));
+        const job = getMediaJobStore().getForCaller(id, auth);
+        if (!job) {
+          return sendJson(res, 404, mediaFail("job_not_found", `Unknown job: ${id}`).body);
+        }
         return sendJson(res, 200, job);
       }
 
       if (req.method === "POST" && url.pathname === "/v1/rerank") {
         const payload = (await readJson(req)) as Record<string, unknown>;
+        const allow = assertVirtualKeyModelAllowed(auth, [modelFromBody(payload)]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const result = await proxyRerank(payload, params.configStore.get());
         return sendMediaProxyResult(res, result);
       }
@@ -1760,17 +1788,13 @@ export function createKgmRequestListener(
           payload.model = resolved.model;
         }
         if (auth.kind === "virtual" && auth.virtualKey?.allowedModels?.length) {
-          const allowed = auth.virtualKey.allowedModels;
-          const ok =
-            (requestedModel && allowed.includes(requestedModel)) ||
-            (payload.model && allowed.includes(String(payload.model))) ||
-            (resolved?.alias && allowed.includes(resolved.alias.alias));
-          if (!ok) {
-            return sendJson(
-              res,
-              403,
-              kgmErrorBody("model_not_allowed", "Virtual key is not allowed to call this model", 403),
-            );
+          const allow = assertVirtualKeyModelAllowed(auth, [
+            requestedModel,
+            typeof payload.model === "string" ? payload.model : undefined,
+            resolved?.alias?.alias,
+          ]);
+          if (!allow.ok) {
+            return sendJson(res, allow.status, allow.body);
           }
         }
         const requestHeaders = normalizeIncomingHttpHeaders(
@@ -1782,7 +1806,7 @@ export function createKgmRequestListener(
             modelManager,
             protocol: "chat",
             payload,
-            send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
+            send: (upstream, meta) => sendNormalizedUpstreamSse(res, upstream, meta),
           });
           if (proxied) {
             return;
@@ -1798,7 +1822,7 @@ export function createKgmRequestListener(
             skillRuntime: params.skillRuntime,
             requestHeaders,
           });
-          return await sendSse(res, events);
+          return await sendSse(res, events, { streamSource: "bridge:auto-routing" });
         }
         const response = await createOpenAiChatCompletion({
           request: payload,
@@ -1827,6 +1851,9 @@ export function createKgmRequestListener(
 
       if (req.method === "POST" && url.pathname === "/v1/responses") {
         const payload = (await readJson(req)) as OpenAiResponsesRequest;
+        const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
+        const allow = assertVirtualKeyModelAllowed(auth, [requestedModel]);
+        if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const requestHeaders = normalizeIncomingHttpHeaders(
           req.headers as Record<string, string | string[] | undefined>,
         );
@@ -1836,7 +1863,7 @@ export function createKgmRequestListener(
             modelManager,
             protocol: "responses",
             payload,
-            send: (upstream) => sendNormalizedUpstreamSse(res, upstream),
+            send: (upstream, meta) => sendNormalizedUpstreamSse(res, upstream, meta),
           });
           if (proxied) {
             return;
@@ -1852,7 +1879,7 @@ export function createKgmRequestListener(
             skillRuntime: params.skillRuntime,
             requestHeaders,
           });
-          return await sendSse(res, events);
+          return await sendSse(res, events, { streamSource: "bridge:auto-routing" });
         }
         const response = await createOpenAiResponse({
           request: payload,
@@ -2705,12 +2732,8 @@ export function createKgmRequestListener(
         return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
       }
       if (!res.headersSent) {
-        const structured = toKgmStructuredError(error);
-        return sendJson(
-          res,
-          structured.status,
-          structuredErrorBody(structured),
-        );
+        const hostErr = toHostKgmError(error);
+        return sendJson(res, hostErr.status, hostErr.body);
       }
     }
   };
@@ -2726,7 +2749,7 @@ export function createKgmServer(params: KgmServerParams): http.Server {
 async function sendSse(
   res: ServerResponse,
   events: AsyncIterable<string> | Iterable<string>,
-  options?: { appendDone?: boolean; timeoutMs?: number },
+  options?: { appendDone?: boolean; timeoutMs?: number; streamSource?: string },
 ): Promise<void> {
   if (res.headersSent) {
     console.warn("Attempted to send SSE response after headers were already sent");
@@ -2768,6 +2791,7 @@ async function sendSse(
       "content-type": "text/event-stream",
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
+      ...(options?.streamSource ? { "x-kgm-stream-source": options.streamSource } : {}),
     });
     headersOpened = true;
   };
@@ -2861,7 +2885,8 @@ async function readRawHttpBody(req: IncomingMessage): Promise<Buffer> {
 
 function sendMediaProxyResult(res: ServerResponse, result: MediaProxyResult): void {
   if (!result.ok) {
-    sendJson(res, result.status, result.body);
+    const canonical = toCanonicalMediaProxyFailure(result.status, result.body);
+    sendJson(res, canonical.status, canonical.body);
     return;
   }
   if (result.binary) {

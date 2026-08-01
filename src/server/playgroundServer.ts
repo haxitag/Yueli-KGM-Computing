@@ -2,7 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { playgroundRouter } from './playgroundApi.js';
+import { configurePlaygroundApi, playgroundRouter } from './playgroundApi.js';
+import { createLightweightAutoRoutingLlm } from './playgroundLightweightLlm.js';
 import { createPlaygroundSpaFallbackMiddleware } from './playgroundSpaFallback.js';
 import { createExpressCorsOptions } from './corsPolicy.js';
 
@@ -12,6 +13,8 @@ const __dirname = path.dirname(__filename);
 
 export function createPlaygroundServer(port: number = 3001) {
   const app = express();
+  const lightweight = createLightweightAutoRoutingLlm();
+  configurePlaygroundApi({ llmClient: lightweight.llmClient });
 
   // 中间件（禁止默认 cors(*)；开发默认仅本机 Origin）
   app.use(cors(createExpressCorsOptions()));
@@ -24,7 +27,7 @@ export function createPlaygroundServer(port: number = 3001) {
   app.use('/generated-videos', express.static(path.join(__dirname, '../../data/generated-videos')));
   app.use('/generated-audio', express.static(path.join(__dirname, '../../data/generated-audio')));
 
-  // API路由
+  // API路由（轻量 AutoRouting，与 combined 语义对齐）
   app.use('/api/kgm', playgroundRouter);
 
   // 根路径重定向到index.html
@@ -38,6 +41,10 @@ export function createPlaygroundServer(port: number = 3001) {
   const server = app.listen(port, () => {
     console.log(`KGM-Computing Playground server running on http://localhost:${port}`);
     console.log(`Playground UI available at http://localhost:${port}`);
+  });
+
+  server.on('close', () => {
+    lightweight.close();
   });
 
   return server;

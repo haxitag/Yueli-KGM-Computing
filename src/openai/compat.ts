@@ -198,18 +198,31 @@ export function buildOpenAiModelList(
   };
 }
 
-function isMockMode(): boolean {
-  return process.env.KGM_MOCK_MODE === "1";
+/**
+ * Resolve request model for orchestration.
+ * `auto` / empty / missing → `undefined` so AutoRouting can score-select.
+ * Explicit ids are passed through (alias resolution happens in AutoRouting).
+ */
+export function resolveRequestedModel(model: string | undefined, _configStore?: ConfigStore): string | undefined {
+  if (model == null) return undefined;
+  const trimmed = model.trim();
+  if (!trimmed || trimmed.toLowerCase() === "auto") return undefined;
+  return trimmed;
 }
 
-function resolveRequestedModel(model: string | undefined, configStore: ConfigStore): string {
-  return model && model !== "auto" ? model : configStore.get().llm.model;
+/** Display / mock fallback when routing has not yet selected a concrete model. */
+function resolveDisplayModel(model: string | undefined, configStore: ConfigStore): string {
+  return model ?? configStore.get().llm.model;
+}
+
+function isMockMode(): boolean {
+  return process.env.KGM_MOCK_MODE === "1";
 }
 
 function createMockChatCompletion(request: OpenAiChatCompletionRequest, configStore: ConfigStore): Record<string, unknown> {
   const requestId = generateId();
   const created = Math.floor(Date.now() / 1000);
-  const model = resolveRequestedModel(request.model, configStore);
+  const model = resolveDisplayModel(resolveRequestedModel(request.model, configStore), configStore);
   return {
     id: `chatcmpl_${requestId}`,
     object: "chat.completion",
@@ -231,7 +244,7 @@ function createMockChatCompletion(request: OpenAiChatCompletionRequest, configSt
 function createMockResponse(request: OpenAiResponsesRequest, configStore: ConfigStore): Record<string, unknown> {
   const requestId = generateId();
   const created = Math.floor(Date.now() / 1000);
-  const model = resolveRequestedModel(request.model, configStore);
+  const model = resolveDisplayModel(resolveRequestedModel(request.model, configStore), configStore);
   return {
     id: `resp_${requestId}`,
     object: "response",
@@ -487,7 +500,10 @@ function buildMaaSCompletionOptions(
 type DirectStreamSetup = {
   requestId: string;
   created: number;
+  /** Response/SSE display model (never empty). */
   model: string;
+  /** Passed to AutoRouting; undefined = dynamic selection. */
+  routingModel?: string;
   responseId: string;
   completionId: string;
   metadata: Record<string, unknown>;
@@ -514,7 +530,7 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
   const created = Math.floor(Date.now() / 1000);
   const config = params.configStore.get();
   const model = resolveRequestedModel(params.model, params.configStore);
-  let resolvedModel = model;
+  let resolvedModel = resolveDisplayModel(model, params.configStore);
   const kgm = normalizeKgmExtensions(requestId, {
     ...params.kgm,
     ops: {
@@ -885,7 +901,7 @@ async function *streamChatCompletionChunks(params: ExecuteParams): AsyncIterable
   let finalResult: CompletionResult | undefined;
   let activeModel = direct.model;
   for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
-    model: direct.model,
+    model: direct.routingModel,
     requestId: direct.requestId,
     sessionId: deriveSessionId(params.metadata),
     maxTokens: params.maxTokens,
@@ -1015,7 +1031,7 @@ async function *streamResponsesChunks(params: ExecuteParams): AsyncIterable<stri
   let finalResult: CompletionResult | undefined;
   let activeModel = direct.model;
   for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
-    model: direct.model,
+    model: direct.routingModel,
     requestId: direct.requestId,
     sessionId: deriveSessionId(params.metadata),
     maxTokens: params.maxTokens,
@@ -1094,6 +1110,7 @@ async function prepareDirectStream(params: ExecuteParams): Promise<DirectStreamS
   const created = Math.floor(Date.now() / 1000);
   const config = params.configStore.get();
   const model = resolveRequestedModel(params.model, params.configStore);
+  const displayModel = resolveDisplayModel(model, params.configStore);
   const kgm = normalizeKgmExtensions(requestId, {
     ...params.kgm,
     ops: {
@@ -1115,7 +1132,7 @@ async function prepareDirectStream(params: ExecuteParams): Promise<DirectStreamS
     userId: params.user ?? "openai_compat",
     sessionId: deriveSessionId(params.metadata),
     input: extractLatestUserInput(params.messages),
-    model,
+    model: displayModel,
     conversation: [...params.messages],
     constraints: {
       maxTokens: params.maxTokens,
@@ -1150,7 +1167,8 @@ async function prepareDirectStream(params: ExecuteParams): Promise<DirectStreamS
   return {
     requestId,
     created,
-    model,
+    model: displayModel,
+    routingModel: model,
     responseId: `resp_${requestId}`,
     completionId: `chatcmpl_${requestId}`,
     metadata: params.metadata ?? {},

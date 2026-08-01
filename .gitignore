@@ -43,6 +43,10 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+*.tgz
+
+# Cursor IDE local (hooks/skills may exist in private clone; never sync to public)
+.cursor/
 
 # Database
 *.sqlite

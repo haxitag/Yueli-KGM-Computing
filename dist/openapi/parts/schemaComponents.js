@@ -5,14 +5,34 @@ export const openApiSchemaComponents = {
     KgmError: {
         type: "object",
         required: ["error"],
+        description: "统一错误信封。HTTP 状态只取 KGM 规范集（400/401/403/404/429/500/501/502/503/504）；厂商状态不透传，仅可出现在 details.upstreamStatus。",
         properties: {
             error: {
                 type: "object",
                 required: ["code", "message", "status"],
                 properties: {
-                    code: { type: "string", description: "可机读错误码，如 invalid_json, unauthorized, rate_limited" },
+                    code: {
+                        type: "string",
+                        description: "可机读错误码。媒体示例：media_provider_not_found, *_provider_not_configured, media_upstream_error, media_poll_timeout",
+                    },
                     message: { type: "string" },
-                    status: { type: "integer", description: "与 HTTP 状态码一致" },
+                    status: {
+                        type: "integer",
+                        description: "与 HTTP 状态码一致（KGM 规范集）",
+                        enum: [400, 401, 402, 403, 404, 429, 500, 501, 502, 503, 504],
+                    },
+                    details: {
+                        type: "object",
+                        additionalProperties: true,
+                        properties: {
+                            upstreamStatus: {
+                                type: "integer",
+                                description: "上游原始 HTTP 状态（仅诊断；勿当作宿主 HTTP）",
+                            },
+                            providerId: { type: "string" },
+                            cause: { type: "string" },
+                        },
+                    },
                 },
             },
         },

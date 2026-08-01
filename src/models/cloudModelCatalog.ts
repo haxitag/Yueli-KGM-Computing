@@ -31,7 +31,9 @@ export const DEFAULT_CLOUD_MODEL_CATALOG: CloudModelEntry[] = [
   { id: "gpt-5.5", owned_by: "openai", aliases: ["gpt-5.4", "gpt-4.1"] },
   { id: "gpt-5.4-mini", owned_by: "openai", aliases: ["gpt-4o-mini", "gpt-4o"] },
   { id: "gpt-oss", owned_by: "openai" },
-  { id: "mimo-2.5", owned_by: "xiaomi" },
+  { id: "mimo-v2.5-pro", owned_by: "xiaomi", aliases: ["mimo-2.5", "mimo-2.5-pro"] },
+  { id: "mimo-v2.5", owned_by: "xiaomi", aliases: ["mimo-v2.5-omni"] },
+  { id: "mimo-v2.5-pro-ultraspeed", owned_by: "xiaomi" },
   { id: "gemini-3.1", owned_by: "google", aliases: ["gemini-3.0"] },
   { id: "gemini-3.0", owned_by: "google" },
   { id: "deepseek-v4-flash", owned_by: "deepseek", aliases: ["deepseek-v4", "deepseek-chat", "deepseek-3.2"] },
@@ -44,13 +46,36 @@ export const DEFAULT_CLOUD_MODEL_CATALOG: CloudModelEntry[] = [
 
 /**
  * 将请求 model 解析为目录中的规范 id（未知则原样返回）。
+ * 合并 MaaS 目录 + DEFAULT_CLOUD_MODEL_CATALOG 别名。
  */
 export function resolveCloudModelAlias(modelId: string): string {
-  return resolveMaaSModelAlias(modelId);
+  const trimmed = modelId.trim();
+  if (!trimmed) return trimmed;
+  const maas = resolveMaaSModelAlias(trimmed);
+  if (maas !== trimmed) return maas;
+
+  const lower = trimmed.toLowerCase();
+  for (const entry of DEFAULT_CLOUD_MODEL_CATALOG) {
+    if (entry.id.toLowerCase() === lower) return entry.id;
+    for (const alias of entry.aliases ?? []) {
+      if (alias.toLowerCase() === lower) return entry.id;
+    }
+  }
+  const mapped = CLOUD_MODEL_ALIASES[lower];
+  return mapped ?? trimmed;
+}
+
+/** True when two model ids refer to the same catalog entry (or are equal). */
+export function modelsMatchByAlias(a: string, b: string): boolean {
+  if (a === b) return true;
+  const ra = resolveCloudModelAlias(a);
+  const rb = resolveCloudModelAlias(b);
+  return ra === rb || ra === b || rb === a;
 }
 
 export function getCloudModelEntry(modelId: string) {
-  return findMaaSModelEntry(modelId);
+  const canonical = resolveCloudModelAlias(modelId);
+  return findMaaSModelEntry(canonical) ?? findMaaSModelEntry(modelId);
 }
 
 export function isProviderConfigured(provider: {

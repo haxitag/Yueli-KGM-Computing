@@ -17,7 +17,7 @@ import { assertDs4Callable, resolveDs4DeployConfig } from "../runtime/ds4Deploy.
 import { assertTokenSpeedCallable, buildTokenSpeedServerArgs, resolveTokenSpeedDeployConfig, } from "../runtime/tokenspeedDeploy.js";
 import { isDs4SpecializedGguf } from "../runtime/ds4Artifacts.js";
 import { buildDs4ServerArgs, resolveDs4ServingHints } from "../runtime/ds4SessionKv.js";
-import { DEFAULT_CLOUD_MODEL_CATALOG, isProviderConfigured, resolveCloudModelAlias, } from "./cloudModelCatalog.js";
+import { DEFAULT_CLOUD_MODEL_CATALOG, isProviderConfigured, resolveCloudModelAlias, modelsMatchByAlias, } from "./cloudModelCatalog.js";
 import { isSpawnManagedWorkerKind, resolveWorkerAutoRestartConfig, workerRestartDelayMs, } from "./workerRestartPolicy.js";
 /** 分片存储目录名（相对 stateRoot） */
 const STORE_ARTIFACTS_DIR = "artifacts";
@@ -325,7 +325,10 @@ export class ManagedModelManager {
         return models;
     }
     findRuntimeForModel(modelName) {
-        return this.state.runtimes.find((runtime) => runtime.status === "running" && runtime.modelName === modelName);
+        const exact = this.state.runtimes.find((runtime) => runtime.status === "running" && runtime.modelName === modelName);
+        if (exact)
+            return exact;
+        return this.state.runtimes.find((runtime) => runtime.status === "running" && modelsMatchByAlias(runtime.modelName, modelName));
     }
     /** Prefer explicit runtime id (session affinity); fall back to modelName. */
     findRuntimeForExecution(modelName, options) {

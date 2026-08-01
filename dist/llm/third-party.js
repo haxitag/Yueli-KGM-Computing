@@ -462,7 +462,7 @@ export class XiaomiLlmClient {
     apiKey;
     timeoutMs;
     constructor(params) {
-        this.baseUrl = params.baseUrl ?? "https://api.xiaomi.ai/v1";
+        this.baseUrl = params.baseUrl ?? "https://api.xiaomimimo.com/v1";
         this.model = params.model;
         this.apiKey = params.apiKey;
         this.timeoutMs = params.timeoutMs;
@@ -482,6 +482,7 @@ export class XiaomiLlmClient {
         const headers = {
             "Content-Type": "application/json",
             Authorization: `Bearer ${this.apiKey}`,
+            "api-key": this.apiKey,
         };
         const data = (await postJson(joinUrl(this.baseUrl, "/chat/completions"), payload, { headers, timeoutMs: this.timeoutMs }));
         if (data.error) {

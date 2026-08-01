@@ -652,7 +652,7 @@ export class XiaomiLlmClient implements LlmClient {
     apiKey: string;
     timeoutMs?: number;
   }) {
-    this.baseUrl = params.baseUrl ?? "https://api.xiaomi.ai/v1";
+    this.baseUrl = params.baseUrl ?? "https://api.xiaomimimo.com/v1";
     this.model = params.model;
     this.apiKey = params.apiKey;
     this.timeoutMs = params.timeoutMs;
@@ -674,6 +674,7 @@ export class XiaomiLlmClient implements LlmClient {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.apiKey}`,
+      "api-key": this.apiKey,
     };
 
     const data = (await postJson(

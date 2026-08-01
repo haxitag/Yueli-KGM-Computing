@@ -154,6 +154,7 @@ const INFERENCE_BUDGET_PREFIXES = [
     "/v1/audio/translations",
     "/v1/videos/generations",
     "/v1/kgm/media/video",
+    "/v1/kgm/media/jobs",
     "/v1/rerank",
 ];
 export class HttpRequestAccess {

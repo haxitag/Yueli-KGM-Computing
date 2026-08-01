@@ -21,6 +21,13 @@ export type PublicKgmConfig = Omit<
     transcription: Omit<KgmConfig["media"]["transcription"], "apiKey"> & { apiKeyConfigured: boolean };
     video: Omit<KgmConfig["media"]["video"], "apiKey"> & { apiKeyConfigured: boolean };
     rerank: Omit<KgmConfig["media"]["rerank"], "apiKey"> & { apiKeyConfigured: boolean };
+    providers?: Array<
+      Omit<NonNullable<KgmConfig["media"]["providers"]>[number], "auth"> & {
+        authConfigured: boolean;
+        auth?: { type: string };
+      }
+    >;
+    modelPresets?: KgmConfig["media"]["modelPresets"];
   };
   database: Omit<KgmConfig["database"], "password"> & { passwordConfigured: boolean };
   adapter: Omit<KgmConfig["adapter"], "secret"> & { secretConfigured: boolean };
@@ -62,6 +69,25 @@ export function toPublicKgmConfig(config: KgmConfig): PublicKgmConfig {
       transcription: publicEndpoint(config.media.transcription),
       video: publicEndpoint(config.media.video),
       rerank: publicEndpoint(config.media.rerank),
+      modelPresets: config.media.modelPresets ?? [],
+      providers: (config.media.providers ?? []).map((p) => {
+        const auth = p.auth;
+        let authConfigured = false;
+        if (auth) {
+          if (auth.type === "bearer" || auth.type === "token" || auth.type === "query_key") {
+            authConfigured = Boolean(auth.apiKey || auth.apiKeyEnv);
+          } else if (auth.type === "ak_sk_jwt") {
+            authConfigured = Boolean(
+              (auth.accessKey || auth.accessKeyEnv) && (auth.secretKey || auth.secretKeyEnv),
+            );
+          }
+        }
+        return {
+          ...p,
+          auth: auth ? { type: auth.type } : undefined,
+          authConfigured,
+        };
+      }),
     },
     database: { ...database, passwordConfigured: Boolean(password) },
     adapter: { ...adapter, secretConfigured: Boolean(adapterSecret) },

@@ -35,6 +35,8 @@ const defaultConfig = {
             maxConcurrent: 2,
         },
         rerank: { baseUrl: "", path: "/rerank" },
+        providers: [],
+        modelPresets: [],
     },
     database: {
         provider: "sqlite",
@@ -172,7 +174,22 @@ const defaultConfig = {
                     outputPer1kTokens: 0.001,
                     currency: "USD",
                 },
-                // Xiaomi 新模型
+                // Xiaomi MiMo OpenAPI (https://mimo.mi.com) — V2.5 series
+                "default:xiaomi:mimo-v2.5-pro": {
+                    inputPer1kTokens: 0.000435,
+                    outputPer1kTokens: 0.00087,
+                    currency: "USD",
+                },
+                "default:xiaomi:mimo-v2.5": {
+                    inputPer1kTokens: 0.00014,
+                    outputPer1kTokens: 0.00028,
+                    currency: "USD",
+                },
+                "default:xiaomi:mimo-v2.5-pro-ultraspeed": {
+                    inputPer1kTokens: 0.001305,
+                    outputPer1kTokens: 0.00261,
+                    currency: "USD",
+                },
                 "default:xiaomi:mimo-2.5": {
                     inputPer1kTokens: 0.0008,
                     outputPer1kTokens: 0.0008,
@@ -440,6 +457,8 @@ function mergeConfig(base, patch) {
             transcription: { ...base.media.transcription, ...(patch.media?.transcription ?? {}) },
             video: { ...base.media.video, ...(patch.media?.video ?? {}) },
             rerank: { ...base.media.rerank, ...(patch.media?.rerank ?? {}) },
+            providers: patch.media?.providers ?? base.media.providers ?? [],
+            modelPresets: patch.media?.modelPresets ?? base.media.modelPresets ?? [],
         },
         database: { ...base.database, ...(patch.database ?? {}) },
         vector: { ...base.vector, ...(patch.vector ?? {}) },

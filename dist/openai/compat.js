@@ -40,16 +40,30 @@ export function buildOpenAiModelList(configStore, modelManager, options) {
         ], configStore)),
     };
 }
+/**
+ * Resolve request model for orchestration.
+ * `auto` / empty / missing → `undefined` so AutoRouting can score-select.
+ * Explicit ids are passed through (alias resolution happens in AutoRouting).
+ */
+export function resolveRequestedModel(model, _configStore) {
+    if (model == null)
+        return undefined;
+    const trimmed = model.trim();
+    if (!trimmed || trimmed.toLowerCase() === "auto")
+        return undefined;
+    return trimmed;
+}
+/** Display / mock fallback when routing has not yet selected a concrete model. */
+function resolveDisplayModel(model, configStore) {
+    return model ?? configStore.get().llm.model;
+}
 function isMockMode() {
     return process.env.KGM_MOCK_MODE === "1";
-}
-function resolveRequestedModel(model, configStore) {
-    return model && model !== "auto" ? model : configStore.get().llm.model;
 }
 function createMockChatCompletion(request, configStore) {
     const requestId = generateId();
     const created = Math.floor(Date.now() / 1000);
-    const model = resolveRequestedModel(request.model, configStore);
+    const model = resolveDisplayModel(resolveRequestedModel(request.model, configStore), configStore);
     return {
         id: `chatcmpl_${requestId}`,
         object: "chat.completion",
@@ -70,7 +84,7 @@ function createMockChatCompletion(request, configStore) {
 function createMockResponse(request, configStore) {
     const requestId = generateId();
     const created = Math.floor(Date.now() / 1000);
-    const model = resolveRequestedModel(request.model, configStore);
+    const model = resolveDisplayModel(resolveRequestedModel(request.model, configStore), configStore);
     return {
         id: `resp_${requestId}`,
         object: "response",
@@ -278,7 +292,7 @@ async function executeCompatibilityRun(params) {
     const created = Math.floor(Date.now() / 1000);
     const config = params.configStore.get();
     const model = resolveRequestedModel(params.model, params.configStore);
-    let resolvedModel = model;
+    let resolvedModel = resolveDisplayModel(model, params.configStore);
     const kgm = normalizeKgmExtensions(requestId, {
         ...params.kgm,
         ops: {
@@ -619,7 +633,7 @@ async function* streamChatCompletionChunks(params) {
     let finalResult;
     let activeModel = direct.model;
     for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
-        model: direct.model,
+        model: direct.routingModel,
         requestId: direct.requestId,
         sessionId: deriveSessionId(params.metadata),
         maxTokens: params.maxTokens,
@@ -738,7 +752,7 @@ async function* streamResponsesChunks(params) {
     let finalResult;
     let activeModel = direct.model;
     for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
-        model: direct.model,
+        model: direct.routingModel,
         requestId: direct.requestId,
         sessionId: deriveSessionId(params.metadata),
         maxTokens: params.maxTokens,
@@ -807,6 +821,7 @@ async function prepareDirectStream(params) {
     const created = Math.floor(Date.now() / 1000);
     const config = params.configStore.get();
     const model = resolveRequestedModel(params.model, params.configStore);
+    const displayModel = resolveDisplayModel(model, params.configStore);
     const kgm = normalizeKgmExtensions(requestId, {
         ...params.kgm,
         ops: {
@@ -826,7 +841,7 @@ async function prepareDirectStream(params) {
         userId: params.user ?? "openai_compat",
         sessionId: deriveSessionId(params.metadata),
         input: extractLatestUserInput(params.messages),
-        model,
+        model: displayModel,
         conversation: [...params.messages],
         constraints: {
             maxTokens: params.maxTokens,
@@ -859,7 +874,8 @@ async function prepareDirectStream(params) {
     return {
         requestId,
         created,
-        model,
+        model: displayModel,
+        routingModel: model,
         responseId: `resp_${requestId}`,
         completionId: `chatcmpl_${requestId}`,
         metadata: params.metadata ?? {},

@@ -1,6 +1,11 @@
 import { MinimaxLlmClient, OllamaLlmClient, GeminiLlmClient, AnthropicLlmClient, } from "./third-party.js";
-import { HttpLlmClient } from "./client.js";
+import { HttpLlmClient, inferLlmAuthStyle } from "./client.js";
 import { globalApiKeyRouter } from "../utils/apiKeyRouter.js";
+/** Official Xiaomi MiMo OpenAPI (pay-as-you-go). Token Plan uses token-plan-cn.xiaomimimo.com. */
+export const MIMO_OPENAI_BASE_URL = "https://api.xiaomimimo.com/v1";
+export const MIMO_ANTHROPIC_BASE_URL = "https://api.xiaomimimo.com/anthropic";
+export const MIMO_TOKEN_PLAN_OPENAI_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
+export const MIMO_DEFAULT_CHAT_MODEL = "mimo-v2.5-pro";
 /** OpenAI-compat gateway preferred for tools/stream (Phase H). */
 export function wantsOpenAiCompatProvider(config, kind) {
     if (config.extraParams?.useOpenAIFormat === true || config.extraParams?.openaiCompat === true) {
@@ -61,6 +66,7 @@ export class LlmProviderFactory {
             path: config.extraParams?.path || '/chat/completions',
             mode: config.extraParams?.mode || 'chat',
             timeoutMs: config.timeoutMs,
+            authStyle: inferLlmAuthStyle(config.baseUrl || spec.defaultBaseUrl, config.extraParams?.authStyle),
         });
     }
     static createClient(config) {
@@ -71,7 +77,9 @@ export class LlmProviderFactory {
             openrouter: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
             nvidia: process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',
             deepseek: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
-            xiaomi: process.env.XIAOMI_BASE_URL || 'https://api.xiaomi.ai/v1',
+            xiaomi: process.env.MIMO_BASE_URL ||
+                process.env.XIAOMI_BASE_URL ||
+                MIMO_OPENAI_BASE_URL,
             ollama: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/api',
             vllm: process.env.VLLM_BASE_URL || 'http://localhost:8000/v1',
             sglang: process.env.SGLANG_BASE_URL || 'http://localhost:7860/v1',
@@ -359,6 +367,8 @@ export class LlmProviderFactory {
                     apiKey: config.apiKey,
                     path: config.extraParams?.path || '/chat/completions',
                     mode: config.extraParams?.mode || 'chat',
+                    timeoutMs: config.timeoutMs,
+                    authStyle: inferLlmAuthStyle(config.baseUrl || defaultUrls.openai, config.extraParams?.authStyle),
                 });
         }
     }
@@ -420,16 +430,30 @@ export class LlmProviderFactory {
                     model: process.env.DEEPSEEK_DEFAULT_MODEL || 'deepseek-chat',
                     apiKey: deepSeekApiKey,
                 };
-            case 'xiaomi':
-                const xiaomiApiKey = process.env.XIAOMI_API_KEY;
+            case 'xiaomi': {
+                const xiaomiApiKey = process.env.MIMO_API_KEY ||
+                    process.env.XIAOMI_API_KEY ||
+                    process.env.MIMO_TOKEN_PLAN_API_KEY;
                 if (!xiaomiApiKey)
                     return null;
+                const useTokenPlan = process.env.MIMO_USE_TOKEN_PLAN === "1" ||
+                    process.env.MIMO_USE_TOKEN_PLAN === "true";
                 return {
                     type: 'xiaomi',
-                    baseUrl: process.env.XIAOMI_BASE_URL,
-                    model: process.env.XIAOMI_DEFAULT_MODEL || 'mimo-2.5',
+                    baseUrl: process.env.MIMO_BASE_URL ||
+                        process.env.XIAOMI_BASE_URL ||
+                        (useTokenPlan ? MIMO_TOKEN_PLAN_OPENAI_BASE_URL : MIMO_OPENAI_BASE_URL),
+                    model: process.env.MIMO_DEFAULT_MODEL ||
+                        process.env.XIAOMI_DEFAULT_MODEL ||
+                        MIMO_DEFAULT_CHAT_MODEL,
                     apiKey: xiaomiApiKey,
+                    extraParams: {
+                        authStyle: "both",
+                        path: "/chat/completions",
+                        mode: "chat",
+                    },
                 };
+            }
             case 'gemini':
                 const geminiApiKey = process.env.GEMINI_API_KEY;
                 if (!geminiApiKey)

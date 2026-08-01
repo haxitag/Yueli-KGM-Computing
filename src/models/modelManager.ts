@@ -28,6 +28,7 @@ import {
   DEFAULT_CLOUD_MODEL_CATALOG,
   isProviderConfigured,
   resolveCloudModelAlias,
+  modelsMatchByAlias,
 } from "./cloudModelCatalog.js";
 import {
   isSpawnManagedWorkerKind,
@@ -598,7 +599,13 @@ export class ManagedModelManager {
   }
 
   findRuntimeForModel(modelName: string): ManagedModelRuntime | undefined {
-    return this.state.runtimes.find((runtime) => runtime.status === "running" && runtime.modelName === modelName);
+    const exact = this.state.runtimes.find(
+      (runtime) => runtime.status === "running" && runtime.modelName === modelName,
+    );
+    if (exact) return exact;
+    return this.state.runtimes.find(
+      (runtime) => runtime.status === "running" && modelsMatchByAlias(runtime.modelName, modelName),
+    );
   }
 
   /** Prefer explicit runtime id (session affinity); fall back to modelName. */

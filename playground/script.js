@@ -791,12 +791,16 @@ class KGMTrustProxyPlayground {
             { id: 'glm-5.1', provider: '智谱', defaults: { input: 0.001, output: 0.001 } },
             // GLM-4V (多模态)
             { id: 'glm-4v-9b', provider: '智谱', defaults: { input: 0.0005, output: 0.0005 } },
-            // MiMo 系列 (小米)
+            // MiMo 系列 (小米云端 OpenAPI V2.5 — https://mimo.mi.com)
+            { id: 'mimo-v2.5-pro', provider: '小米', defaults: { input: 0.000435, output: 0.00087 } },
+            { id: 'mimo-v2.5', provider: '小米', defaults: { input: 0.00014, output: 0.00028 } },
+            { id: 'mimo-v2.5-pro-ultraspeed', provider: '小米', defaults: { input: 0.001305, output: 0.00261 } },
+            { id: 'mimo-2.5', provider: '小米', defaults: { input: 0.0008, output: 0.0008 } },
+            // MiMo 本地权重型号（native）
             { id: 'mimo-2.5-1.5b', provider: '小米', defaults: { input: 0.0002, output: 0.0002 } },
             { id: 'mimo-2.5-7b', provider: '小米', defaults: { input: 0.0005, output: 0.0005 } },
             { id: 'mimo-2.5-13b', provider: '小米', defaults: { input: 0.0007, output: 0.0007 } },
             { id: 'mimo-2.5-30b', provider: '小米', defaults: { input: 0.001, output: 0.001 } },
-            { id: 'mimo-2.5', provider: '小米', defaults: { input: 0.0008, output: 0.0008 } },
             // Google Gemini
             // Google Gemma 4 (本地/云端)
             { id: 'gemma-4-2b-it', provider: 'Google', defaults: { input: 0.00005, output: 0.0001 } },
@@ -1119,7 +1123,7 @@ class KGMTrustProxyPlayground {
                     { key: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-...', hint: 'openrouter.ai', multiKey: true },
                     { key: 'nvidia', label: 'NVIDIA NIM / Integrate', placeholder: 'nvapi-...', hint: 'integrate.api.nvidia.com', multiKey: true },
                     { key: 'deepseek', label: 'DeepSeek', placeholder: 'API Key', hint: 'api.deepseek.com', multiKey: true },
-                    { key: 'xiaomi', label: '小米 MiMo', placeholder: 'API Key', hint: 'api.xiaomi.ai', multiKey: true },
+                    { key: 'xiaomi', label: '小米 MiMo', placeholder: 'API Key (sk-… / tp-…)', hint: 'api.xiaomimimo.com/v1 · MIMO_API_KEY', multiKey: true },
                     { key: 'gemini', label: 'Google Gemini', placeholder: 'API Key', hint: 'ai.google.dev', multiKey: true },
                     { key: 'anthropic', label: 'Anthropic Claude', placeholder: 'sk-ant-...', hint: 'console.anthropic.com', multiKey: true },
                     { key: 'aliyun', label: '阿里云（专用适配）', placeholder: 'Bearer Token', hint: '与 aliyun_bailian 区分', multiKey: true },
@@ -2007,12 +2011,57 @@ class KGMTrustProxyPlayground {
             } else {
                 const result = await response.json();
                 this.displayResults(result, this.currentConfig.protocol);
+                await this.maybeGenerateImageViaMediaApi();
             }
         } catch (error) {
             console.error('提交错误:', error);
             this.showError(error.message);
         } finally {
             this.setLoadingState(false);
+        }
+    }
+
+    /**
+     * Optional image generation via OpenAI-compatible thin proxy (not trust-proxy).
+     * Triggers when the prompt asks for an image; soft-degrades on 501.
+     */
+    async maybeGenerateImageViaMediaApi() {
+        const prompt = (this.promptText?.value || '').trim();
+        const lower = prompt.toLowerCase();
+        const wantsImage =
+            lower.includes('生成图片') ||
+            lower.includes('画一张') ||
+            /\b(generate|draw|create)\b.*\b(image|picture|logo)\b/i.test(prompt);
+        if (!wantsImage) return;
+        const model = this.currentConfig?.imageModel || 'dall-e-3';
+        try {
+            const res = await fetch('/v1/images/generations', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...this.buildPlaygroundAuthHeaders(),
+                },
+                body: JSON.stringify({ model, prompt, n: 1 }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                const code = body?.error?.code || `http_${res.status}`;
+                if (String(code).endsWith('_not_configured') || res.status === 501) {
+                    return;
+                }
+                console.warn('media image failed', body?.error || body);
+                return;
+            }
+            const url = body?.data?.[0]?.url || body?.data?.[0]?.b64_json;
+            if (url && this.imageOutput) {
+                if (String(url).startsWith('http') || String(url).startsWith('data:')) {
+                    this.imageOutput.innerHTML = `<img alt="generated" src="${url}" style="max-width:100%" />`;
+                } else {
+                    this.imageOutput.innerHTML = `<img alt="generated" src="data:image/png;base64,${url}" style="max-width:100%" />`;
+                }
+            }
+        } catch (err) {
+            console.warn('media image request error', err);
         }
     }
 

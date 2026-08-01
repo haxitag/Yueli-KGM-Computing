@@ -5,6 +5,7 @@ import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
 import { KgmStructuredError } from "../errors/structuredError.js";
 import { protectedFetch } from "../observability/circuitBreaker.js";
+import { LlmProviderApiError } from "./providerApiError.js";
 export async function* streamCompletion(client, prompt, options) {
     if (client.streamComplete) {
         yield* client.streamComplete(prompt, options);
@@ -34,9 +35,11 @@ export class HttpLlmClient {
     apiKey;
     mode;
     timeoutMs;
+    authStyle;
     /**
      * @param params.path - 相对 `baseUrl` 的路径，如 `/v1/chat/completions`；与 **`KGM_LLM_PATH`** / **`ConfigStore.llm.path`** 对齐。
      * @param params.mode - `chat` 发 messages 体，`completions` 发 prompt 体。
+     * @param params.authStyle - `bearer`（默认）| `api-key`（Xiaomi MiMo curl 形）| `both`
      */
     constructor(params) {
         this.baseUrl = params.baseUrl;
@@ -45,6 +48,7 @@ export class HttpLlmClient {
         this.apiKey = params.apiKey;
         this.mode = params.mode ?? "completions";
         this.timeoutMs = params.timeoutMs;
+        this.authStyle = params.authStyle ?? "bearer";
     }
     async complete(prompt, options) {
         const payload = this.mode === "chat"
@@ -67,7 +71,7 @@ export class HttpLlmClient {
                 stop: options?.stop,
             };
         const data = (await postJson(joinUrl(this.baseUrl, this.path), payload, {
-            headers: buildAuthHeaders(this.apiKey),
+            headers: buildAuthHeaders(this.apiKey, this.authStyle),
             timeoutMs: this.timeoutMs,
         }));
         const choice = data.choices?.[0];
@@ -128,7 +132,7 @@ export class HttpLlmClient {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    ...buildAuthHeaders(this.apiKey),
+                    ...buildAuthHeaders(this.apiKey, this.authStyle),
                 },
                 body: JSON.stringify(payload),
                 signal: controller.signal,
@@ -136,7 +140,17 @@ export class HttpLlmClient {
             clearConnectTimer();
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`HTTP error: ${response.status} - ${errorText}`);
+                let json = errorText;
+                try {
+                    json = errorText ? JSON.parse(errorText) : {};
+                }
+                catch {
+                    /* keep */
+                }
+                const msg = json && typeof json === "object" && json.error?.message
+                    ? String(json.error.message)
+                    : errorText.slice(0, 500) || `Upstream failed with HTTP ${response.status}`;
+                throw new LlmProviderApiError("http-llm", msg, { httpStatus: response.status });
             }
             const reader = response.body?.getReader();
             if (!reader) {
@@ -295,6 +309,7 @@ export class ConfigurableLlmClient {
                 apiKey: config.apiKey,
                 mode: config.mode,
                 timeoutMs: config.timeoutMs,
+                authStyle: inferLlmAuthStyle(config.baseUrl),
             });
     }
     /** Test seam: replace underlying client without going through HTTP. */
@@ -333,9 +348,33 @@ export class ConfigurableLlmClient {
         }
     }
 }
-function buildAuthHeaders(apiKey) {
+export function buildAuthHeaders(apiKey, style = "bearer") {
     if (!apiKey) {
         return {};
     }
+    if (style === "api-key") {
+        return { "api-key": apiKey };
+    }
+    if (style === "both") {
+        return {
+            authorization: `Bearer ${apiKey}`,
+            "api-key": apiKey,
+        };
+    }
     return { authorization: `Bearer ${apiKey}` };
+}
+/** Infer auth style from base URL / env (MiMo OpenAPI / Token Plan). */
+export function inferLlmAuthStyle(baseUrl, explicit) {
+    if (explicit === "bearer" || explicit === "api-key" || explicit === "both") {
+        return explicit;
+    }
+    const env = process.env.KGM_LLM_AUTH_STYLE?.trim().toLowerCase();
+    if (env === "bearer" || env === "api-key" || env === "both") {
+        return env;
+    }
+    const url = (baseUrl || "").toLowerCase();
+    if (url.includes("xiaomimimo.com") || url.includes("api.xiaomi.ai")) {
+        return "both";
+    }
+    return "bearer";
 }

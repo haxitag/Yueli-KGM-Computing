@@ -1,6 +1,7 @@
 /**
  * In-memory async media job store (video generations, etc.).
  * Hosts poll GET /v1/kgm/media/jobs/:id until completed|failed.
+ * Jobs are scoped by owner_key_id (virtual/master key id); anonymous shares "anonymous".
  */
 
 import { generateId } from "../utils/id.js";
@@ -15,6 +16,9 @@ export type MediaJob = {
   created_at: number;
   updated_at: number;
   model?: string;
+  /** Owning auth keyId (master | virtual id | anonymous). */
+  owner_key_id?: string;
+  /** Full create request — redacted in public views for non-master callers. */
   request?: Record<string, unknown>;
   result?: unknown;
   error?: { code: string; message: string };
@@ -51,6 +55,7 @@ export class MediaJobStore {
       created_at: now,
       updated_at: now,
       model: partial.model,
+      owner_key_id: partial.owner_key_id ?? "anonymous",
       request: partial.request,
     };
     this.jobs.set(job.id, job);
@@ -61,6 +66,28 @@ export class MediaJobStore {
     this.sweep();
     const job = this.jobs.get(id);
     return job ? { ...job } : undefined;
+  }
+
+  /**
+   * Fetch job if caller may see it.
+   * - master: all jobs
+   * - virtual/anonymous: only matching owner_key_id
+   * Non-master views redact request body (prompt leakage).
+   */
+  getForCaller(
+    id: string,
+    auth: { kind: string; keyId: string },
+  ): MediaJob | undefined {
+    const job = this.get(id);
+    if (!job) return undefined;
+    if (auth.kind === "master") {
+      return job;
+    }
+    const owner = job.owner_key_id ?? "anonymous";
+    if (owner !== auth.keyId) {
+      return undefined;
+    }
+    return redactJobForCaller(job);
   }
 
   update(id: string, patch: Partial<MediaJob>): MediaJob | undefined {
@@ -92,6 +119,19 @@ export class MediaJobStore {
       if (job.updated_at * 1000 < cutoff) this.jobs.delete(id);
     }
   }
+}
+
+export function redactJobForCaller(job: MediaJob): MediaJob {
+  const { request, ...rest } = job;
+  return {
+    ...rest,
+    request: request
+      ? {
+          model: typeof request.model === "string" ? request.model : undefined,
+          // intentionally omit prompt / media blobs
+        }
+      : undefined,
+  };
 }
 
 let singleton: MediaJobStore | undefined;

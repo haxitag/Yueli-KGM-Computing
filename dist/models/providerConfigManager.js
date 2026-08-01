@@ -1,3 +1,4 @@
+import { isProviderConfigured } from "./cloudModelCatalog.js";
 export class ProviderConfigurationManager {
     configFilePath;
     config;
@@ -144,6 +145,16 @@ export class ProviderConfigurationManager {
         return this.config.providers.filter(p => this.config.activeProviders.includes(`${p.type}:${p.model}`));
     }
     /**
+     * Providers eligible for auto-routing candidates: must have an API key.
+     * Prefer activeProviders ∩ keyed; if none, all keyed providers.
+     */
+    getRoutableProviderConfigs() {
+        const withKeys = this.config.providers.filter((p) => isProviderConfigured(p));
+        const active = new Set(this.config.activeProviders);
+        const activeWithKeys = withKeys.filter((p) => active.has(`${p.type}:${p.model}`));
+        return activeWithKeys.length > 0 ? activeWithKeys : withKeys;
+    }
+    /**
      * 获取默认提供商配置
      */
     getDefaultProviderConfig() {
@@ -236,6 +247,30 @@ ${this.config.providerRoutingRules.map(r => `- ${r.name}: ${r.condition} -> ${r.
                     }
                     if (!provider.baseUrl) {
                         provider.baseUrl = process.env.NVIDIA_BASE_URL;
+                    }
+                    break;
+                case 'xiaomi':
+                    if (!provider.apiKey) {
+                        provider.apiKey =
+                            process.env.MIMO_API_KEY ||
+                                process.env.XIAOMI_API_KEY ||
+                                process.env.MIMO_TOKEN_PLAN_API_KEY ||
+                                undefined;
+                    }
+                    if (!provider.baseUrl) {
+                        const useTokenPlan = process.env.MIMO_USE_TOKEN_PLAN === "1" ||
+                            process.env.MIMO_USE_TOKEN_PLAN === "true";
+                        provider.baseUrl =
+                            process.env.MIMO_BASE_URL ||
+                                process.env.XIAOMI_BASE_URL ||
+                                (useTokenPlan
+                                    ? "https://token-plan-cn.xiaomimimo.com/v1"
+                                    : "https://api.xiaomimimo.com/v1");
+                    }
+                    if (!provider.extraParams)
+                        provider.extraParams = {};
+                    if (provider.extraParams.authStyle == null) {
+                        provider.extraParams.authStyle = "both";
                     }
                     break;
                 case 'deepseek':

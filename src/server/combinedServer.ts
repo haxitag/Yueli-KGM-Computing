@@ -25,7 +25,7 @@ import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson } from "./httpJsonHelpers.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
 import type { Embedder } from '../embedding/canonical.js';
-import { playgroundRouter } from './playgroundApi.js';
+import { configurePlaygroundApi, playgroundRouter } from './playgroundApi.js';
 import { createPlaygroundSpaFallbackMiddleware } from './playgroundSpaFallback.js';
 import { syncPlaygroundFromConfig } from '../playground/syncPlayground.js';
 import type { SandboxManager } from '../sandbox/manager.js';
@@ -75,7 +75,8 @@ export function createCombinedServer(params: {
   app.use('/generated-videos', express.static(path.join(__dirname, '../../data/generated-videos')));
   app.use('/generated-audio', express.static(path.join(__dirname, '../../data/generated-audio')));
 
-  // API路由 - Playground
+  // API路由 - Playground（与 /v1 共用 AutoRouting llmClient）
+  configurePlaygroundApi({ llmClient: params.llmClient });
   app.use('/api/kgm', playgroundRouter);
 
   // /dynamic 等误开路径 → Playground；浏览器 HTML 导航避免落到 JSON 404

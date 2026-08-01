@@ -10,7 +10,7 @@
 npm install @haxitag/yueli-kgm-computing@latest
 ```
 
-**文档**：[官网](https://haxitag.com/page/kgm) · [社区](https://haxitag.com/community/yuelikgm) · [GitHub](https://github.com/haxitag/Yueli-KGM-Computing) · [Changelog](./CHANGELOG.md)
+**文档**：[官网](https://haxitag.com/page/kgm) · [社区](https://haxitag.com/community/yuelikgm) · [GitHub](https://github.com/haxitag/Yueli-KGM-Computing) · 版本说明见下文（npm / 开源仓以本 README 为准）
 
 ---
 
@@ -20,6 +20,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 - **本地推理**：llama.cpp / vLLM / SGLang / ds4 / TokenSpeed 等受管 Worker
 - **Playground**：配置 LLM/Embedding、记忆后端、Worker 门闩、沙箱、Keys 分域
 - **控制面**：HTTP 安全、前站、熔断/流式、Native/CORS/Discovery 只读状态
+- **媒体薄代理**：生图 / TTS / ASR / 视频异步 job；声明式 `media.providers`（可选）
 
 ---
 
@@ -36,21 +37,25 @@ npm run dev:enhanced
 
 ---
 
-## 0.3.6
+## 0.3.8
 
-Worker/Provider 完备性与 AutoRouting 契约加固：
+声明式媒体 Provider、stream≠auto、统一宿主错误、Xiaomi MiMo、Playground 对齐：
 
-- TokenSpeed worker、runtimeId 会话亲和、显式 `KGM_*_ATTACH`、probe/健康语义对齐
-- 薄厂商（nvidia/xiaomi/aliyun/modelscope 等）→ `HttpLlmClient`（tools/stream）；pricing / failover / 流式 idle+finished
-- 图谱 `maxTriples` 可配；三份审计文档；CI 挂亲和/tokenspeed/phase-h 单测
+- **Media Provider**：`media.modelPresets` + `media.providers`（模板拼装 / JSONPath / 异步 poll → `kgm.media_job`）；未知显式 provider → **400**；旧 `KGM_*` 零回归
+- **Stream ≠ Auto**：`stream` 只做交付；trusted passthrough 仅 managed / 默认 `llm`（含别名）；`model=auto` 走评分选路后再流式；头 `x-kgm-stream-source`
+- **统一 `KgmError`**：厂商 HTTP 不透传，仅 `details.upstreamStatus`；LLM 上游失败 → **502** `LLM_UPSTREAM_ERROR`
+- **Xiaomi MiMo**：`xiaomi` → `https://api.xiaomimimo.com/v1`，`mimo-v2.5-pro`，`MIMO_API_KEY`，auth `api-key`/`bearer`/`both`
+- Playground 与 `/v1` 共用 AutoRouting；虚拟 Key / media job 租户隔离；critical e2e 上游 401→502、跨租户 job 404
 
-完整变更见 [`CHANGELOG.md`](./CHANGELOG.md)。
+```bash
+npm install @haxitag/yueli-kgm-computing@0.3.8
+```
 
 ---
 
 ## 文档与社区（HaxiTAG）
 
-完整文档在 [阅粒知识计算引擎社区](https://haxitag.com/community/yuelikgm) 发布（需邮箱验证访问正文）；npm 包含 `README`、`dist/` 与 `playground/`。
+完整文档在 [阅粒知识计算引擎社区](https://haxitag.com/community/yuelikgm) 发布（需邮箱验证访问正文）；npm 包内容为 `README`、`dist/`、`playground/`、`LICENSE`（**不含**内部 `CHANGELOG.md` / `docs/`）。
 
 | 主题 | 链接 |
 |------|------|
@@ -63,6 +68,12 @@ Worker/Provider 完备性与 AutoRouting 契约加固：
 ---
 
 ## 历史版本摘要
+
+### 0.3.7：OpenAI 兼容媒体薄代理
+- 生图 / TTS / ASR / 视频异步 job / 可选 rerank；`GET /v1/models` 能力标注；未配置 → **501**
+
+### 0.3.6：Worker/Provider · AutoRouting 契约
+- TokenSpeed、runtimeId 亲和、显式 `KGM_*_ATTACH`；薄厂商 → `HttpLlmClient`；pricing / failover / 流式 idle
 
 ### 0.3.5：配置控制面 · Keys 分域
 - Playground 可写 LLM/Embedding/记忆/Worker/Sandbox；Keys 安全分域；配置脱敏
@@ -78,7 +89,6 @@ Worker/Provider 完备性与 AutoRouting 契约加固：
 
 ### 0.2.x：Copilot / Responses / 品牌统一
 - Responses API、Copilot SSE、Critical E2E、Yueli KGM Runtime 品牌统一
-
 <details>
 <summary>更早功能清单（0.2.6 起）</summary>
 
@@ -720,7 +730,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.6
+npm install @haxitag/yueli-kgm-computing@0.3.8
 ```
 
 ### 开源仓库同步（维护者）
@@ -729,10 +739,10 @@ npm install @haxitag/yueli-kgm-computing@0.3.6
 git checkout main
 git pull origin main
 
-# 运行同步脚本（自动清理敏感文件并推送到公开仓库）
+# 必须用同步脚本（过滤 docs/.cursor/data/tests 等后再 force 推公开仓）
+# 禁止：git push public main
 bash scripts/sync-to-public.sh
 ```
-
 ---
 
 ## 从源码开发本仓库
@@ -746,9 +756,9 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前：`0.3.6`）
+## 版本说明（当前：`0.3.8`）
 
-详见上方「0.3.6」与 [`CHANGELOG.md`](./CHANGELOG.md)。历史版本摘要见「历史版本摘要」一节。
+详见上方「0.3.8」。历史版本摘要见「历史版本摘要」一节。npm / 开源仓以本 README 为准。
 
 ### 本地 GPU 推理支持
 

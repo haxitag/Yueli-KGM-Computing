@@ -13,7 +13,7 @@ import { embedImageRemote } from "../multimodal/remoteImageEmbedder.js";
 import { kgmErrorBody, KgmJsonParseError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson } from "./httpJsonHelpers.js";
 import { createExpressKgmAccessMiddleware } from "./expressKgmAccess.js";
-import { playgroundRouter } from './playgroundApi.js';
+import { configurePlaygroundApi, playgroundRouter } from './playgroundApi.js';
 import { createPlaygroundSpaFallbackMiddleware } from './playgroundSpaFallback.js';
 import { syncPlaygroundFromConfig } from '../playground/syncPlayground.js';
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from '../routing/routingService.js';
@@ -37,7 +37,8 @@ export function createCombinedServer(params, port = 3000) {
     app.use('/generated-images', express.static(path.join(__dirname, '../../data/generated-images')));
     app.use('/generated-videos', express.static(path.join(__dirname, '../../data/generated-videos')));
     app.use('/generated-audio', express.static(path.join(__dirname, '../../data/generated-audio')));
-    // API路由 - Playground
+    // API路由 - Playground（与 /v1 共用 AutoRouting llmClient）
+    configurePlaygroundApi({ llmClient: params.llmClient });
     app.use('/api/kgm', playgroundRouter);
     // /dynamic 等误开路径 → Playground；浏览器 HTML 导航避免落到 JSON 404
     app.use(createPlaygroundSpaFallbackMiddleware());
