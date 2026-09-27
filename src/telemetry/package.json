@@ -1,0 +1,56 @@
+{
+  "name": "@kgm/telemetry",
+  "version": "1.0.0",
+  "description": "Production-grade telemetry and monitoring system for KGM Computing",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "require": "./index.js",
+      "types": "./index.d.ts"
+    },
+    "./advanced": {
+      "import": "./advanced.js",
+      "require": "./advanced.js",
+      "types": "./advanced.d.ts"
+    },
+    "./dashboard": {
+      "import": "./dashboard.js",
+      "require": "./dashboard.js",
+      "types": "./dashboard.d.ts"
+    },
+    "./config": {
+      "import": "./config.js",
+      "require": "./config.js",
+      "types": "./config.d.ts"
+    },
+    "./init": {
+      "import": "./init.js",
+      "require": "./init.js",
+      "types": "./init.d.ts"
+    },
+    "./*": "./*.js"
+  },
+  "keywords": [
+    "telemetry",
+    "monitoring",
+    "observability",
+    "metrics",
+    "tracing",
+    "alerting",
+    "opentelemetry"
+  ],
+  "author": "Yueli KGM Computing Team",
+  "license": "MIT",
+  "dependencies": {
+    "@opentelemetry/api": "^1.8.0"
+  },
+  "devDependencies": {},
+  "peerDependencies": {
+    "@opentelemetry/sdk-trace-node": "^1.25.1",
+    "@opentelemetry/exporter-prometheus": "^0.53.0",
+    "@opentelemetry/instrumentation-http": "^0.53.0",
+    "@opentelemetry/instrumentation-express": "^0.44.0"
+  }
+}

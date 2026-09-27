@@ -1,0 +1,258 @@
+services:
+  # 监控和告警基础设施
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,grafana-piechart-panel
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:4317"
+    environment:
+      - COLLECTOR_ZIPKIN_HTTP_PORT=9411
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-kgm123}
+    restart: unless-stopped
+
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    restart: unless-stopped
+
+
+  frontstation-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontstation-worker
+    ports:
+      - "${KGM_FRONTSTATION_WORKER_PORT:-8091}:8091"
+    environment:
+      - KGM_FRONTSTATION_WORKER_HOST=0.0.0.0
+      - KGM_FRONTSTATION_WORKER_PORT=8091
+      - KGM_FRONTSTATION_WORKER_DEVICE=${KGM_FRONTSTATION_WORKER_DEVICE:-cpu}
+      - KGM_FRONTSTATION_WORKER_EMBED_MODEL=${KGM_FRONTSTATION_WORKER_EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - KGM_FRONTSTATION_WORKER_CE_MODEL=${KGM_FRONTSTATION_WORKER_CE_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+    volumes:
+      - frontstation_hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8091/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 90s
+    restart: unless-stopped
+
+  # 分布式集群节点（3个实例）
+  kgm-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.cluster
+    hostname: kgm-node-1
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+      - CLUSTER_NAME=kgm-production
+      - NODE_NAME=kgm-node-1
+      - NODE_ROLE=controller
+      - BROADCAST_ADDR=kgm-node-1
+      - BROADCAST_PORT=7946
+      - DISCOVERY=static
+      - CLUSTER_NODES=kgm-node-1:7946,kgm-node-2:7946,kgm-node-3:7946
+      - STORAGE_BACKEND=redis
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-kgm123}
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - PROMETHEUS_ENDPOINT=http://prometheus:9090
+      - METRICS_PORT=9464
+      - KGM_FRONTSTATION_MODE=${KGM_FRONTSTATION_MODE:-auto}
+      - KGM_FRONTSTATION_INTENT_MODE=${KGM_FRONTSTATION_INTENT_MODE:-auto}
+      - KGM_FRONTSTATION_RERANK_MODE=${KGM_FRONTSTATION_RERANK_MODE:-auto}
+      - KGM_FRONTSTATION_SUMMARY_MODE=${KGM_FRONTSTATION_SUMMARY_MODE:-local}
+      - KGM_FRONTSTATION_PREFER_ONNX=${KGM_FRONTSTATION_PREFER_ONNX:-0}
+      - KGM_FRONTSTATION_ONNX_MODEL=${KGM_FRONTSTATION_ONNX_MODEL:-Xenova/all-MiniLM-L6-v2}
+      - KGM_FRONTSTATION_INTENT_URL=${KGM_FRONTSTATION_INTENT_URL:-http://frontstation-worker:8091/v1/intent}
+      - KGM_FRONTSTATION_RERANK_URL=${KGM_FRONTSTATION_RERANK_URL:-http://frontstation-worker:8091/v1/rerank}
+      - KGM_FRONTSTATION_SUMMARY_URL=${KGM_FRONTSTATION_SUMMARY_URL:-http://frontstation-worker:8091/v1/summarize}
+      - KGM_FRONTSTATION_TIMEOUT_MS=${KGM_FRONTSTATION_TIMEOUT_MS:-8000}
+      - WAIT_FOR_DEPENDENCIES=true
+    volumes:
+      - ./data/node-1:/app/data
+    depends_on:
+      - redis
+      - nats
+      - jaeger
+      - frontstation-worker
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  kgm-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.cluster
+    hostname: kgm-node-2
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=production
+      - CLUSTER_NAME=kgm-production
+      - NODE_NAME=kgm-node-2
+      - NODE_ROLE=worker
+      - BROADCAST_ADDR=kgm-node-2
+      - BROADCAST_PORT=7946
+      - DISCOVERY=static
+      - CLUSTER_NODES=kgm-node-1:7946,kgm-node-2:7946,kgm-node-3:7946
+      - STORAGE_BACKEND=redis
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-kgm123}
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - PROMETHEUS_ENDPOINT=http://prometheus:9090
+      - METRICS_PORT=9464
+      - KGM_FRONTSTATION_MODE=${KGM_FRONTSTATION_MODE:-auto}
+      - KGM_FRONTSTATION_INTENT_MODE=${KGM_FRONTSTATION_INTENT_MODE:-auto}
+      - KGM_FRONTSTATION_RERANK_MODE=${KGM_FRONTSTATION_RERANK_MODE:-auto}
+      - KGM_FRONTSTATION_SUMMARY_MODE=${KGM_FRONTSTATION_SUMMARY_MODE:-local}
+      - KGM_FRONTSTATION_PREFER_ONNX=${KGM_FRONTSTATION_PREFER_ONNX:-0}
+      - KGM_FRONTSTATION_ONNX_MODEL=${KGM_FRONTSTATION_ONNX_MODEL:-Xenova/all-MiniLM-L6-v2}
+      - KGM_FRONTSTATION_INTENT_URL=${KGM_FRONTSTATION_INTENT_URL:-http://frontstation-worker:8091/v1/intent}
+      - KGM_FRONTSTATION_RERANK_URL=${KGM_FRONTSTATION_RERANK_URL:-http://frontstation-worker:8091/v1/rerank}
+      - KGM_FRONTSTATION_SUMMARY_URL=${KGM_FRONTSTATION_SUMMARY_URL:-http://frontstation-worker:8091/v1/summarize}
+      - KGM_FRONTSTATION_TIMEOUT_MS=${KGM_FRONTSTATION_TIMEOUT_MS:-8000}
+      - WAIT_FOR_DEPENDENCIES=true
+    volumes:
+      - ./data/node-2:/app/data
+    depends_on:
+      - redis
+      - nats
+      - jaeger
+      - frontstation-worker
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  kgm-node-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.cluster
+    hostname: kgm-node-3
+    ports:
+      - "3003:3000"
+    environment:
+      - NODE_ENV=production
+      - CLUSTER_NAME=kgm-production
+      - NODE_NAME=kgm-node-3
+      - NODE_ROLE=worker
+      - BROADCAST_ADDR=kgm-node-3
+      - BROADCAST_PORT=7946
+      - DISCOVERY=static
+      - CLUSTER_NODES=kgm-node-1:7946,kgm-node-2:7946,kgm-node-3:7946
+      - STORAGE_BACKEND=redis
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-kgm123}
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - PROMETHEUS_ENDPOINT=http://prometheus:9090
+      - METRICS_PORT=9464
+      - KGM_FRONTSTATION_MODE=${KGM_FRONTSTATION_MODE:-auto}
+      - KGM_FRONTSTATION_INTENT_MODE=${KGM_FRONTSTATION_INTENT_MODE:-auto}
+      - KGM_FRONTSTATION_RERANK_MODE=${KGM_FRONTSTATION_RERANK_MODE:-auto}
+      - KGM_FRONTSTATION_SUMMARY_MODE=${KGM_FRONTSTATION_SUMMARY_MODE:-local}
+      - KGM_FRONTSTATION_PREFER_ONNX=${KGM_FRONTSTATION_PREFER_ONNX:-0}
+      - KGM_FRONTSTATION_ONNX_MODEL=${KGM_FRONTSTATION_ONNX_MODEL:-Xenova/all-MiniLM-L6-v2}
+      - KGM_FRONTSTATION_INTENT_URL=${KGM_FRONTSTATION_INTENT_URL:-http://frontstation-worker:8091/v1/intent}
+      - KGM_FRONTSTATION_RERANK_URL=${KGM_FRONTSTATION_RERANK_URL:-http://frontstation-worker:8091/v1/rerank}
+      - KGM_FRONTSTATION_SUMMARY_URL=${KGM_FRONTSTATION_SUMMARY_URL:-http://frontstation-worker:8091/v1/summarize}
+      - KGM_FRONTSTATION_TIMEOUT_MS=${KGM_FRONTSTATION_TIMEOUT_MS:-8000}
+      - WAIT_FOR_DEPENDENCIES=true
+    volumes:
+      - ./data/node-3:/app/data
+    depends_on:
+      - redis
+      - nats
+      - jaeger
+      - frontstation-worker
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 负载均衡器
+  load-balancer:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./monitoring/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - kgm-node-1
+      - kgm-node-2
+      - kgm-node-3
+    restart: unless-stopped
+
+  # 任务队列管理界面（可选）
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD:-kgm123}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
+
+volumes:
+  frontstation_hf_cache:
+  prometheus_data:
+  grafana_data:
+  redis_data:
+  rabbitmq_data:

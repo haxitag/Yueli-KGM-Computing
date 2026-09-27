@@ -1,0 +1,30 @@
+# Front-Station micro-worker（encoder 轨：MiniLM / Cross-Encoder / extractive）
+# 与 decoder-only Native GPU 分轨；默认 CPU。CUDA 需自备 CUDA base + 装 GPU 轮。
+#
+# 构建：docker build -f Dockerfile.frontstation-worker -t kgm-frontstation-worker .
+# Compose：见 docker-compose.yml 服务 frontstation-worker
+
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY frontstation-worker/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY frontstation-worker/server.py ./server.py
+
+ENV KGM_FRONTSTATION_WORKER_HOST=0.0.0.0
+ENV KGM_FRONTSTATION_WORKER_PORT=8091
+ENV KGM_FRONTSTATION_WORKER_DEVICE=cpu
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8091
+
+HEALTHCHECK --interval=20s --timeout=5s --start-period=60s --retries=5 \
+  CMD curl -fsS "http://127.0.0.1:${KGM_FRONTSTATION_WORKER_PORT}/health" || exit 1
+
+CMD ["python3", "server.py"]

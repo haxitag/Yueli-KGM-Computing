@@ -1,0 +1,12 @@
+# npm tarball gate: keep package page docs minimal (root README only)
+playground/**/*.md
+**/*.map
+.env*
+data/
+docs/
+tests/
+scripts/
+demo/
+.github/
+*.sqlite
+*.sqlite-*

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KGM 模型管理</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1c1c1e; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: #fff; border-bottom: 1px solid #e4e4e7; }
+    a { color: #0b57d0; }
+    main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 48px; }
+    nav { display: flex; gap: 8px; margin-bottom: 16px; }
+    nav button { border: 1px solid #d4d4d8; background: #fff; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+    nav button[aria-selected="true"] { background: #1c1c1e; color: #fff; border-color: #1c1c1e; }
+    section[hidden] { display: none; }
+    table { width: 100%; border-collapse: collapse; background: #fff; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+    .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    label { display: grid; gap: 4px; margin-bottom: 10px; }
+    input, select, textarea { font: inherit; padding: 6px 8px; border: 1px solid #d4d4d8; border-radius: 8px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .warn { color: #9a3412; }
+    button.primary { background: #1c1c1e; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>模型管理</strong>
+    <a href="/">返回 Playground</a>
+  </header>
+  <main>
+    <p>映射挂在推理服务商上。一个规范模型 ID 等于该服务商下的多个 ID 或版本。报价和性能写在同一条映射上。</p>
+    <nav>
+      <button type="button" data-panel="providers" aria-selected="true">推理服务商</button>
+      <button type="button" data-panel="mappings" aria-selected="false">映射</button>
+      <button type="button" data-panel="pricing" aria-selected="false">报价</button>
+      <button type="button" data-panel="performance" aria-selected="false">性能</button>
+    </nav>
+    <section id="panel-providers">
+      <div class="card" id="provider-table">加载中…</div>
+    </section>
+    <section id="panel-mappings" hidden>
+      <div class="card">
+        <form id="map-form">
+          <label>推理服务商<select id="map-provider" required></select></label>
+          <label>规范模型 ID<input id="map-canonical" required placeholder="deepseek-chat"></label>
+          <label>等价 ID / 版本<textarea id="map-aliases" rows="3" placeholder="每行一个，或逗号分隔"></textarea></label>
+          <div class="grid">
+            <label>输入 / 百万 token<input id="map-input-price" type="number" step="0.0001"></label>
+            <label>输出 / 百万 token<input id="map-output-price" type="number" step="0.0001"></label>
+            <label>上下文<input id="map-context" type="number" step="1"></label>
+            <label>延迟 P50 ms<input id="map-latency" type="number" step="1"></label>
+          </div>
+          <button class="primary" type="submit">保存映射</button>
+          <p id="map-error" class="warn"></p>
+        </form>
+      </div>
+      <div class="card" id="mapping-table"></div>
+    </section>
+    <section id="panel-pricing" hidden><div class="card" id="pricing-table"></div></section>
+    <section id="panel-performance" hidden><div class="card" id="performance-table"></div></section>
+  </main>
+  <script>
+    const state = { view: null };
+    function $(id) { return document.getElementById(id); }
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: { "content-type": "application/json", ...(options.headers || {}) },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data?.error?.message || data?.error || res.statusText;
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      }
+      return data;
+    }
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+    }
+    function table(headers, rows) {
+      if (!rows.length) return "<p>暂无数据。</p>";
+      return `<table><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
+    }
+    function render() {
+      const view = state.view || { providers: [], mappings: [], pricing: [], performance: [], activeProviders: [], defaultProvider: "" };
+      const active = new Set(view.activeProviders || []);
+      $("provider-table").innerHTML = table(
+        ["服务商", "默认模型", "端点", "密钥", "状态"],
+        view.providers.map((row) => `<tr><td>${esc(row.type)}</td><td>${esc(row.model)}</td><td>${esc(row.baseUrl)}</td><td>${row.hasApiKey ? "已配置" : "未配置"}</td><td>${active.has(row.type) || view.defaultProvider?.startsWith(row.type) ? "在用" : ""}</td></tr>`),
+      );
+      const select = $("map-provider");
+      const current = select.value;
+      const types = [...new Set(view.providers.map((row) => row.type).filter(Boolean))];
+      select.innerHTML = types.map((type) => `<option value="${esc(type)}">${esc(type)}</option>`).join("");
+      if (current && types.includes(current)) select.value = current;
+      $("mapping-table").innerHTML = table(
+        ["服务商", "规范 ID", "等价 ID / 版本", ""],
+        view.mappings.map((row) => `<tr><td>${esc(row.provider)}${row.providerConfigured ? "" : " <span class='warn'>未在服务商配置中</span>"}</td><td>${esc(row.canonicalModelId)}</td><td>${esc((row.aliases || []).join(", "))}</td><td><button type="button" data-delete="${esc(row.id)}">删除</button></td></tr>`),
+      );
+      $("pricing-table").innerHTML = table(
+        ["服务商", "规范 ID", "输入 / 百万", "输出 / 百万"],
+        view.pricing.map((row) => `<tr><td>${esc(row.provider)}</td><td>${esc(row.canonicalModelId)}</td><td>${esc(row.inputUsdPerMillion)}</td><td>${esc(row.outputUsdPerMillion)}</td></tr>`),
+      );
+      $("performance-table").innerHTML = table(
+        ["服务商", "规范 ID", "上下文", "延迟 P50 ms"],
+        view.performance.map((row) => `<tr><td>${esc(row.provider)}</td><td>${esc(row.canonicalModelId)}</td><td>${esc(row.contextTokens)}</td><td>${esc(row.latencyMsP50)}</td></tr>`),
+      );
+    }
+    async function refresh() {
+      state.view = await api("/v1/admin/model-manager");
+      render();
+    }
+    document.querySelectorAll("nav button").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("nav button").forEach((item) => item.setAttribute("aria-selected", "false"));
+        button.setAttribute("aria-selected", "true");
+        document.querySelectorAll("main section").forEach((section) => { section.hidden = true; });
+        $(`panel-${button.dataset.panel}`).hidden = false;
+      });
+    });
+    $("map-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("map-error").textContent = "";
+      const num = (id) => {
+        const raw = $(id).value.trim();
+        if (!raw) return undefined;
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : undefined;
+      };
+      try {
+        await api("/v1/admin/model-mappings", {
+          method: "POST",
+          body: JSON.stringify({
+            provider: $("map-provider").value.trim(),
+            canonicalModelId: $("map-canonical").value.trim(),
+            aliases: $("map-aliases").value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+            inputUsdPerMillion: num("map-input-price"),
+            outputUsdPerMillion: num("map-output-price"),
+            contextTokens: num("map-context"),
+            latencyMsP50: num("map-latency"),
+          }),
+        });
+        $("map-canonical").value = "";
+        $("map-aliases").value = "";
+        await refresh();
+      } catch (error) {
+        $("map-error").textContent = error.message || String(error);
+      }
+    });
+    document.body.addEventListener("click", async (event) => {
+      const id = event.target?.dataset?.delete;
+      if (!id) return;
+      try {
+        await api(`/v1/admin/model-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
+        await refresh();
+      } catch (error) {
+        $("map-error").textContent = error.message || String(error);
+      }
+    });
+    refresh().catch((error) => { $("provider-table").textContent = error.message || String(error); });
+  </script>
+</body>
+</html>

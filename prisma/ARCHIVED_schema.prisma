@@ -1,0 +1,100 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model UserProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  trait       Json
+  cognitive   Json
+  confidence  Float
+  lastUpdated DateTime @updatedAt
+  createdAt   DateTime @default(now())
+}
+
+model InteractionEvent {
+  id         String   @id @default(cuid())
+  userId     String
+  sessionId  String?
+  content    Json
+  source     String
+  permission String
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model MemoryChunk {
+  id               String   @id @default(cuid())
+  userId           String
+  text             String
+  embedding        Json
+  embeddingVersion String
+  embeddingDim     Int
+  source           String
+  score            Float?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+
+  @@index([userId])
+  @@index([embeddingVersion])
+}
+
+model ToolCallLog {
+  id         String   @id @default(cuid())
+  requestId  String?
+  userId     String
+  toolName   String
+  args       Json
+  resultHash String?
+  status     String
+  latencyMs  Int?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([toolName])
+}
+
+model PromptArtifact {
+  id              String   @id @default(cuid())
+  requestId       String?
+  userId          String
+  promptText      String
+  tokenCount      Int?
+  templateVersion String?
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+}
+
+model SchemaRegistry {
+  id         String   @id @default(cuid())
+  schemaId   String
+  version    String
+  status     String
+  schemaHash String
+  schemaJson Json
+  owner      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([schemaId, version])
+  @@index([schemaId])
+}
+
+model SchemaUseLog {
+  id            String   @id @default(cuid())
+  requestId     String?
+  schemaId      String
+  schemaHash    String
+  parserVersion String
+  result        String
+  createdAt     DateTime @default(now())
+
+  @@index([schemaId])
+}

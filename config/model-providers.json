@@ -1,0 +1,103 @@
+{
+  "providers": [
+    {
+      "type": "zhipu",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "glm-4",
+      "apiKey": null,
+      "extraParams": {}
+    },
+    {
+      "type": "minimax",
+      "baseUrl": "https://api.minimaxi.com/v1",
+      "model": "abab6.5-chat",
+      "apiKey": null,
+      "extraParams": {
+        "groupId": null
+      }
+    },
+    {
+      "type": "openrouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "openai/gpt-4-turbo",
+      "apiKey": null,
+      "extraParams": {}
+    },
+    {
+      "type": "nvidia",
+      "baseUrl": "https://integrate.api.nvidia.com/v1",
+      "model": "meta/llama3-70b-instruct",
+      "apiKey": null,
+      "extraParams": {}
+    },
+    {
+      "type": "xiaomi",
+      "baseUrl": "https://api.xiaomimimo.com/v1",
+      "model": "mimo-v2.5-pro",
+      "apiKey": null,
+      "extraParams": {
+        "authStyle": "both",
+        "path": "/chat/completions",
+        "mode": "chat"
+      }
+    },
+    {
+      "type": "deepseek",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "apiKey": null,
+      "extraParams": {}
+    },
+    {
+      "type": "ollama",
+      "baseUrl": "http://localhost:11434/api",
+      "model": "llama3",
+      "apiKey": null,
+      "extraParams": {}
+    },
+    {
+      "type": "vllm",
+      "baseUrl": "http://localhost:8000/v1",
+      "model": "meta-llama/Llama-2-7b-hf",
+      "apiKey": null,
+      "extraParams": {}
+    },
+    {
+      "type": "sglang",
+      "baseUrl": "http://localhost:7860/v1",
+      "model": "default-model",
+      "apiKey": null,
+      "extraParams": {}
+    }
+  ],
+  "activeProviders": [
+    "zhipu:glm-4"
+  ],
+  "defaultProvider": "zhipu:glm-4",
+  "providerRoutingRules": [
+    {
+      "name": "Mathematical Calculations",
+      "condition": "math|calculate|compute|equation",
+      "provider": "zhipu:glm-4",
+      "priority": 10
+    },
+    {
+      "name": "Chinese Content",
+      "condition": "中文|chinese|汉语|语言",
+      "provider": "zhipu:glm-4",
+      "priority": 9
+    },
+    {
+      "name": "Code Generation",
+      "condition": "code|programming|function|algorithm",
+      "provider": "zhipu:glm-4",
+      "priority": 8
+    },
+    {
+      "name": "Local Processing",
+      "condition": "local|private|confidential",
+      "provider": "ollama:llama3",
+      "priority": 7
+    }
+  ]
+}

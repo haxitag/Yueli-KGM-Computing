@@ -1,0 +1,47 @@
+{
+  "name": "@kgm/errors",
+  "version": "1.0.0",
+  "description": "Production-grade error handling system for KGM Computing",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "require": "./index.js",
+      "types": "./index.d.ts"
+    },
+    "./recovery": {
+      "import": "./recovery.js",
+      "require": "./recovery.js",
+      "types": "./recovery.d.ts"
+    },
+    "./monitoring": {
+      "import": "./monitoring.js",
+      "require": "./monitoring.js",
+      "types": "./monitoring.d.ts"
+    },
+    "./integration": {
+      "import": "./integration.js",
+      "require": "./integration.js",
+      "types": "./integration.d.ts"
+    },
+    "./config": {
+      "import": "./config.js",
+      "require": "./config.js",
+      "types": "./config.d.ts"
+    },
+    "./*": "./*.js"
+  },
+  "keywords": [
+    "error-handling",
+    "retry",
+    "circuit-breaker",
+    "monitoring",
+    "observability"
+  ],
+  "author": "Yueli KGM Computing Team",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}

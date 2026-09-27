@@ -1,0 +1,90 @@
+services:
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+
+  frontstation-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontstation-worker
+    ports:
+      - "${KGM_FRONTSTATION_WORKER_PORT:-8091}:8091"
+    environment:
+      KGM_FRONTSTATION_WORKER_HOST: "0.0.0.0"
+      KGM_FRONTSTATION_WORKER_PORT: "8091"
+      KGM_FRONTSTATION_WORKER_DEVICE: ${KGM_FRONTSTATION_WORKER_DEVICE:-cpu}
+      KGM_FRONTSTATION_WORKER_EMBED_MODEL: ${KGM_FRONTSTATION_WORKER_EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      KGM_FRONTSTATION_WORKER_CE_MODEL: ${KGM_FRONTSTATION_WORKER_CE_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+    volumes:
+      - frontstation_hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8091/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 90s
+    restart: unless-stopped
+
+  kgm:
+    build: .
+    ports:
+      - "58691:58691"
+    environment:
+      NODE_ENV: production
+      PORT: 58691
+      KGM_HTTP_SECURITY_MODE: strict
+      KGM_HTTP_API_KEY: ${KGM_HTTP_API_KEY:?Set KGM_HTTP_API_KEY before starting compose}
+      KGM_HTTP_RATE_LIMIT_MAX: ${KGM_HTTP_RATE_LIMIT_MAX:-120}
+      KGM_HTTP_RATE_LIMIT_WINDOW_MS: ${KGM_HTTP_RATE_LIMIT_WINDOW_MS:-60000}
+      KGM_HTTP_AUTH_EXEMPT: /health,/ready,/metrics,/openapi.json
+      KGM_HTTP_TRUST_PROXY: ${KGM_HTTP_TRUST_PROXY:-0}
+      KGM_VECTOR_BACKEND: chroma
+      KGM_VECTOR_BASE_URL: http://chroma:8000
+      KGM_VECTOR_COLLECTION: kgm_memory
+      KGM_DB_PROVIDER: sqlite
+      KGM_DB_PATH: /app/data/kgm.sqlite
+      KGM_DB_JOURNAL: WAL
+      KGM_EMBEDDING_PROVIDER: openai
+      KGM_EMBEDDING_BASE_URL: https://api.openai.com/v1
+      KGM_EMBEDDING_MODEL: text-embedding-3-large
+      KGM_EMBEDDING_API_KEY: ${OPENAI_API_KEY}
+      KGM_LLM_PROVIDER: openai
+      KGM_LLM_BASE_URL: https://api.openai.com/v1
+      KGM_LLM_MODEL: gpt-4o-mini
+      KGM_LLM_API_KEY: ${OPENAI_API_KEY}
+      KGM_LLM_MODE: completions
+      KGM_CIRCUIT_BREAKER_ERROR_THRESHOLD: ${KGM_CIRCUIT_BREAKER_ERROR_THRESHOLD:-5}
+      KGM_CIRCUIT_BREAKER_RESET_TIMEOUT_MS: ${KGM_CIRCUIT_BREAKER_RESET_TIMEOUT_MS:-60000}
+      # 前站 encoder 轨（sidecar micro-worker；与 decoder-only Native GPU 分轨）
+      KGM_FRONTSTATION_MODE: ${KGM_FRONTSTATION_MODE:-auto}
+      KGM_FRONTSTATION_INTENT_MODE: ${KGM_FRONTSTATION_INTENT_MODE:-auto}
+      KGM_FRONTSTATION_RERANK_MODE: ${KGM_FRONTSTATION_RERANK_MODE:-auto}
+      KGM_FRONTSTATION_SUMMARY_MODE: ${KGM_FRONTSTATION_SUMMARY_MODE:-local}
+      KGM_FRONTSTATION_PREFER_ONNX: ${KGM_FRONTSTATION_PREFER_ONNX:-0}
+      KGM_FRONTSTATION_ONNX_MODEL: ${KGM_FRONTSTATION_ONNX_MODEL:-Xenova/all-MiniLM-L6-v2}
+      KGM_FRONTSTATION_INTENT_URL: ${KGM_FRONTSTATION_INTENT_URL:-http://frontstation-worker:8091/v1/intent}
+      KGM_FRONTSTATION_RERANK_URL: ${KGM_FRONTSTATION_RERANK_URL:-http://frontstation-worker:8091/v1/rerank}
+      KGM_FRONTSTATION_SUMMARY_URL: ${KGM_FRONTSTATION_SUMMARY_URL:-http://frontstation-worker:8091/v1/summarize}
+      KGM_FRONTSTATION_TIMEOUT_MS: ${KGM_FRONTSTATION_TIMEOUT_MS:-8000}
+    volumes:
+      - ./data:/app/data
+      - transformers_cache:/home/kgm/.cache/huggingface
+    depends_on:
+      chroma:
+        condition: service_started
+      frontstation-worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  chroma_data:
+  frontstation_hf_cache:
+  transformers_cache:

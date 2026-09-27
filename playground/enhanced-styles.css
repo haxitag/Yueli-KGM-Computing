@@ -1,0 +1,546 @@
+/**
+ * KGM Playground - UI 增强样式
+ * 优化视觉层次、交互体验和响应式布局
+ */
+
+/* ==================== 顶栏导航优化 ==================== */
+
+/* 功能分区导航样式 */
+.nav-secondary,
+.nav-tertiary {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px;
+}
+
+/* 导航按钮图标优化 */
+.nav-item {
+    position: relative;
+    transition: all 0.2s ease;
+}
+
+.nav-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+
+/* 外部链接样式 */
+.nav-external {
+    position: relative;
+}
+
+.nav-external::after {
+    content: '↗';
+    margin-left: 4px;
+    font-size: 10px;
+    opacity: 0.6;
+}
+
+/* ==================== 状态栏优化 ==================== */
+
+.config-status-bar {
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 16px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.status-pill {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: all 0.2s ease;
+}
+
+.status-pill:hover {
+    border-color: #cbd5e1;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+
+.status-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.status-value {
+    font-size: 13px;
+    font-weight: 500;
+    color: #0f172a;
+    font-family: var(--font-mono);
+}
+
+/* ==================== 输入区域优化 ==================== */
+
+/* 主输入区高亮 */
+.input-group-primary {
+    background: #ffffff;
+    border: 2px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    transition: all 0.2s ease;
+}
+
+.input-group-primary:focus-within {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* 标签优化 */
+.input-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.label-text {
+    font-size: 14px;
+}
+
+.label-hint {
+    font-size: 12px;
+    font-weight: 400;
+    color: #94a3b8;
+}
+
+/* ==================== 折叠面板 ==================== */
+
+.input-group-collapsible {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+    transition: all 0.2s ease;
+}
+
+.input-group-collapsible[open] {
+    background: #ffffff;
+    border-color: #cbd5e1;
+}
+
+.collapsible-label {
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 600;
+    color: #475569;
+    transition: all 0.2s ease;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.collapsible-label:hover {
+    background: #f1f5f9;
+    color: #1e293b;
+}
+
+.collapse-icon {
+    font-size: 10px;
+    transition: transform 0.2s ease;
+}
+
+.input-group-collapsible[open] .collapse-icon {
+    transform: rotate(180deg);
+}
+
+.input-group-collapsible summary {
+    list-style: none;
+}
+
+.input-group-collapsible summary::-webkit-details-marker {
+    display: none;
+}
+
+/* ==================== 按钮优化 ==================== */
+
+.btn {
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: none;
+    outline: none;
+}
+
+.btn:active {
+    transform: scale(0.98);
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    color: #ffffff;
+    box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+    box-shadow: 0 4px 8px rgba(37, 99, 235, 0.3);
+    transform: translateY(-1px);
+}
+
+.btn-secondary {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #d1d5db;
+}
+
+.btn-secondary:hover {
+    background: #e5e7eb;
+    border-color: #9ca3af;
+}
+
+/* ==================== 加载动画 ==================== */
+
+.loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 24px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    color: #64748b;
+    font-weight: 500;
+}
+
+.loading::before {
+    content: '';
+    width: 20px;
+    height: 20px;
+    border: 2px solid #e2e8f0;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ==================== 输出面板优化 ==================== */
+
+.output-group {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 12px;
+    transition: all 0.2s ease;
+}
+
+.output-group:hover {
+    border-color: #cbd5e1;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+
+.output-group label {
+    display: block;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+
+/* ==================== 任务列表优化 ==================== */
+
+.task-item {
+    position: relative;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.task-item:hover {
+    border-color: #cbd5e1;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+    transform: translateX(2px);
+}
+
+.task-item.active {
+    border-color: #2563eb;
+    background: #eff6ff;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
+.task-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.task-status::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+
+.task-status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.task-status-pending::before {
+    background: #f59e0b;
+}
+
+.task-status-running {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.task-status-running::before {
+    background: #3b82f6;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.task-status-completed {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.task-status-completed::before {
+    background: #10b981;
+}
+
+.task-status-error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.task-status-error::before {
+    background: #ef4444;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* ==================== 响应式优化 ==================== */
+
+@media (max-width: 1024px) {
+    .config-status-bar {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .top-nav {
+        flex-wrap: wrap;
+        padding: 8px 12px;
+        gap: 8px;
+    }
+    
+    .nav-brand {
+        width: 100%;
+        margin-bottom: 4px;
+    }
+    
+    .nav-divider {
+        display: none;
+    }
+    
+    .config-status-bar {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .main-layout {
+        grid-template-columns: 1fr;
+    }
+    
+    .input-panel,
+    .output-panel {
+        min-width: unset;
+    }
+}
+
+@media (max-width: 480px) {
+    .config-status-bar {
+        grid-template-columns: 1fr;
+    }
+    
+    .nav-item {
+        padding: 6px 8px;
+        font-size: 12px;
+    }
+}
+
+/* ==================== 可访问性优化 ==================== */
+
+/* 键盘导航焦点样式 */
+.nav-item:focus-visible,
+.btn:focus-visible,
+.task-item:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+}
+
+/* 减少动画偏好 */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ==================== 暗黑模式支持（预留） ==================== */
+
+@media (prefers-color-scheme: dark) {
+    /* 未来可以添加暗黑模式样式 */
+}
+
+/* ==================== 工具提示优化 ==================== */
+
+[title] {
+    position: relative;
+}
+
+[title]:hover::after {
+    content: attr(title);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 10px;
+    background: #1e293b;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 400;
+    white-space: nowrap;
+    border-radius: 6px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    pointer-events: none;
+    margin-bottom: 8px;
+}
+
+/* ==================== 输入工具按钮优化 ==================== */
+
+.input-tools {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.input-tool-btn {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f3f4f6;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.input-tool-btn:hover {
+    background: #e5e7eb;
+    border-color: #9ca3af;
+    transform: translateY(-1px);
+}
+
+.input-tool-btn:active {
+    transform: translateY(0);
+}
+
+/* ==================== 多选文件样式优化 ==================== */
+
+input[type="file"] {
+    padding: 8px;
+    background: #f9fafb;
+    border: 1px dashed #d1d5db;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+input[type="file"]:hover {
+    border-color: #9ca3af;
+    background: #f3f4f6;
+}
+
+/* ==================== 代码块优化 ==================== */
+
+.trace-output,
+.stream-output {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 16px;
+    border-radius: 8px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ==================== 预览容器优化 ==================== */
+
+.preview-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 12px;
+    background: #f8fafc;
+    border: 1px dashed #e2e8f0;
+    border-radius: 8px;
+    min-height: 60px;
+}
+
+.preview-container:empty {
+    display: none;
+}
+
+.preview-container img,
+.preview-container video {
+    max-width: 150px;
+    max-height: 150px;
+    border-radius: 6px;
+    border: 2px solid #ffffff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    transition: all 0.2s ease;
+}
+
+.preview-container img:hover,
+.preview-container video:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
