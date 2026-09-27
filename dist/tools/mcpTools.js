@@ -30,8 +30,11 @@ export function registerMcpPlaygroundTool(registry, getPlayground) {
         if (!conn || !conn.enabled) {
             return { ok: false, error: "connector_not_found_or_disabled" };
         }
-        if (conn.transport !== "http" || !conn.url?.trim()) {
-            return { ok: false, error: "unsupported_or_missing_url", transport: conn.transport };
+        if (conn.transport !== "http") {
+            return { ok: false, error: "unsupported_transport", transport: conn.transport };
+        }
+        if (!conn.url?.trim()) {
+            return { ok: false, error: "missing_url" };
         }
         const result = await mcpJsonRpc(conn.url.trim(), "tools/call", { name: toolName, arguments: toolArgs }, conn.headers);
         return { ok: true, result };

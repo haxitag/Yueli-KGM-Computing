@@ -89,18 +89,8 @@ type SearchCandidate = {
 };
 
 async function searchWeb(query: string, topK: number): Promise<SearchResult[]> {
-  if (process.env.KGM_SMOKE_STUB_NETWORK_TOOLS === "1") {
-    return [
-      {
-        title: "offline_stub",
-        snippet: `stub results for: ${query}`,
-        url: "https://example.invalid/offline-stub",
-        markdown: `# Offline stub\n\nQuery: ${query}`,
-      },
-    ];
-  }
   const encodedQuery = encodeURIComponent(query);
-  const url = `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`;
+  const url = `${searchWebBaseUrl().replace(/\/+$/, "")}/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`;
   
   const response = await fetch(url, {
     headers: {
@@ -248,6 +238,11 @@ async function readMarkdownWithJina(targetUrl: string): Promise<string> {
 
 function jinaReaderBaseUrl(): string {
   return process.env.JINA_READER_BASE_URL ?? "https://r.jina.ai";
+}
+
+/** 与 JINA_READER_BASE_URL 对称：允许把检索端点指向自建/本地 HTTP 服务（真实网络往返，非进程内桩）。 */
+function searchWebBaseUrl(): string {
+  return process.env.KGM_SEARCH_WEB_BASE_URL ?? "https://api.duckduckgo.com";
 }
 
 function deriveTitle(text: string): string {

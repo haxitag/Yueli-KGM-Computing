@@ -178,10 +178,11 @@ function buildPreview(instance) {
     };
 }
 function emptyPreview(kind, status) {
+    // 未运行即未采集：留 undefined，不回填 0 假装已测量。
     return {
-        cpuPercent: 0,
-        memoryMb: 0,
-        networkKbps: 0,
+        cpuPercent: undefined,
+        memoryMb: undefined,
+        networkKbps: undefined,
         uptimeSec: 0,
         lastUpdatedAt: new Date().toISOString(),
         title: previewTitle(kind, status),

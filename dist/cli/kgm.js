@@ -2,9 +2,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ManagedModelManager } from "../models/modelManager.js";
+import { createRuntimeWithStorage } from "../runtime.js";
+import { createOpenAiChatCompletion } from "../openai/compat.js";
+import { OpenAiResponseStore } from "../openai/responseStore.js";
+import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
 async function main() {
     const args = process.argv.slice(2);
     const [group, command, ...rest] = args;
+    if (group === "chat") {
+        await handleChat([command, ...rest].filter((item) => Boolean(item)));
+        return;
+    }
     if (group !== "models") {
         printHelp();
         process.exitCode = 1;
@@ -46,6 +54,41 @@ async function main() {
     }
     finally {
         manager.close();
+    }
+}
+async function handleChat(args) {
+    const flags = parseFlags(args);
+    const message = readString(flags, "message");
+    if (!message) {
+        throw new Error("message_required: kgm chat --message <text> [--model <id>]");
+    }
+    const runtime = await createRuntimeWithStorage({});
+    try {
+        const outputSchema = runtime.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {};
+        const result = await createOpenAiChatCompletion({
+            contextBuilder: runtime.contextBuilder,
+            llmClient: runtime.llmClient,
+            toolRegistry: runtime.toolRegistry,
+            configStore: runtime.configStore,
+            outputSchema,
+            responseStore: new OpenAiResponseStore(),
+            skillRuntime: runtime.skillRuntime,
+            request: {
+                model: readString(flags, "model"),
+                messages: [{ role: "user", content: message }],
+                stream: false,
+                kgm: {
+                    capabilities: {
+                        includeBuiltinTools: true,
+                        executeToolCalls: true,
+                    },
+                },
+            },
+        });
+        console.log(JSON.stringify(result, null, 2));
+    }
+    finally {
+        runtime.modelManager.close();
     }
 }
 async function handlePull(manager, args) {
@@ -224,6 +267,7 @@ function printTable(rows, columns) {
 }
 function printHelp() {
     console.log(`Usage:
+  kgm chat --message <text> [--model <id>]
   kgm models list [--json]
   kgm models ps [--json]
   kgm models pull --source-type <type> --url <url> [--file-path <path>] [--revision <rev>] [--model-name <name>]

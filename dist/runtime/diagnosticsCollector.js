@@ -25,16 +25,6 @@ export function collectRuntimeDiagnostics(configStore) {
             suggestedFix: "Set KGM_LLM_API_KEY, or configure KGM_LLM_BASE_URL/MODEL for a local OpenAI-compatible engine",
         });
     }
-    if (process.env.NODE_ENV === "production" && process.env.KGM_MOCK_MODE === "1") {
-        issues.push({
-            code: "MOCK_MODE_ACTIVE_FOR_PROD",
-            severity: "error",
-            stage: "runtime.startup",
-            message: "KGM_MOCK_MODE=1 is active in production",
-            affectedFeatures: ["chat", "completions", "responses"],
-            suggestedFix: "Unset KGM_MOCK_MODE or set KGM_MOCK_MODE=0 for production deployments",
-        });
-    }
     const llama = probeLlamaCppDeploy({
         enabled: config.workers.llamaCpp.enabled,
         command: config.workers.llamaCpp.command,

@@ -40,6 +40,7 @@
             <button type="button" class="nav-item nav-workspace active" data-workspace="chat" role="tab" aria-selected="true" title="推理对话 (⌘1)">对话</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="routing" role="tab" aria-selected="false" title="自动调度与审计 (⌘2)">路由</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="models" role="tab" aria-selected="false" title="模型制品 (⌘3)">模型</button>
+            <button type="button" class="nav-item nav-workspace" data-workspace="mapping" role="tab" aria-selected="false" title="同一推理服务商下的模型 ID 映射">映射</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="config" role="tab" aria-selected="false" title="服务端默认 LLM / 记忆 / Worker / 沙箱 (⌘7)">配置</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="memory" role="tab" aria-selected="false" title="记忆 / Cache / KV / Token (⌘6)">记忆</button>
             <button type="button" class="nav-item nav-workspace" data-workspace="ops" role="tab" aria-selected="false" title="用量 / 访问 / 预算 / 别名 (⌘5)">运维</button>
@@ -970,6 +971,46 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
     </section>
     </div>
 
+    <div id="workspace-mapping" class="workspace-view" data-workspace="mapping" hidden>
+    <section class="ops-panel page-section">
+        <div class="routing-header">
+            <div>
+                <h2 class="section-title">模型 ID 映射</h2>
+                <p class="section-desc">先选定推理服务商，再设一个规范模型 ID。同一服务商下的其它 ID 或版本都解析成它。没有服务商的映射不会生效。服务商、报价和性能集中在 <a href="/admin/model-manager">模型管理</a>。</p>
+            </div>
+        </div>
+        <div class="routing-card">
+            <div class="route-editor">
+                <label class="option-field"><span>推理服务商</span>
+                    <select id="map-provider"></select>
+                </label>
+                <label class="option-field"><span>规范模型 ID</span>
+                    <input id="map-canonical" type="text" placeholder="gpt-5.5">
+                </label>
+                <label class="option-field"><span>等价 ID / 版本</span>
+                    <textarea id="map-aliases" rows="3" placeholder="每行一个，或用逗号分隔：gpt-5.4, gpt-4.1"></textarea>
+                </label>
+                <label class="option-field"><span>输入报价 / 百万 token</span>
+                    <input id="map-input-price" type="number" step="0.0001" placeholder="可选">
+                </label>
+                <label class="option-field"><span>输出报价 / 百万 token</span>
+                    <input id="map-output-price" type="number" step="0.0001" placeholder="可选">
+                </label>
+                <label class="option-field"><span>上下文长度</span>
+                    <input id="map-context" type="number" step="1" placeholder="可选">
+                </label>
+                <label class="option-field"><span>延迟 P50（毫秒）</span>
+                    <input id="map-latency" type="number" step="1" placeholder="可选">
+                </label>
+            </div>
+            <div class="route-editor-actions">
+                <button type="button" id="map-save-btn">保存映射</button>
+            </div>
+            <div id="map-list" class="managed-list"></div>
+        </div>
+    </section>
+    </div>
+
     <div id="workspace-ops" class="workspace-view" data-workspace="ops" hidden>
     <section class="ops-panel page-section">
         <div class="routing-header">
@@ -1051,11 +1092,11 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
         <div id="ops-panel-aliases" class="ops-tab-panel" hidden>
             <div class="routing-card">
                 <h3>模型别名</h3>
-                <p class="section-desc">客户端使用别名；网关解析为真实 model / provider / runtimeId。</p>
+                <p class="section-desc">别名必须属于一个推理服务商。多 ID / 多版本归并到同一个规范模型，请用「映射」。</p>
                 <div class="route-editor">
                     <label class="option-field"><span>别名</span><input id="ops-alias-name" type="text" placeholder="chat-default"></label>
                     <label class="option-field"><span>目标模型</span><input id="ops-alias-model" type="text" placeholder="gpt-4o-mini"></label>
-                    <label class="option-field"><span>Provider</span><input id="ops-alias-provider" type="text" placeholder="可选"></label>
+                    <label class="option-field"><span>推理服务商</span><input id="ops-alias-provider" type="text" placeholder="必填，如 openai"></label>
                     <label class="option-field"><span>Runtime ID</span><input id="ops-alias-runtime" type="text" placeholder="可选"></label>
                 </div>
                 <div class="route-editor-actions">
@@ -1117,6 +1158,7 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
     <script src="../src/kce/kce-engine.js"></script>
     <script src="kce-task-manager.js"></script>
     <script src="ops-panel.js"></script>
+    <script src="model-mapping.js"></script>
     <script src="memory-panel.js"></script>
     <script src="config-panel.js"></script>
     <script src="control-plane-panel.js"></script>

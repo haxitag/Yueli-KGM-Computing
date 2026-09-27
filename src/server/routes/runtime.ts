@@ -45,7 +45,6 @@ export async function handleRuntimeRoute(params: RuntimeRouteParams): Promise<bo
     return send(params, 200, {
       ok: diagnostics.issues.every((issue) => issue.severity !== "error"),
       version: process.env.npm_package_version || "0.2.2",
-      mockMode: process.env.KGM_MOCK_MODE === "1",
       uptimeMs: Date.now() - params.startedAt,
       llm: {
         configured: Boolean(config.llm.provider && config.llm.baseUrl && config.llm.model),

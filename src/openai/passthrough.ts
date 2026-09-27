@@ -14,10 +14,22 @@ import type { KgmExtensions } from "../core/types.js";
 import type { ManagedModelManager } from "../models/modelManager.js";
 import type { OpenAiChatCompletionRequest, OpenAiResponsesRequest } from "./compat.js";
 import { mergeOpenAiPassthroughBody } from "../llm/maas/openAiChatBody.js";
-import { relayUpstreamSseNormalized } from "./sseStreamNormalize.js";
+import {
+  relayUpstreamSseNormalized,
+  type UpstreamStreamUsage,
+} from "./sseStreamNormalize.js";
 import { protectedFetch } from "../observability/circuitBreaker.js";
 import { buildAuthHeaders, inferLlmAuthStyle } from "../llm/client.js";
+import { createPricingService } from "../llm/pricingService.js";
+import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 import { modelsMatchByAlias, resolveCloudModelAlias } from "../models/cloudModelCatalog.js";
+
+/** 透传是"交付"优化，不改变选型；但仍需把用量落入账本。 */
+export type PassthroughStreamMeta = {
+  streamSource?: string;
+  canonicalModel?: string;
+  onUsage?: (usage: UpstreamStreamUsage) => void;
+};
 
 export type TrustedStreamUpstream = {
   baseUrl: string;
@@ -35,7 +47,7 @@ export async function maybeProxyNativeOpenAiStream(params: {
   payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest;
   send: (
     upstream: Response,
-    meta?: { streamSource?: string; canonicalModel?: string },
+    meta?: PassthroughStreamMeta,
   ) => Promise<void>;
 }): Promise<boolean> {
   if (!canUseNativeOpenAiStreamPassthrough(params.payload)) {
@@ -77,11 +89,25 @@ export async function maybeProxyNativeOpenAiStream(params: {
     return false;
   }
 
+  // 透传绕过了 AutoRouting，必须在这里补记账，否则这些请求在用量/成本/审计里完全消失。
+  const startedAtMs = Date.now();
+  let lastUsage: UpstreamStreamUsage | undefined;
   try {
     // Observability: delivery stage only — selection already resolved to trusted upstream.
     await params.send(response, {
       streamSource: `passthrough:${trusted.source}`,
       canonicalModel: trusted.canonicalModel,
+      onUsage: (usage) => {
+        lastUsage = usage;
+      },
+    });
+    void recordPassthroughUsage({
+      configStore: params.configStore,
+      protocol: params.protocol,
+      model: trusted.canonicalModel ?? payloadModel(params.payload),
+      requestId: requestIdOf(params.payload),
+      usage: lastUsage,
+      latencyMs: Date.now() - startedAtMs,
     });
     return true;
   } catch {
@@ -89,11 +115,57 @@ export async function maybeProxyNativeOpenAiStream(params: {
   }
 }
 
+function payloadModel(payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest): string {
+  return "model" in payload && typeof payload.model === "string" ? payload.model : "";
+}
+
+function requestIdOf(payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest): string | undefined {
+  const meta = (payload as { metadata?: Record<string, unknown> }).metadata;
+  const value = meta?.request_id ?? meta?.requestId;
+  return typeof value === "string" ? value : undefined;
+}
+
+async function recordPassthroughUsage(params: {
+  configStore: ConfigStore;
+  protocol: "chat" | "responses";
+  model: string;
+  requestId?: string;
+  usage?: UpstreamStreamUsage;
+  latencyMs: number;
+}): Promise<void> {
+  const promptTokens = params.usage?.promptTokens ?? 0;
+  const completionTokens = params.usage?.completionTokens ?? 0;
+  const totalTokens =
+    params.usage?.totalTokens ?? (promptTokens + completionTokens > 0 ? promptTokens + completionTokens : 0);
+  if (totalTokens <= 0) {
+    // 上游未上报 usage：宁可不记，也不用估算值冒充真实计费。
+    return;
+  }
+  const pricing = params.configStore.get().autoRouting.pricing;
+  const service = createPricingService(pricing.default, pricing.overrides);
+  const rate = await service.getPricing(params.model);
+  const costUsd = rate
+    ? (promptTokens / 1000) * rate.inputPer1kTokens + (completionTokens / 1000) * rate.outputPer1kTokens
+    : 0;
+  await recordOpsUsage({
+    requestId: params.requestId,
+    model: params.model,
+    success: true,
+    latencyMs: params.latencyMs,
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    costUsd,
+    source: "direct",
+    meta: { usageEstimated: false, delivery: `passthrough:${params.protocol}` },
+  });
+}
+
 /** 默认 send：归一化 reasoning delta 并支持空闲断开；写入 stream 可观测头 */
 export async function sendNormalizedUpstreamSse(
   res: import("node:http").ServerResponse,
   upstream: Response,
-  meta?: { streamSource?: string; canonicalModel?: string },
+  meta?: PassthroughStreamMeta,
 ): Promise<void> {
   if (!res.headersSent) {
     if (meta?.streamSource) {
@@ -103,7 +175,7 @@ export async function sendNormalizedUpstreamSse(
       res.setHeader("x-kgm-stream-model", meta.canonicalModel);
     }
   }
-  return relayUpstreamSseNormalized(res, upstream);
+  return relayUpstreamSseNormalized(res, upstream, { onUsage: meta?.onUsage });
 }
 
 function sanitizePassthroughPayload(

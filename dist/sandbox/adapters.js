@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import os from "node:os";
 export function createDefaultSandboxAdapters(overlay) {
     const fileConfig = loadSandboxAdapterConfig();
     const mergeKind = (kind) => {
@@ -182,10 +181,8 @@ class CommandSandboxAdapter {
     preview(instance) {
         const endpoint = this.resolveEndpoint();
         if (endpoint) {
-            return {
-                detail: `${this.label} attached via ${endpoint}`,
-                ...this.getSystemMetrics(),
-            };
+            // 远端 endpoint 未接入指标采集：不回传宿主机指标冒充沙箱指标。
+            return { detail: `${this.label} attached via ${endpoint} (metrics not collected)` };
         }
         const pid = this.processes.get(instance.id);
         if (pid) {
@@ -197,9 +194,6 @@ class CommandSandboxAdapter {
         if (!this.isConfigured()) {
             return {
                 detail: `${this.label} not configured — start unavailable until adapter env is set`,
-                cpuPercent: 0,
-                memoryMb: 0,
-                networkKbps: 0,
             };
         }
         const embedded = this.usingEmbeddedAdapter();
@@ -207,9 +201,6 @@ class CommandSandboxAdapter {
             detail: embedded
                 ? `${this.label} ready (bundled adapter); start to launch process`
                 : `${this.label} ready (commands configured); start to launch process`,
-            cpuPercent: 0,
-            memoryMb: 0,
-            networkKbps: 0,
         };
     }
     exportProcessMap() {
@@ -221,16 +212,6 @@ class CommandSandboxAdapter {
                 this.processes.set(id, pid);
             }
         }
-    }
-    getSystemMetrics() {
-        const cpus = os.cpus();
-        const totalCpuTime = cpus.reduce((acc, cpu) => acc + cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle, 0);
-        const idleTime = cpus.reduce((acc, cpu) => acc + cpu.times.idle, 0);
-        const cpuPercent = Math.round(((totalCpuTime - idleTime) / totalCpuTime) * 100);
-        const totalMemory = os.totalmem();
-        const freeMemory = os.freemem();
-        const usedMemoryMb = Math.round((totalMemory - freeMemory) / (1024 * 1024));
-        return { cpuPercent, memoryMb: usedMemoryMb };
     }
     getProcessMetrics(pid) {
         try {
@@ -250,9 +231,7 @@ class CommandSandboxAdapter {
                 const memoryMb = vmsizeMatch ? Math.round(parseInt(vmsizeMatch[1], 10) / 1024) : undefined;
                 return { cpuPercent, memoryMb };
             }
-            else if (process.platform === "darwin" || process.platform === "win32") {
-                return this.getSystemMetrics();
-            }
+            // darwin/win32 未实现按 pid 采集；返回空而不是宿主机整体指标（那不是该沙箱进程的用量）。
         }
         catch {
             // Ignore errors when process info is unavailable

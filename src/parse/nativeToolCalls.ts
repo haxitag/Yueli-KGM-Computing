@@ -27,11 +27,14 @@ function parseArguments(raw: unknown): Record<string, unknown> {
 }
 
 /** Extract OpenAI-style message.tool_calls from a chat.completions raw body. */
-export function extractNativeToolCalls(raw: unknown): NativeToolCall[] {
-  if (!isRecord(raw)) {
+export function extractNativeToolCalls(raw: unknown, depth = 0): NativeToolCall[] {
+  if (!isRecord(raw) || depth > 5) {
     return [];
   }
   const choices = Array.isArray(raw.choices) ? raw.choices : [];
+  if (choices.length === 0 && "result" in raw) {
+    return extractNativeToolCalls(raw.result, depth + 1);
+  }
   const choice = choices[0];
   if (!isRecord(choice)) {
     return [];

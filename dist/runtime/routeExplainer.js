@@ -34,6 +34,5 @@ export function explainRuntimeRoute(params) {
         selectedRouteKey: selected?.path === "llmProvider" ? route?.key ?? null : null,
         candidates,
         blockingIssues,
-        wouldUseMock: process.env.KGM_MOCK_MODE === "1",
     };
 }

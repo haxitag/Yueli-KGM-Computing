@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -15,9 +16,14 @@ async function main(): Promise<void> {
    * 要对真实 LLM 跑通：设置 `KGM_SMOKE_LIVE_LLM=1`（并配置可用的 `KGM_LLM_*`）。
    */
   const offlineLlm = process.env.KGM_SMOKE_LIVE_LLM !== "1";
+  /**
+   * 离线模式下把内置网络工具指向本地真实 HTTP 上游：仍走完整 fetch → JSON 解析 → Markdown 读取，
+   * 不注入进程内桩响应。
+   */
   if (offlineLlm) {
-    /** 离线模式下 `search_web` 等内置工具仍会访问外网；与确定性 smoke LLM 对齐为桩响应。 */
-    process.env.KGM_SMOKE_STUB_NETWORK_TOOLS = "1";
+    const upstream = await startLocalSearchUpstream();
+    process.env.KGM_SEARCH_WEB_BASE_URL = upstream.searchBaseUrl;
+    process.env.JINA_READER_BASE_URL = upstream.readerBaseUrl;
   }
   /**
    * 默认 Hash 嵌入，避免未配置 `KGM_EMBEDDING_API_KEY` 时在 graph/检索路径失败。
@@ -292,6 +298,40 @@ async function main(): Promise<void> {
   // Marker for ./openai-compat-smoke.mjs — then SIGKILL to skip ONNX teardown abort.
   fs.writeFileSync(path.join(os.tmpdir(), "kgm-openai-compat-smoke.ok"), "ok\n");
   process.kill(process.pid, "SIGKILL");
+}
+
+/** 本地真实 HTTP 上游：检索端点返回 DuckDuckGo 形状 JSON，其余路径返回 Markdown 正文。 */
+async function startLocalSearchUpstream(): Promise<{ searchBaseUrl: string; readerBaseUrl: string }> {
+  // 确定性 smoke LLM 会把整段 prompt 当作 query 传入，请求行远超默认 16KB 限制。
+  const server = http.createServer({ maxHeaderSize: 256 * 1024 }, (req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/" || url.pathname === "/search") {
+      const query = url.searchParams.get("q") ?? "";
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          Results: [
+            {
+              Title: `Local upstream result for ${query}`,
+              Text: `Local upstream snippet for: ${query}`,
+              FirstURL: "https://example.com/local-result",
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/markdown" });
+    res.end(`# Local upstream page\n\nFetched ${decodeURIComponent(url.pathname.slice(1))}\n`);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("local search upstream address not available");
+  }
+  const base = `http://127.0.0.1:${address.port}`;
+  return { searchBaseUrl: base, readerBaseUrl: base };
 }
 
 async function waitUntilTrue(

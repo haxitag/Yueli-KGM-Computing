@@ -1,7 +1,7 @@
 /**
  * 进程就绪探针（/ready）——与 /health 存活探针分层。
  * - /health：进程还活着即可 200
- * - /ready：能否接流量（mock 生产红线、可选要求上游）
+ * - /ready：能否接流量（可选要求上游）
  */
 export type ReadinessCheck = {
   name: string;
@@ -31,7 +31,7 @@ function envFlag(env: NodeJS.ProcessEnv, key: string): boolean {
 }
 
 /**
- * 评估就绪态。默认宽松：仅 production+mock 拦截；
+ * 评估就绪态。默认宽松；
  * `KGM_READY_REQUIRE_UPSTREAM=1` 时要求 llmConfigured 或有 running worker。
  */
 export function evaluateReadiness(input: ReadinessInput = {}): ReadinessReport {
@@ -44,21 +44,6 @@ export function evaluateReadiness(input: ReadinessInput = {}): ReadinessReport {
     name: "process",
     ok: true,
     detail: "alive",
-  });
-
-  const mockMode = envFlag(env, "KGM_MOCK_MODE");
-  const isProd =
-    (env.NODE_ENV ?? "").trim().toLowerCase() === "production" ||
-    (env.KGM_HTTP_SECURITY_MODE ?? "").trim().toLowerCase() === "strict";
-  const mockOk = !(isProd && mockMode);
-  checks.push({
-    name: "mock_mode",
-    ok: mockOk,
-    detail: mockMode
-      ? isProd
-        ? "KGM_MOCK_MODE active under production/strict"
-        : "mock allowed in non-production"
-      : "disabled",
   });
 
   const requireUpstream = envFlag(env, "KGM_READY_REQUIRE_UPSTREAM");

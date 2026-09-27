@@ -1,6 +1,43 @@
 import type { SkillDefinition } from "../core/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 
+export function parseExecutableSkill(payload: {
+  name?: string;
+  description?: string;
+  steps?: unknown;
+}): { ok: true; skill: SkillDefinition } | { ok: false; error: string; message: string } {
+  const name = payload.name?.trim() ?? "";
+  const description = payload.description?.trim() ?? "";
+  if (!name) {
+    return { ok: false, error: "skill_name_required", message: "Skill name is required." };
+  }
+  if (!Array.isArray(payload.steps) || payload.steps.length === 0) {
+    return {
+      ok: false,
+      error: "skill_steps_required",
+      message: "A skill must include executable steps with tool bindings. Empty skills are not stored.",
+    };
+  }
+  const steps: SkillDefinition["steps"] = [];
+  for (const item of payload.steps) {
+    if (!item || typeof item !== "object") {
+      return { ok: false, error: "skill_step_invalid", message: "Each skill step must be an object with id and tool." };
+    }
+    const rec = item as Record<string, unknown>;
+    const id = typeof rec.id === "string" ? rec.id.trim() : "";
+    const tool = typeof rec.tool === "string" ? rec.tool.trim() : "";
+    if (!id || !tool) {
+      return { ok: false, error: "skill_step_invalid", message: "Each skill step needs a non-empty id and tool." };
+    }
+    const input =
+      rec.input && typeof rec.input === "object" && !Array.isArray(rec.input)
+        ? (rec.input as Record<string, unknown>)
+        : {};
+    steps.push({ id, tool, input });
+  }
+  return { ok: true, skill: { name, description, steps } };
+}
+
 export class SkillRegistry {
   private skills = new Map<string, SkillDefinition>();
 

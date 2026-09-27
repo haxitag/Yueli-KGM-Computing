@@ -38,12 +38,18 @@ function mapCopilotRowToProvider(row: CopilotCloudProviderRow): ProviderConfig |
   };
 }
 
-export async function handleGetModelProviders(res: ServerResponse): Promise<void> {
+export async function loadPublicModelProviders(): Promise<{
+  path: string;
+  providers: Array<{ type: string; model: string; baseUrl?: string; hasApiKey: boolean }>;
+  activeProviders: string[];
+  defaultProvider: string;
+  providerRoutingRules: unknown;
+}> {
   const manager = new ProviderConfigurationManager(resolveProviderConfigPath());
   await manager.loadConfiguration();
   manager.updateFromEnvironment();
   const data = manager.getConfigData();
-  return sendKgmHttpJson(res, 200, {
+  return {
     path: resolveProviderConfigPath(),
     providers: data.providers.map((p) => ({
       type: p.type,
@@ -54,7 +60,11 @@ export async function handleGetModelProviders(res: ServerResponse): Promise<void
     activeProviders: data.activeProviders,
     defaultProvider: data.defaultProvider,
     providerRoutingRules: data.providerRoutingRules,
-  });
+  };
+}
+
+export async function handleGetModelProviders(res: ServerResponse): Promise<void> {
+  return sendKgmHttpJson(res, 200, await loadPublicModelProviders());
 }
 
 export async function handlePutModelProviders(

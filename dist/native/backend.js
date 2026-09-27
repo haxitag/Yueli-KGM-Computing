@@ -265,6 +265,9 @@ class NativeCoreServingBackend {
                 tokenId: typeof event.tokenId === "number" ? event.tokenId : undefined,
             };
         }
+        if (event.type === "tool_call_delta") {
+            return event;
+        }
         if (event.type === "finished") {
             return {
                 type: "finished",

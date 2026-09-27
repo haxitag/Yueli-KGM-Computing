@@ -163,8 +163,8 @@ export async function handleOpsAdminRoute(params: OpsAdminRouteParams): Promise<
       enabled?: boolean;
       notes?: string;
     };
-    if (!body.alias?.trim() || !body.model?.trim()) {
-      return send(params, 400, kgmErrorBody("invalid_request", "alias and model required", 400));
+    if (!body.alias?.trim() || !body.model?.trim() || !body.provider?.trim()) {
+      return send(params, 400, kgmErrorBody("invalid_request", "alias, model and provider required", 400));
     }
     const record = store.upsertAlias({
       id: body.id,

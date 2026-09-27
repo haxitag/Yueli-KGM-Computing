@@ -164,6 +164,7 @@ export class HttpLlmClient {
             let fullText = "";
             let lastUsage;
             let lastRaw;
+            const toolCalls = new Map();
             const contentFields = ["content", "reasoning_content", "reasoning", "thinking", "thought", "text", "output_text"];
             while (true) {
                 const { done, value } = await reader.read();
@@ -199,6 +200,38 @@ export class HttpLlmClient {
                                 const choice = data.choices[0];
                                 const delta = choice.delta;
                                 if (delta) {
+                                    const toolDeltas = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+                                    for (const item of toolDeltas) {
+                                        if (!item || typeof item !== "object")
+                                            continue;
+                                        const row = item;
+                                        const index = typeof row.index === "number" ? row.index : 0;
+                                        const current = toolCalls.get(index) ?? { name: "", arguments: "" };
+                                        if (typeof row.id === "string" && row.id)
+                                            current.id = row.id;
+                                        const fn = row.function;
+                                        let nameDelta;
+                                        let argumentsDelta;
+                                        if (fn && typeof fn === "object") {
+                                            const fnRec = fn;
+                                            if (typeof fnRec.name === "string" && fnRec.name) {
+                                                current.name += fnRec.name;
+                                                nameDelta = fnRec.name;
+                                            }
+                                            if (typeof fnRec.arguments === "string" && fnRec.arguments) {
+                                                current.arguments += fnRec.arguments;
+                                                argumentsDelta = fnRec.arguments;
+                                            }
+                                        }
+                                        toolCalls.set(index, current);
+                                        yield {
+                                            type: "tool_call_delta",
+                                            index,
+                                            id: current.id,
+                                            name: nameDelta,
+                                            argumentsDelta,
+                                        };
+                                    }
                                     const { content, reasoning } = extractOpenAiCompatDeltaParts(delta);
                                     if (content) {
                                         fullText += content;
@@ -256,6 +289,15 @@ export class HttpLlmClient {
                     }
                 }
             }
+            const assembledToolCalls = [...toolCalls.entries()]
+                .sort((a, b) => a[0] - b[0])
+                .map(([, call]) => call)
+                .filter((call) => call.name.trim().length > 0)
+                .map((call) => ({
+                id: call.id,
+                type: "function",
+                function: { name: call.name, arguments: call.arguments || "{}" },
+            }));
             yield {
                 type: "finished",
                 result: {
@@ -263,7 +305,16 @@ export class HttpLlmClient {
                     raw: {
                         ...(lastRaw ?? {}),
                         ...(lastUsage ? { usage: lastUsage } : {}),
-                        choices: [{ message: { role: "assistant", content: fullText } }],
+                        choices: [
+                            {
+                                message: {
+                                    role: "assistant",
+                                    content: fullText,
+                                    ...(assembledToolCalls.length > 0 ? { tool_calls: assembledToolCalls } : {}),
+                                },
+                                finish_reason: assembledToolCalls.length > 0 ? "tool_calls" : "stop",
+                            },
+                        ],
                     },
                 },
             };

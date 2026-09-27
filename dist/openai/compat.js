@@ -9,7 +9,7 @@ import { renderPrompt } from "../prompt/renderer.js";
 import { collectPlaygroundSystemAddons } from "../playground/systemAddons.js";
 import { generateId } from "../utils/id.js";
 import { resolveRequestTraceIds } from "../observability/requestTrace.js";
-import { extractMaaSOpenAiExtras } from "../llm/maas/reasoning.js";
+import { extractMaaSOpenAiExtras, extractReasoningFromCompletionRaw } from "../llm/maas/reasoning.js";
 import { applyHaxiTagAssembly } from "../protocol/haxiTagAssembly.js";
 import { extractStructuredCompletion, mergeUsageWithEstimates } from "../llm/completionNormalize.js";
 import { annotateOpenAiModels, appendConfiguredMediaModels } from "../models/modelTypeAnnotator.js";
@@ -53,88 +53,11 @@ export function resolveRequestedModel(model, _configStore) {
         return undefined;
     return trimmed;
 }
-/** Display / mock fallback when routing has not yet selected a concrete model. */
+/** Display fallback when routing has not yet selected a concrete model. */
 function resolveDisplayModel(model, configStore) {
     return model ?? configStore.get().llm.model;
 }
-function isMockMode() {
-    return process.env.KGM_MOCK_MODE === "1";
-}
-function createMockChatCompletion(request, configStore) {
-    const requestId = generateId();
-    const created = Math.floor(Date.now() / 1000);
-    const model = resolveDisplayModel(resolveRequestedModel(request.model, configStore), configStore);
-    return {
-        id: `chatcmpl_${requestId}`,
-        object: "chat.completion",
-        created,
-        model,
-        choices: [
-            {
-                index: 0,
-                message: { role: "assistant", content: "ok" },
-                finish_reason: "stop",
-            },
-        ],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-        metadata: request.metadata ?? {},
-        kgm: { mock: true, reason: "KGM_MOCK_MODE=1" },
-    };
-}
-function createMockResponse(request, configStore) {
-    const requestId = generateId();
-    const created = Math.floor(Date.now() / 1000);
-    const model = resolveDisplayModel(resolveRequestedModel(request.model, configStore), configStore);
-    return {
-        id: `resp_${requestId}`,
-        object: "response",
-        created,
-        model,
-        status: "completed",
-        output: [
-            {
-                id: `msg_${requestId}`,
-                type: "message",
-                role: "assistant",
-                content: [{ type: "output_text", text: "ok" }],
-            },
-        ],
-        output_text: "ok",
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-        metadata: request.metadata ?? {},
-        kgm: { mock: true, reason: "KGM_MOCK_MODE=1" },
-    };
-}
-async function* streamMockChatCompletion(request, configStore) {
-    const body = createMockChatCompletion(request, configStore);
-    yield JSON.stringify({
-        id: body.id,
-        object: "chat.completion.chunk",
-        created: body.created,
-        model: body.model,
-        choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }],
-    });
-    yield JSON.stringify({
-        id: body.id,
-        object: "chat.completion.chunk",
-        created: body.created,
-        model: body.model,
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-        usage: body.usage,
-        metadata: body.metadata,
-        kgm: body.kgm,
-    });
-}
-async function* streamMockResponse(request, configStore) {
-    const body = createMockResponse(request, configStore);
-    yield JSON.stringify({ type: "response.created", response: { id: body.id, object: "response", created: body.created, model: body.model, status: "in_progress" } });
-    yield JSON.stringify({ type: "response.output_text.delta", delta: "ok" });
-    yield JSON.stringify({ type: "response.completed", response: body });
-}
 export async function createOpenAiChatCompletion(params) {
-    if (isMockMode()) {
-        return createMockChatCompletion(params.request, params.configStore);
-    }
     const run = await executeCompatibilityRun({
         ...params,
         model: params.request.model,
@@ -193,9 +116,6 @@ function spreadMaaSFieldsFromRequest(req) {
     };
 }
 export async function createOpenAiResponse(params) {
-    if (isMockMode()) {
-        return createMockResponse(params.request, params.configStore);
-    }
     const run = await executeCompatibilityRun({
         ...params,
         model: params.request.model,
@@ -216,9 +136,6 @@ export async function createOpenAiResponse(params) {
     return buildResponsesObject(run);
 }
 export function streamOpenAiChatCompletion(params) {
-    if (isMockMode()) {
-        return streamMockChatCompletion(params.request, params.configStore);
-    }
     return streamChatCompletionChunks({
         ...params,
         model: params.request.model,
@@ -238,9 +155,6 @@ export function streamOpenAiChatCompletion(params) {
     });
 }
 export function streamOpenAiResponse(params) {
-    if (isMockMode()) {
-        return streamMockResponse(params.request, params.configStore);
-    }
     return streamResponsesChunks({
         ...params,
         model: params.request.model,
@@ -314,6 +228,7 @@ async function executeCompatibilityRun(params) {
     let usedNativeToolCalls = false;
     let roundsExecuted = 0;
     let cachedTokensTotal = 0;
+    let reasoningText = "";
     const startedAtMs = Date.now();
     let firstTokenAtMs;
     const sessionId = deriveSessionId(params.metadata) ??
@@ -388,6 +303,10 @@ async function executeCompatibilityRun(params) {
             firstTokenAtMs = Date.now();
         }
         resolvedModel = extractResolvedModel(completion.raw) ?? resolvedModel;
+        const roundReasoning = extractReasoningFromCompletionRaw(completion.raw);
+        if (roundReasoning) {
+            reasoningText = roundReasoning;
+        }
         const structuredRound = extractStructuredCompletion(completion.raw, config.llm.provider);
         const rawUsage = completion.raw && typeof completion.raw === "object"
             ? completion.raw.usage
@@ -601,17 +520,42 @@ async function executeCompatibilityRun(params) {
                 : {}),
         },
         finalText,
+        reasoningText: reasoningText.trim() || undefined,
         finishReason,
         toolCalls: traces,
         usage: (usageEnriched ?? usageBase),
         conversation,
     };
 }
+function directStreamCompletionOptions(params, direct) {
+    return buildMaaSCompletionOptions(params, {
+        model: direct.routingModel,
+        requestId: direct.requestId,
+        sessionId: direct.sessionId,
+        maxTokens: params.maxTokens,
+        temperature: params.temperature ?? params.configStore.get().llm.temperature,
+        metadata: direct.metadata,
+        taskInput: extractLatestUserInput(direct.conversation),
+        taskType: direct.agenticRouting.taskType,
+        taskName: direct.agenticRouting.taskName,
+        routing: direct.agenticRouting,
+    });
+}
+function noteDirectStreamRound(direct, firstTokenAtMs) {
+    recordAgenticRound({
+        profile: typeof direct.metadata.agentic_profile === "string" ? direct.metadata.agentic_profile : "standard",
+        taskType: direct.agenticRouting.taskType,
+        rounds: 1,
+        toolInterrupts: 0,
+        prefixChars: extractLatestUserInput(direct.conversation).length,
+        firstTokenMs: firstTokenAtMs != null ? firstTokenAtMs - direct.startedAtMs : undefined,
+        usedNativeToolCalls: false,
+    });
+}
 async function* streamChatCompletionChunks(params) {
     const direct = await prepareDirectStream(params);
     if (!direct) {
-        const run = await executeCompatibilityRun(params);
-        yield* replayChatCompletionRun(run);
+        yield* streamLiveToolRounds(params);
         return;
     }
     let emittedPreamble = false;
@@ -632,24 +576,16 @@ async function* streamChatCompletionChunks(params) {
     let streamedReasoning = "";
     let finalResult;
     let activeModel = direct.model;
-    for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
-        model: direct.routingModel,
-        requestId: direct.requestId,
-        sessionId: deriveSessionId(params.metadata),
-        maxTokens: params.maxTokens,
-        temperature: params.temperature ?? params.configStore.get().llm.temperature,
-        metadata: params.metadata,
-        taskInput: extractLatestUserInput(direct.conversation),
-        taskType: params.routing?.taskType,
-        taskName: params.routing?.taskName,
-        routing: params.routing,
-    }))) {
+    let firstTokenAtMs;
+    for await (const event of streamCompletion(params.llmClient, direct.prompt, directStreamCompletionOptions(params, direct))) {
         if (event.type === "started" && event.model) {
             activeModel = event.model;
             yield* emitPreamble();
             continue;
         }
         if (event.type === "token" && event.text) {
+            if (firstTokenAtMs == null)
+                firstTokenAtMs = Date.now();
             yield* emitPreamble();
             rawOutput += event.text;
             if (event.channel === "reasoning") {
@@ -712,6 +648,7 @@ async function* streamChatCompletionChunks(params) {
             });
         }
     }
+    noteDirectStreamRound(direct, firstTokenAtMs);
     yield JSON.stringify({
         id: finalized.completionId,
         object: "chat.completion.chunk",
@@ -726,8 +663,7 @@ async function* streamChatCompletionChunks(params) {
 async function* streamResponsesChunks(params) {
     const direct = await prepareDirectStream(params);
     if (!direct) {
-        const run = await executeCompatibilityRun(params);
-        yield* replayResponsesRun(run);
+        yield* streamLiveToolRounds(params);
         return;
     }
     let emittedCreated = false;
@@ -751,24 +687,16 @@ async function* streamResponsesChunks(params) {
     let streamedReasoning = "";
     let finalResult;
     let activeModel = direct.model;
-    for await (const event of streamCompletion(params.llmClient, direct.prompt, buildMaaSCompletionOptions(params, {
-        model: direct.routingModel,
-        requestId: direct.requestId,
-        sessionId: deriveSessionId(params.metadata),
-        maxTokens: params.maxTokens,
-        temperature: params.temperature ?? params.configStore.get().llm.temperature,
-        metadata: params.metadata,
-        taskInput: extractLatestUserInput(direct.conversation),
-        taskType: params.routing?.taskType,
-        taskName: params.routing?.taskName,
-        routing: params.routing,
-    }))) {
+    let firstTokenAtMs;
+    for await (const event of streamCompletion(params.llmClient, direct.prompt, directStreamCompletionOptions(params, direct))) {
         if (event.type === "started" && event.model) {
             activeModel = event.model;
             yield* emitCreated();
             continue;
         }
         if (event.type === "token" && event.text) {
+            if (firstTokenAtMs == null)
+                firstTokenAtMs = Date.now();
             yield* emitCreated();
             rawOutput += event.text;
             if (event.channel === "reasoning") {
@@ -807,6 +735,7 @@ async function* streamResponsesChunks(params) {
             });
         }
     }
+    noteDirectStreamRound(direct, firstTokenAtMs);
     yield JSON.stringify({
         type: "response.completed",
         response: buildResponsesObject(finalized),
@@ -836,10 +765,19 @@ async function prepareDirectStream(params) {
     if (effectiveTools.length > 0) {
         return null;
     }
+    const sessionId = deriveSessionId(params.metadata) ??
+        (typeof params.user === "string" && params.user.trim() ? params.user : `compat_${requestId}`);
+    const agenticMetadata = enrichAgenticMetadata(params.metadata, {
+        taskType: params.routing?.taskType,
+        input: extractLatestUserInput(params.messages),
+        toolCount: 0,
+        sessionId,
+    });
+    const agenticRouting = enrichRoutingHints(params.routing, agenticMetadata);
     const runtimeRequest = applyHaxiTagAssembly({
         requestId,
         userId: params.user ?? "openai_compat",
-        sessionId: deriveSessionId(params.metadata),
+        sessionId,
         input: extractLatestUserInput(params.messages),
         model: displayModel,
         conversation: [...params.messages],
@@ -851,9 +789,9 @@ async function prepareDirectStream(params) {
             allowed: [],
             maxRounds: 1,
         },
-        metadata: params.metadata,
+        metadata: agenticMetadata,
         kgm,
-        routing: params.routing,
+        routing: agenticRouting,
     });
     const context = await params.contextBuilder.build(runtimeRequest);
     const systemPromptAddons = [
@@ -878,7 +816,7 @@ async function prepareDirectStream(params) {
         routingModel: model,
         responseId: `resp_${requestId}`,
         completionId: `chatcmpl_${requestId}`,
-        metadata: params.metadata ?? {},
+        metadata: agenticMetadata,
         kgm: {
             ...kgm,
             compatibility: {
@@ -893,6 +831,8 @@ async function prepareDirectStream(params) {
         promptTokens: estimateTokens(prompt),
         conversation: [...params.messages],
         startedAtMs: Date.now(),
+        sessionId,
+        agenticRouting,
     };
 }
 function finalizeDirectStream(setup, rawOutput, streamedContent, finalResult, responseStore, normalizeContext, streamedReasoning = "") {
@@ -936,7 +876,7 @@ function finalizeDirectStream(setup, rawOutput, streamedContent, finalResult, re
                 : {}),
         },
         finalText,
-        reasoningText: streamedReasoning.trim() || undefined,
+        reasoningText: streamedReasoning.trim() || extractReasoningFromCompletionRaw(finalResult?.raw) || undefined,
         finishReason: "stop",
         toolCalls: [],
         usage: (enrichUsageWithCache({
@@ -1093,92 +1033,390 @@ function decodeEscapedChar(value) {
             return null;
     }
 }
-async function* replayChatCompletionRun(run) {
-    yield JSON.stringify({
-        id: run.completionId,
-        object: "chat.completion.chunk",
-        created: run.created,
-        model: run.model,
-        choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+async function* streamLiveToolRounds(params) {
+    const chat = params.protocol === "chat.completions";
+    const ids = resolveRequestTraceIds({
+        headers: params.requestHeaders,
+        body: { kgm: params.kgm, metadata: params.metadata },
     });
-    for (const toolCall of run.toolCalls) {
+    const requestId = ids.requestId;
+    const created = Math.floor(Date.now() / 1000);
+    const config = params.configStore.get();
+    const model = resolveRequestedModel(params.model, params.configStore);
+    let resolvedModel = resolveDisplayModel(model, params.configStore);
+    const kgm = normalizeKgmExtensions(requestId, {
+        ...params.kgm,
+        ops: { ...(params.kgm?.ops ?? {}), traceId: ids.traceId },
+    });
+    const availableTools = resolveTools(params.tools, params.toolRegistry, kgm);
+    const effectiveTools = params.toolChoice === "none" ? [] : applyToolChoice(availableTools, params.toolChoice);
+    const executeToolCalls = kgm.capabilities?.executeToolCalls ?? true;
+    const conversation = [...params.messages];
+    const traces = [];
+    const aggregatedToolResults = [];
+    const sessionId = deriveSessionId(params.metadata) ??
+        (typeof params.user === "string" && params.user.trim() ? params.user : `compat_${requestId}`);
+    const agenticMetadata = enrichAgenticMetadata(params.metadata, {
+        taskType: params.routing?.taskType,
+        input: extractLatestUserInput(conversation),
+        toolCount: effectiveTools.length,
+        sessionId,
+    });
+    const agenticRouting = enrichRoutingHints(params.routing, agenticMetadata);
+    const responseId = `resp_${requestId}`;
+    const completionId = `chatcmpl_${requestId}`;
+    const startedAtMs = Date.now();
+    let firstTokenAtMs;
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let finalText = "";
+    let reasoningText = "";
+    let finishReason = "stop";
+    let usedNativeToolCalls = false;
+    let roundsExecuted = 0;
+    let latestRoutingTrace = undefined;
+    let emittedPreamble = false;
+    let activeModel = resolvedModel;
+    const emitPreamble = function* () {
+        if (emittedPreamble)
+            return;
+        emittedPreamble = true;
+        if (chat) {
+            yield JSON.stringify({
+                id: completionId,
+                object: "chat.completion.chunk",
+                created,
+                model: activeModel,
+                choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+            });
+            return;
+        }
         yield JSON.stringify({
-            id: run.completionId,
-            object: "chat.completion.chunk",
-            created: run.created,
-            model: run.model,
-            choices: [
-                {
-                    index: 0,
-                    delta: {
-                        tool_calls: [
-                            {
-                                index: 0,
-                                id: toolCall.id,
-                                type: "function",
-                                function: {
-                                    name: toolCall.name,
-                                    arguments: toolCall.argumentsJson,
-                                },
-                            },
-                        ],
-                    },
-                    finish_reason: null,
-                },
+            type: "response.created",
+            response: { id: responseId, object: "response", created, model: activeModel, status: "in_progress" },
+        });
+    };
+    for (let round = 0; round < 3; round += 1) {
+        roundsExecuted = round + 1;
+        const runtimeRequest = applyHaxiTagAssembly({
+            requestId,
+            userId: params.user ?? "openai_compat",
+            sessionId,
+            input: extractLatestUserInput(conversation),
+            model,
+            conversation,
+            constraints: { maxTokens: params.maxTokens, style: deriveStyle(params.responseFormat) },
+            toolPolicy: { allowed: effectiveTools.map((tool) => tool.name), maxRounds: 1 },
+            metadata: agenticMetadata,
+            kgm,
+            routing: agenticRouting,
+        });
+        const context = await params.contextBuilder.build(runtimeRequest);
+        context.toolResults = [...aggregatedToolResults];
+        const prompt = renderPrompt({
+            context,
+            tools: effectiveTools,
+            outputSchema: params.outputSchema,
+            toolDescriptorMode: config.context.toolDescriptorMode,
+            skillNames: params.skillRuntime?.listNames(),
+            includeSkillNames: config.context.includeSkillNames,
+            systemPromptAddons: [
+                ...collectPlaygroundSystemAddons(config),
+                ...(params.kgm?.playground?.extraSystemPrompt?.trim()
+                    ? [params.kgm.playground.extraSystemPrompt.trim()]
+                    : []),
             ],
         });
-    }
-    for (const piece of splitText(run.finalText)) {
-        yield JSON.stringify({
-            id: run.completionId,
-            object: "chat.completion.chunk",
-            created: run.created,
-            model: run.model,
-            choices: [{ index: 0, delta: { content: piece }, finish_reason: null }],
-        });
-    }
-    yield JSON.stringify({
-        id: run.completionId,
-        object: "chat.completion.chunk",
-        created: run.created,
-        model: run.model,
-        choices: [{ index: 0, delta: {}, finish_reason: run.finishReason }],
-        usage: run.usage,
-        metadata: run.metadata,
-        kgm: run.kgm,
-    });
-}
-async function* replayResponsesRun(run) {
-    yield JSON.stringify({
-        type: "response.created",
-        response: {
-            id: run.responseId,
-            object: "response",
-            created: run.created,
-            model: run.model,
-            status: "in_progress",
-        },
-    });
-    for (let index = 0; index < run.toolCalls.length; index += 1) {
-        const toolCall = run.toolCalls[index];
-        yield JSON.stringify({
-            type: "response.output_item.added",
-            output_index: index,
-            item: buildFunctionCallItem(toolCall),
-        });
-        if (toolCall.executed) {
-            yield JSON.stringify({
-                type: "response.output_item.added",
-                output_index: index,
-                item: buildFunctionCallOutputItem(toolCall),
-            });
+        const openAiTools = effectiveTools.length > 0
+            ? (params.tools?.length ? params.tools : toOpenAiFunctionTools(effectiveTools))
+            : undefined;
+        let rawOutput = "";
+        let streamedContent = "";
+        let streamedReasoning = "";
+        let finalResult;
+        let sawToolDelta = false;
+        for await (const event of streamCompletion(params.llmClient, prompt, buildMaaSCompletionOptions({
+            ...params,
+            tools: openAiTools,
+            toolChoice: params.toolChoice ?? (openAiTools ? "auto" : undefined),
+        }, {
+            model,
+            requestId,
+            sessionId,
+            maxTokens: params.maxTokens,
+            temperature: params.temperature ?? config.llm.temperature,
+            metadata: agenticMetadata,
+            taskInput: runtimeRequest.input,
+            taskType: agenticRouting.taskType,
+            taskName: agenticRouting.taskName,
+            routing: agenticRouting,
+        }))) {
+            if (event.type === "started" && event.model) {
+                activeModel = event.model;
+                yield* emitPreamble();
+                continue;
+            }
+            if (event.type === "tool_call_delta") {
+                if (firstTokenAtMs == null)
+                    firstTokenAtMs = Date.now();
+                sawToolDelta = true;
+                yield* emitPreamble();
+                if (chat) {
+                    yield JSON.stringify({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created,
+                        model: activeModel,
+                        choices: [{
+                                index: 0,
+                                delta: {
+                                    tool_calls: [{
+                                            index: event.index,
+                                            id: event.id,
+                                            type: "function",
+                                            function: {
+                                                ...(event.name ? { name: event.name } : {}),
+                                                ...(event.argumentsDelta ? { arguments: event.argumentsDelta } : {}),
+                                            },
+                                        }],
+                                },
+                                finish_reason: null,
+                            }],
+                    });
+                }
+                else if (event.argumentsDelta) {
+                    yield JSON.stringify({
+                        type: "response.function_call_arguments.delta",
+                        delta: event.argumentsDelta,
+                        name: event.name,
+                    });
+                }
+                continue;
+            }
+            if (event.type === "token" && event.text) {
+                if (firstTokenAtMs == null)
+                    firstTokenAtMs = Date.now();
+                yield* emitPreamble();
+                rawOutput += event.text;
+                if (event.channel === "reasoning") {
+                    streamedReasoning += event.text;
+                    yield JSON.stringify(chat
+                        ? {
+                            id: completionId,
+                            object: "chat.completion.chunk",
+                            created,
+                            model: activeModel,
+                            choices: [{ index: 0, delta: { reasoning_content: event.text }, finish_reason: null }],
+                        }
+                        : { type: "response.reasoning.delta", delta: event.text });
+                    continue;
+                }
+                const delta = extractFinalContentDelta(rawOutput, streamedContent);
+                if (!delta)
+                    continue;
+                streamedContent += delta;
+                yield JSON.stringify(chat
+                    ? {
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created,
+                        model: activeModel,
+                        choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+                    }
+                    : { type: "response.output_text.delta", delta });
+                continue;
+            }
+            if (event.type === "finished") {
+                yield* emitPreamble();
+                finalResult = event.result;
+            }
         }
-    }
-    for (const piece of splitText(run.finalText)) {
-        yield JSON.stringify({
-            type: "response.output_text.delta",
-            delta: piece,
+        yield* emitPreamble();
+        const completion = finalResult ?? { text: streamedContent || rawOutput, raw: {} };
+        latestRoutingTrace = extractAutoRoutingTrace(completion.raw);
+        resolvedModel = extractResolvedModel(completion.raw) ?? activeModel;
+        const roundReasoning = streamedReasoning.trim() || extractReasoningFromCompletionRaw(completion.raw);
+        if (roundReasoning)
+            reasoningText = roundReasoning;
+        const structuredRound = extractStructuredCompletion(completion.raw, config.llm.provider);
+        const roundUsage = mergeUsageWithEstimates(structuredRound, estimateTokens(prompt), estimateTokens(completion.text));
+        promptTokens += roundUsage.prompt_tokens;
+        completionTokens += roundUsage.completion_tokens;
+        const resolved = resolveCompletionIntent(completion, {
+            skillNames: params.skillRuntime?.listNames(),
         });
+        if (resolved.source === "native_tool_calls")
+            usedNativeToolCalls = true;
+        const intent = resolved.intent;
+        const stopWith = (text, reason) => {
+            finalText = text;
+            finishReason = reason;
+            conversation.push({ role: "assistant", content: finalText });
+        };
+        if (intent.type === "final") {
+            stopWith(intent.content, "stop");
+            break;
+        }
+        const gate = { next: "continue" };
+        const runTool = async function* (name, args, asSkill) {
+            const trace = buildToolTrace(name, args);
+            traces.push(trace);
+            if (!sawToolDelta) {
+                if (chat) {
+                    yield JSON.stringify({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created,
+                        model: activeModel,
+                        choices: [{
+                                index: 0,
+                                delta: {
+                                    tool_calls: [{
+                                            index: 0,
+                                            id: trace.id,
+                                            type: "function",
+                                            function: { name: trace.name, arguments: trace.argumentsJson },
+                                        }],
+                                },
+                                finish_reason: null,
+                            }],
+                    });
+                }
+                else {
+                    yield JSON.stringify({
+                        type: "response.output_item.added",
+                        item: buildFunctionCallItem(trace),
+                    });
+                }
+            }
+            if (!executeToolCalls || (!asSkill && !canExecuteToolCall(name, params.toolRegistry))) {
+                finishReason = "tool_calls";
+                conversation.push({ role: "assistant", content: `${trace.name}(${trace.argumentsJson})`, toolCallId: trace.id });
+                gate.next = "stop";
+                return;
+            }
+            try {
+                const output = asSkill && params.skillRuntime
+                    ? await params.skillRuntime.run(name, args)
+                    : await params.toolRegistry.execute(name, args);
+                trace.executed = true;
+                trace.output = output;
+                aggregatedToolResults.push({ name: trace.name, output, success: true });
+                conversation.push({ role: "assistant", content: `${trace.name}(${trace.argumentsJson})`, toolCallId: trace.id });
+                conversation.push({ role: "tool", name: trace.name, toolCallId: trace.id, content: JSON.stringify(output) });
+                if (chat) {
+                    yield JSON.stringify({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created,
+                        model: activeModel,
+                        choices: [{ index: 0, delta: {}, finish_reason: null }],
+                        kgm: { tool_trace: [trace] },
+                    });
+                }
+                else {
+                    yield JSON.stringify({
+                        type: "response.output_item.added",
+                        item: buildFunctionCallOutputItem(trace),
+                    });
+                }
+                gate.next = "continue";
+                return;
+            }
+            catch (error) {
+                trace.executed = true;
+                trace.error = String(error);
+                aggregatedToolResults.push({ name: trace.name, output: {}, success: false, error: trace.error });
+                finishReason = "tool_calls";
+                gate.next = "stop";
+                return;
+            }
+        };
+        if (intent.type === "call" && effectiveTools.some((tool) => tool.name === intent.target)) {
+            yield* runTool(intent.target, intent.arguments ?? {}, false);
+            if (gate.next === "stop")
+                break;
+            continue;
+        }
+        if (intent.type === "invoke_skill" && params.skillRuntime) {
+            yield* runTool(intent.skill, intent.input ?? {}, true);
+            if (gate.next === "stop")
+                break;
+            continue;
+        }
+        stopWith(completion.text, "stop");
+        break;
+    }
+    if (!finalText && finishReason === "stop")
+        finalText = "max_rounds_reached";
+    recordAgenticRound({
+        profile: typeof agenticMetadata.agentic_profile === "string" ? agenticMetadata.agentic_profile : "standard",
+        taskType: agenticRouting.taskType,
+        rounds: roundsExecuted,
+        toolInterrupts: traces.length,
+        prefixChars: extractLatestUserInput(conversation).length + finalText.length,
+        firstTokenMs: firstTokenAtMs != null ? firstTokenAtMs - startedAtMs : undefined,
+        usedNativeToolCalls,
+    });
+    const usage = {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+    };
+    const run = {
+        requestId,
+        model: resolvedModel,
+        created,
+        responseId,
+        completionId,
+        metadata: { ...agenticMetadata, session_id: sessionId, session_continuity: true },
+        kgm: {
+            ...kgm,
+            correlation: { requestId, traceId: kgm.ops?.traceId ?? requestId },
+            compatibility: {
+                protocol: params.protocol,
+                toolExecution: executeToolCalls ? "server" : "external",
+                builtinToolsIncluded: Boolean(kgm.capabilities?.includeBuiltinTools),
+                finish_reason: finishReason,
+            },
+            tool_trace: traces,
+            ...(latestRoutingTrace
+                ? {
+                    autoRouting: latestRoutingTrace,
+                    routing: {
+                        provider: latestRoutingTrace.selected.provider,
+                        baseUrlHost: latestRoutingTrace.selected.baseUrlHost,
+                        routeKey: latestRoutingTrace.selected.routeKey,
+                    },
+                }
+                : {}),
+        },
+        finalText,
+        reasoningText: reasoningText.trim() || undefined,
+        finishReason,
+        toolCalls: traces,
+        usage,
+        conversation,
+    };
+    params.responseStore.save({
+        id: responseId,
+        requestId,
+        model: resolvedModel,
+        conversation,
+        metadata: run.metadata,
+    });
+    if (chat) {
+        yield JSON.stringify({
+            id: completionId,
+            object: "chat.completion.chunk",
+            created,
+            model: resolvedModel,
+            choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+            usage,
+            metadata: run.metadata,
+            kgm: run.kgm,
+        });
+        return;
     }
     yield JSON.stringify({
         type: "response.completed",
@@ -1413,16 +1651,6 @@ function estimateTokens(text) {
         return 0;
     }
     return trimmed.split(/\s+/).length;
-}
-function splitText(text) {
-    if (!text) {
-        return [];
-    }
-    const chunks = [];
-    for (let index = 0; index < text.length; index += 32) {
-        chunks.push(text.slice(index, index + 32));
-    }
-    return chunks;
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

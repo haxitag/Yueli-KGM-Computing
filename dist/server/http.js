@@ -1,4 +1,7 @@
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
 import { toPublicKgmConfig } from "../core/publicConfig.js";
 import { syncPlaygroundFromConfig } from "../playground/syncPlayground.js";
@@ -10,11 +13,13 @@ import { buildOpenAiModelList, createOpenAiChatCompletion, createOpenAiResponse,
 import { proxyAudioSpeech, proxyAudioTranscriptions, proxyAudioTranscriptionsMultipart, proxyAudioTranslations, proxyImagesEdits, proxyImagesGenerations, proxyImagesVariations, proxyRerank, startVideoGenerationJob, toCanonicalMediaProxyFailure, } from "../openai/mediaCompat.js";
 import { getMediaJobStore } from "../openai/mediaJobs.js";
 import { maybeProxyNativeOpenAiStream, sendNormalizedUpstreamSse } from "../openai/passthrough.js";
-import { handleGetModelProviders, handlePutModelProviders } from "./adminModelProviders.js";
+import { handleGetModelProviders, handlePutModelProviders, loadPublicModelProviders } from "./adminModelProviders.js";
+import { tryServePlayground } from "./playgroundStatic.js";
 import { ProviderConfigurationManager } from "../models/providerConfigManager.js";
 import { normalizeIncomingHttpHeaders } from "../output/gfmNormalize.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { SandboxConfigurationError } from "../sandbox/manager.js";
+import { parseExecutableSkill } from "../skills/runtime.js";
 import { ManagedModelManager } from "../models/modelManager.js";
 import { applyRoutingPatch, buildRollbackEntry, buildUpdateEntry, createRoutingHistoryStoreFromEnv, parseRoutingUpdatePayload, } from "../routing/routingService.js";
 import { assertHttpAccessConfig, createHttpAccessConfigFromEnv, HttpRequestAccess, } from "./httpAccess.js";
@@ -24,6 +29,7 @@ import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
 import { handleObservabilityRoute } from "./routes/observability.js";
 import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 import { resolveModelAlias } from "../admin/modelAliasResolve.js";
+import { buildModelManagerView, deleteModelIdMapping, listModelIdMappings, providerFromInferencePayload, upsertModelIdMapping, } from "../models/modelIdMapping.js";
 import { mediaFail } from "../openai/mediaErrors.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText, getKgmHttpMaxBodyBytes } from "./httpJsonHelpers.js";
@@ -677,11 +683,47 @@ export function createKgmRequestListener(params) {
                     }
                     return sendJson(res, 200, list);
                 }
+                if (req.method === "GET" && url.pathname === "/admin/model-manager") {
+                    const page = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../playground/model-manager.html");
+                    const html = fs.readFileSync(page, "utf8");
+                    res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+                    return sendText(res, 200, html, "text/html; charset=utf-8");
+                }
+                if (req.method === "GET" && url.pathname === "/v1/admin/model-manager") {
+                    const providers = await loadPublicModelProviders();
+                    return sendJson(res, 200, buildModelManagerView({
+                        providers: providers.providers,
+                        activeProviders: providers.activeProviders,
+                        defaultProvider: providers.defaultProvider,
+                        mappings: listModelIdMappings(),
+                    }));
+                }
                 if (req.method === "GET" && url.pathname === "/v1/admin/model-providers") {
                     return handleGetModelProviders(res);
                 }
                 if (req.method === "PUT" && url.pathname === "/v1/admin/model-providers") {
                     return handlePutModelProviders(req, res, params.configStore);
+                }
+                if (req.method === "GET" && url.pathname === "/v1/admin/model-mappings") {
+                    return sendJson(res, 200, { items: listModelIdMappings() });
+                }
+                if (req.method === "POST" && url.pathname === "/v1/admin/model-mappings") {
+                    const body = (await readJson(req));
+                    try {
+                        const item = upsertModelIdMapping(body);
+                        return sendJson(res, 200, { item });
+                    }
+                    catch (error) {
+                        const message = error instanceof Error ? error.message : "invalid mapping";
+                        return sendJson(res, 400, kgmErrorBody("invalid_request", message, 400));
+                    }
+                }
+                if (req.method === "DELETE" && url.pathname.startsWith("/v1/admin/model-mappings/")) {
+                    const id = decodeURIComponent(url.pathname.slice("/v1/admin/model-mappings/".length));
+                    if (!deleteModelIdMapping(id)) {
+                        return sendJson(res, 404, kgmErrorBody("not_found", "mapping not found", 404));
+                    }
+                    return sendJson(res, 200, { deleted: true, id });
                 }
                 if (req.method === "GET" && url.pathname === "/v1/models/effective") {
                     const discovery = discoveryService.getLastResult() ?? await discoveryService.discover();
@@ -1267,27 +1309,18 @@ export function createKgmRequestListener(params) {
                 }
                 if (req.method === "POST" && url.pathname === "/v1/skills") {
                     const payload = (await readJson(req));
-                    if (payload.type === "skill" && params.skillRuntime) {
-                        const skillRegistry = params.skillRuntime.getSkillRegistry();
-                        const skill = {
-                            name: payload.name,
-                            description: payload.description,
-                            steps: [],
-                        };
-                        skillRegistry.register(skill);
-                        return sendJson(res, 201, { skill });
+                    if (payload.type !== "skill" || !params.skillRuntime) {
+                        return sendJson(res, 400, {
+                            error: "tool_executor_required",
+                            message: "Dynamic tools are not registered without an executor. Send type=skill with steps that name existing tools, or configure MCP and sandbox tools in playground config.",
+                        });
                     }
-                    else {
-                        const toolDef = {
-                            name: payload.name,
-                            kind: "tool",
-                            description: payload.description,
-                            inputSchema: payload.schema || {},
-                            outputSchema: {},
-                        };
-                        params.toolRegistry.register(toolDef, async () => ({ status: "not_implemented" }));
-                        return sendJson(res, 201, { tool: toolDef });
+                    const parsed = parseExecutableSkill(payload);
+                    if (!parsed.ok) {
+                        return sendJson(res, 400, { error: parsed.error, message: parsed.message });
                     }
+                    params.skillRuntime.getSkillRegistry().register(parsed.skill);
+                    return sendJson(res, 201, { skill: parsed.skill });
                 }
                 if (req.method === "GET" && url.pathname.match(/^\/v1\/models\/[^/]+$/)) {
                     const modelId = url.pathname.replace("/v1/models/", "");
@@ -1351,8 +1384,9 @@ export function createKgmRequestListener(params) {
                 if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
                     const payload = (await readJson(req));
                     const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
-                    const resolved = await resolveModelAlias(requestedModel);
-                    if (resolved?.alias) {
+                    const providerHint = providerFromInferencePayload(payload);
+                    const resolved = await resolveModelAlias(requestedModel, providerHint);
+                    if (resolved?.mapping || resolved?.alias) {
                         payload.model = resolved.model;
                     }
                     if (auth.kind === "virtual" && auth.virtualKey?.allowedModels?.length) {
@@ -1412,7 +1446,12 @@ export function createKgmRequestListener(params) {
                 if (req.method === "POST" && url.pathname === "/v1/responses") {
                     const payload = (await readJson(req));
                     const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
-                    const allow = assertVirtualKeyModelAllowed(auth, [requestedModel]);
+                    const providerHint = providerFromInferencePayload(payload);
+                    const resolved = await resolveModelAlias(requestedModel, providerHint);
+                    if ((resolved?.mapping || resolved?.alias) && resolved.model) {
+                        payload.model = resolved.model;
+                    }
+                    const allow = assertVirtualKeyModelAllowed(auth, [requestedModel, payload.model]);
                     if (!allow.ok)
                         return sendJson(res, allow.status, allow.body);
                     const requestHeaders = normalizeIncomingHttpHeaders(req.headers);
@@ -2093,6 +2132,9 @@ export function createKgmRequestListener(params) {
                         }
                         throw error;
                     }
+                }
+                if (tryServePlayground(req, res, url.pathname)) {
+                    return;
                 }
                 return sendJson(res, 404, { error: "not_found" });
             }); // runWithOpsAuthAsync

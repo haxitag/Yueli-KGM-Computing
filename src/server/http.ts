@@ -1,6 +1,9 @@
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { KgmRequest, SkillDefinition, ToolDefinition } from "../core/types.js";
+import type { KgmRequest } from "../core/types.js";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
 import type { ConfigStore, KgmConfigPatch } from "../core/configStore.js";
 import { toPublicKgmConfig } from "../core/publicConfig.js";
@@ -44,13 +47,14 @@ import {
 } from "../openai/mediaCompat.js";
 import { getMediaJobStore } from "../openai/mediaJobs.js";
 import { maybeProxyNativeOpenAiStream, sendNormalizedUpstreamSse } from "../openai/passthrough.js";
-import { handleGetModelProviders, handlePutModelProviders } from "./adminModelProviders.js";
+import { handleGetModelProviders, handlePutModelProviders, loadPublicModelProviders } from "./adminModelProviders.js";
+import { tryServePlayground } from "./playgroundStatic.js";
 import { ProviderConfigurationManager } from "../models/providerConfigManager.js";
 import { normalizeIncomingHttpHeaders } from "../output/gfmNormalize.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { SandboxConfigurationError, SandboxManager } from "../sandbox/manager.js";
 import { SchemaRegistry } from "../schema/registry.js";
-import type { SkillRuntime } from "../skills/runtime.js";
+import { parseExecutableSkill, type SkillRuntime } from "../skills/runtime.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { Embedder } from "../embedding/canonical.js";
@@ -76,6 +80,13 @@ import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
 import { handleObservabilityRoute } from "./routes/observability.js";
 import { buildControlPlaneStatus } from "./controlPlaneStatus.js";
 import { resolveModelAlias } from "../admin/modelAliasResolve.js";
+import {
+  buildModelManagerView,
+  deleteModelIdMapping,
+  listModelIdMappings,
+  providerFromInferencePayload,
+  upsertModelIdMapping,
+} from "../models/modelIdMapping.js";
 import { mediaFail } from "../openai/mediaErrors.js";
 import { kgmErrorBody, KgmJsonParseError, KgmRequestValidationError } from "../utils/kgmHttpErrors.js";
 import { readKgmHttpJsonBody as readJson, sendKgmHttpJson as sendJson, sendKgmHttpText as sendText, getKgmHttpMaxBodyBytes } from "./httpJsonHelpers.js";
@@ -933,12 +944,67 @@ export function createKgmRequestListener(
         return sendJson(res, 200, list);
       }
 
+      if (req.method === "GET" && url.pathname === "/admin/model-manager") {
+        const page = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../playground/model-manager.html");
+        const html = fs.readFileSync(page, "utf8");
+        // 全局 CSP 是 default-src 'self'，会拦住本页内联脚本，浏览器停在「加载中…」。
+        res.setHeader(
+          "Content-Security-Policy",
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+        );
+        return sendText(res, 200, html, "text/html; charset=utf-8");
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/admin/model-manager") {
+        const providers = await loadPublicModelProviders();
+        return sendJson(res, 200, buildModelManagerView({
+          providers: providers.providers,
+          activeProviders: providers.activeProviders,
+          defaultProvider: providers.defaultProvider,
+          mappings: listModelIdMappings(),
+        }));
+      }
+
       if (req.method === "GET" && url.pathname === "/v1/admin/model-providers") {
         return handleGetModelProviders(res);
       }
 
       if (req.method === "PUT" && url.pathname === "/v1/admin/model-providers") {
         return handlePutModelProviders(req, res, params.configStore);
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/admin/model-mappings") {
+        return sendJson(res, 200, { items: listModelIdMappings() });
+      }
+
+      if (req.method === "POST" && url.pathname === "/v1/admin/model-mappings") {
+        const body = (await readJson(req)) as {
+          id?: string;
+          provider?: string;
+          canonicalModelId?: string;
+          aliases?: string[];
+          inputUsdPerMillion?: number;
+          outputUsdPerMillion?: number;
+          contextTokens?: number;
+          latencyMsP50?: number;
+          enabled?: boolean;
+          notes?: string;
+        };
+        try {
+          const item = upsertModelIdMapping(body);
+          return sendJson(res, 200, { item });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid mapping";
+          return sendJson(res, 400, kgmErrorBody("invalid_request", message, 400));
+        }
+      }
+
+      if (req.method === "DELETE" && url.pathname.startsWith("/v1/admin/model-mappings/")) {
+        const id = decodeURIComponent(url.pathname.slice("/v1/admin/model-mappings/".length));
+        if (!deleteModelIdMapping(id)) {
+          return sendJson(res, 404, kgmErrorBody("not_found", "mapping not found", 404));
+        }
+        return sendJson(res, 200, { deleted: true, id });
       }
 
       if (req.method === "GET" && url.pathname === "/v1/models/effective") {
@@ -1691,27 +1757,21 @@ export function createKgmRequestListener(
           description: string;
           schema?: Record<string, unknown>;
           type?: "tool" | "skill";
+          steps?: unknown;
         };
-        if (payload.type === "skill" && params.skillRuntime) {
-          const skillRegistry = params.skillRuntime.getSkillRegistry();
-          const skill: SkillDefinition = {
-            name: payload.name,
-            description: payload.description,
-            steps: [],
-          };
-          skillRegistry.register(skill);
-          return sendJson(res, 201, { skill });
-        } else {
-          const toolDef: ToolDefinition = {
-            name: payload.name,
-            kind: "tool" as const,
-            description: payload.description,
-            inputSchema: payload.schema || {},
-            outputSchema: {},
-          };
-          params.toolRegistry.register(toolDef, async () => ({ status: "not_implemented" }));
-          return sendJson(res, 201, { tool: toolDef });
+        if (payload.type !== "skill" || !params.skillRuntime) {
+          return sendJson(res, 400, {
+            error: "tool_executor_required",
+            message:
+              "Dynamic tools are not registered without an executor. Send type=skill with steps that name existing tools, or configure MCP and sandbox tools in playground config.",
+          });
         }
+        const parsed = parseExecutableSkill(payload);
+        if (!parsed.ok) {
+          return sendJson(res, 400, { error: parsed.error, message: parsed.message });
+        }
+        params.skillRuntime.getSkillRegistry().register(parsed.skill);
+        return sendJson(res, 201, { skill: parsed.skill });
       }
 
       if (req.method === "GET" && url.pathname.match(/^\/v1\/models\/[^/]+$/)) {
@@ -1783,8 +1843,9 @@ export function createKgmRequestListener(
       if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
         const payload = (await readJson(req)) as OpenAiChatCompletionRequest & { model?: string };
         const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
-        const resolved = await resolveModelAlias(requestedModel);
-        if (resolved?.alias) {
+        const providerHint = providerFromInferencePayload(payload);
+        const resolved = await resolveModelAlias(requestedModel, providerHint);
+        if (resolved?.mapping || resolved?.alias) {
           payload.model = resolved.model;
         }
         if (auth.kind === "virtual" && auth.virtualKey?.allowedModels?.length) {
@@ -1852,7 +1913,16 @@ export function createKgmRequestListener(
       if (req.method === "POST" && url.pathname === "/v1/responses") {
         const payload = (await readJson(req)) as OpenAiResponsesRequest;
         const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
-        const allow = assertVirtualKeyModelAllowed(auth, [requestedModel]);
+        const providerHint = providerFromInferencePayload(payload as {
+          provider?: unknown;
+          metadata?: { provider_preference?: unknown };
+          routing?: { target?: { provider?: unknown } };
+        });
+        const resolved = await resolveModelAlias(requestedModel, providerHint);
+        if ((resolved?.mapping || resolved?.alias) && resolved.model) {
+          payload.model = resolved.model;
+        }
+        const allow = assertVirtualKeyModelAllowed(auth, [requestedModel, payload.model]);
         if (!allow.ok) return sendJson(res, allow.status, allow.body);
         const requestHeaders = normalizeIncomingHttpHeaders(
           req.headers as Record<string, string | string[] | undefined>,
@@ -2717,6 +2787,10 @@ export function createKgmRequestListener(
           }
           throw error;
         }
+      }
+
+      if (tryServePlayground(req, res, url.pathname)) {
+        return;
       }
 
       return sendJson(res, 404, { error: "not_found" });

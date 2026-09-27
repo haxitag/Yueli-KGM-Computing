@@ -75,6 +75,13 @@ export type CompletionStreamEvent =
       channel?: StreamTokenChannel;
     }
   | {
+      type: "tool_call_delta";
+      index: number;
+      id?: string;
+      name?: string;
+      argumentsDelta?: string;
+    }
+  | {
       type: "finished";
       result: CompletionResult;
     };
@@ -272,6 +279,7 @@ export class HttpLlmClient implements LlmClient {
       let fullText = "";
       let lastUsage: Record<string, unknown> | undefined;
       let lastRaw: Record<string, unknown> | undefined;
+      const toolCalls = new Map<number, { id?: string; name: string; arguments: string }>();
       const contentFields = ["content", "reasoning_content", "reasoning", "thinking", "thought", "text", "output_text"];
 
       while (true) {
@@ -310,6 +318,36 @@ export class HttpLlmClient implements LlmClient {
                 const choice = data.choices[0] as Record<string, unknown>;
                 const delta = choice.delta as Record<string, unknown> | undefined;
                 if (delta) {
+                  const toolDeltas = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+                  for (const item of toolDeltas) {
+                    if (!item || typeof item !== "object") continue;
+                    const row = item as Record<string, unknown>;
+                    const index = typeof row.index === "number" ? row.index : 0;
+                    const current = toolCalls.get(index) ?? { name: "", arguments: "" };
+                    if (typeof row.id === "string" && row.id) current.id = row.id;
+                    const fn = row.function;
+                    let nameDelta: string | undefined;
+                    let argumentsDelta: string | undefined;
+                    if (fn && typeof fn === "object") {
+                      const fnRec = fn as Record<string, unknown>;
+                      if (typeof fnRec.name === "string" && fnRec.name) {
+                        current.name += fnRec.name;
+                        nameDelta = fnRec.name;
+                      }
+                      if (typeof fnRec.arguments === "string" && fnRec.arguments) {
+                        current.arguments += fnRec.arguments;
+                        argumentsDelta = fnRec.arguments;
+                      }
+                    }
+                    toolCalls.set(index, current);
+                    yield {
+                      type: "tool_call_delta",
+                      index,
+                      id: current.id,
+                      name: nameDelta,
+                      argumentsDelta,
+                    };
+                  }
                   const { content, reasoning } = extractOpenAiCompatDeltaParts(delta);
                   if (content) {
                     fullText += content;
@@ -368,6 +406,15 @@ export class HttpLlmClient implements LlmClient {
         }
       }
 
+      const assembledToolCalls = [...toolCalls.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, call]) => call)
+        .filter((call) => call.name.trim().length > 0)
+        .map((call) => ({
+          id: call.id,
+          type: "function" as const,
+          function: { name: call.name, arguments: call.arguments || "{}" },
+        }));
       yield {
         type: "finished",
         result: {
@@ -375,7 +422,16 @@ export class HttpLlmClient implements LlmClient {
           raw: {
             ...(lastRaw ?? {}),
             ...(lastUsage ? { usage: lastUsage } : {}),
-            choices: [{ message: { role: "assistant", content: fullText } }],
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: fullText,
+                  ...(assembledToolCalls.length > 0 ? { tool_calls: assembledToolCalls } : {}),
+                },
+                finish_reason: assembledToolCalls.length > 0 ? "tool_calls" : "stop",
+              },
+            ],
           },
         },
       };

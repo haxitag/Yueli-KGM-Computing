@@ -209,6 +209,7 @@ class KGMTrustProxyPlayground {
             models: document.getElementById('workspace-models'),
             config: document.getElementById('workspace-config'),
             memory: document.getElementById('workspace-memory'),
+            mapping: document.getElementById('workspace-mapping'),
             ops: document.getElementById('workspace-ops'),
             integration: document.getElementById('workspace-integration'),
         };
@@ -1564,6 +1565,9 @@ class KGMTrustProxyPlayground {
         }
         if (name === 'models') {
             this.loadManagedModels();
+        }
+        if (name === 'mapping' && window.KgmModelMapping?.refresh) {
+            window.KgmModelMapping.refresh().catch(() => {});
         }
         if (name === 'ops') {
             window.dispatchEvent(new CustomEvent('kgm-ops-activate', { detail: { opsTab: 'usage' } }));

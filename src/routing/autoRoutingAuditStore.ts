@@ -75,6 +75,8 @@ export type AutoRoutingAuditEntry = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** true 表示上游未返回 usage，上述 token 数是本地启发式估算，不可用于对账。 */
+  usageEstimated: boolean;
   evaluationPromptTokens: number;
   evaluationCompletionTokens: number;
   evaluationTotalTokens: number;

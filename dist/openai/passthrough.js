@@ -9,9 +9,11 @@
  * selects the right engine then streams (streamComplete).
  */
 import { mergeOpenAiPassthroughBody } from "../llm/maas/openAiChatBody.js";
-import { relayUpstreamSseNormalized } from "./sseStreamNormalize.js";
+import { relayUpstreamSseNormalized, } from "./sseStreamNormalize.js";
 import { protectedFetch } from "../observability/circuitBreaker.js";
 import { buildAuthHeaders, inferLlmAuthStyle } from "../llm/client.js";
+import { createPricingService } from "../llm/pricingService.js";
+import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 import { modelsMatchByAlias, resolveCloudModelAlias } from "../models/cloudModelCatalog.js";
 export async function maybeProxyNativeOpenAiStream(params) {
     if (!canUseNativeOpenAiStreamPassthrough(params.payload)) {
@@ -48,17 +50,66 @@ export async function maybeProxyNativeOpenAiStream(params) {
     if (!contentType.includes("text/event-stream")) {
         return false;
     }
+    // 透传绕过了 AutoRouting，必须在这里补记账，否则这些请求在用量/成本/审计里完全消失。
+    const startedAtMs = Date.now();
+    let lastUsage;
     try {
         // Observability: delivery stage only — selection already resolved to trusted upstream.
         await params.send(response, {
             streamSource: `passthrough:${trusted.source}`,
             canonicalModel: trusted.canonicalModel,
+            onUsage: (usage) => {
+                lastUsage = usage;
+            },
+        });
+        void recordPassthroughUsage({
+            configStore: params.configStore,
+            protocol: params.protocol,
+            model: trusted.canonicalModel ?? payloadModel(params.payload),
+            requestId: requestIdOf(params.payload),
+            usage: lastUsage,
+            latencyMs: Date.now() - startedAtMs,
         });
         return true;
     }
     catch {
         return false;
     }
+}
+function payloadModel(payload) {
+    return "model" in payload && typeof payload.model === "string" ? payload.model : "";
+}
+function requestIdOf(payload) {
+    const meta = payload.metadata;
+    const value = meta?.request_id ?? meta?.requestId;
+    return typeof value === "string" ? value : undefined;
+}
+async function recordPassthroughUsage(params) {
+    const promptTokens = params.usage?.promptTokens ?? 0;
+    const completionTokens = params.usage?.completionTokens ?? 0;
+    const totalTokens = params.usage?.totalTokens ?? (promptTokens + completionTokens > 0 ? promptTokens + completionTokens : 0);
+    if (totalTokens <= 0) {
+        // 上游未上报 usage：宁可不记，也不用估算值冒充真实计费。
+        return;
+    }
+    const pricing = params.configStore.get().autoRouting.pricing;
+    const service = createPricingService(pricing.default, pricing.overrides);
+    const rate = await service.getPricing(params.model);
+    const costUsd = rate
+        ? (promptTokens / 1000) * rate.inputPer1kTokens + (completionTokens / 1000) * rate.outputPer1kTokens
+        : 0;
+    await recordOpsUsage({
+        requestId: params.requestId,
+        model: params.model,
+        success: true,
+        latencyMs: params.latencyMs,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        costUsd,
+        source: "direct",
+        meta: { usageEstimated: false, delivery: `passthrough:${params.protocol}` },
+    });
 }
 /** 默认 send：归一化 reasoning delta 并支持空闲断开；写入 stream 可观测头 */
 export async function sendNormalizedUpstreamSse(res, upstream, meta) {
@@ -70,7 +121,7 @@ export async function sendNormalizedUpstreamSse(res, upstream, meta) {
             res.setHeader("x-kgm-stream-model", meta.canonicalModel);
         }
     }
-    return relayUpstreamSseNormalized(res, upstream);
+    return relayUpstreamSseNormalized(res, upstream, { onUsage: meta?.onUsage });
 }
 function sanitizePassthroughPayload(payload) {
     const merged = mergeOpenAiPassthroughBody(payload, payload);

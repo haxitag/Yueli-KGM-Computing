@@ -93,7 +93,12 @@ export type MultiAgentRuntimeDeps = {
     | undefined;
 };
 
-const DEFAULT_MAX_HOPS = 4;
+/**
+ * `execute()` 实际只跑两跳：specialist 产出 → supervisor 综合。
+ * 上限必须与实现一致，否则 API 会承诺一个跑不到的 hop 数。
+ */
+const DEFAULT_MAX_HOPS = 2;
+const MAX_SUPPORTED_HOPS = 2;
 
 export function defaultMultiAgentTeam(): MultiAgentSpec[] {
   return [
@@ -170,7 +175,7 @@ export class MultiAgentRuntime {
       agents,
       steps: [],
       handoffs: [],
-      maxAgentHops: Math.max(1, Math.min(request.maxAgentHops ?? DEFAULT_MAX_HOPS, 8)),
+      maxAgentHops: Math.max(1, Math.min(request.maxAgentHops ?? DEFAULT_MAX_HOPS, MAX_SUPPORTED_HOPS)),
       createdAt: now,
       updatedAt: now,
     };

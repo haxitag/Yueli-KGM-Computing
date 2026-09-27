@@ -217,6 +217,7 @@ export class ContextBuilder {
         if (graphEnabled) {
             systemTools.push("retrieve_subgraph");
         }
+        systemTools.push("list_sandboxes", "start_sandbox", "stop_sandbox", "mcp_call");
         merged.allowed = Array.from(new Set([...merged.allowed, ...systemTools]));
         return merged;
     }

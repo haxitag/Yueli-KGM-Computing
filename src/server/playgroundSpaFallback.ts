@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLAYGROUND_INDEX = path.join(__dirname, "../../playground/index.html");
+const MODEL_MANAGER_PAGE = path.join(__dirname, "../../playground/model-manager.html");
 
 /** Paths that browsers sometimes open by mistake; always send them to Playground. */
 const PLAYGROUND_ALIASES = new Set(["/dynamic", "/app", "/playground", "/ui"]);
@@ -35,6 +36,14 @@ export function createPlaygroundSpaFallbackMiddleware() {
       return next();
     }
     const pathname = (req.path || "/").split("?")[0] || "/";
+
+    if (pathname === "/admin/model-manager") {
+      res.setHeader(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+      );
+      return res.sendFile(MODEL_MANAGER_PAGE);
+    }
 
     if (PLAYGROUND_ALIASES.has(pathname)) {
       return res.redirect(302, "/");

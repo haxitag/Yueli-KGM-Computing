@@ -109,12 +109,45 @@ export function writeSseStructuredError(
   }
 }
 
+/** 上游 SSE 帧里解析到的真实 usage（用于把透传流量也计入账本）。 */
+export type UpstreamStreamUsage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+};
+
 export type RelayUpstreamSseOptions = {
   idleMs?: number;
   normalizeMode?: SseReasoningNormalizeMode;
   /** 默认 true；Anthropic 原生流设为 false */
   appendDone?: boolean;
+  /** 每次遇到带 usage 的帧都会回调；通常只有末帧携带。 */
+  onUsage?: (usage: UpstreamStreamUsage) => void;
 };
+
+function extractUpstreamUsage(payload: string): UpstreamStreamUsage | undefined {
+  try {
+    const data = JSON.parse(payload) as Record<string, unknown>;
+    const raw = data.usage;
+    if (!raw || typeof raw !== "object") {
+      return undefined;
+    }
+    const u = raw as Record<string, unknown>;
+    const num = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    const promptTokens = num(u.prompt_tokens) ?? num(u.input_tokens);
+    const completionTokens = num(u.completion_tokens) ?? num(u.output_tokens);
+    if (promptTokens == null && completionTokens == null) {
+      return undefined;
+    }
+    const totalTokens =
+      num(u.total_tokens) ??
+      (promptTokens != null && completionTokens != null ? promptTokens + completionTokens : undefined);
+    return { promptTokens, completionTokens, totalTokens };
+  } catch {
+    return undefined;
+  }
+}
 
 /** Promise.race 空闲超时哨兵——绝不可与 reader.read() 的 {done:true} 混用 */
 export type StreamIdleTimeoutSentinel = { readonly __kgmIdleTimeout: true };
@@ -249,6 +282,12 @@ export async function relayUpstreamSseNormalized(
           sawDone = true;
           res.write(formatSseDataLine("[DONE]"));
           continue;
+        }
+        if (opts?.onUsage) {
+          const usage = extractUpstreamUsage(payload);
+          if (usage) {
+            opts.onUsage(usage);
+          }
         }
         const normalized = normalizeOpenAiSseDataPayload(payload, mode);
         res.write(formatSseDataLine(normalized));

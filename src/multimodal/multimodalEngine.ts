@@ -1,8 +1,18 @@
 /**
- * 多模态服务引擎
- * 借鉴 VMLX 的多模态生态 (VLM + 图像生成 + TTS/STT)
- * 提供统一的多模态服务接口
+ * 多模态服务引擎。
+ * 未注册专用服务时走与 HTTP `/v1/images|audio` 相同的 media provider。
+ * 未配置上游时抛出真实错误，不返回占位字节。
  */
+
+import type { KgmConfig } from "../core/configStore.js";
+import { ConfigStore } from "../core/configStore.js";
+import {
+  proxyAudioSpeech,
+  proxyAudioTranscriptions,
+  proxyImagesEdits,
+  proxyImagesGenerations,
+} from "../openai/mediaCompat.js";
+import type { MediaProxyResult } from "../openai/mediaCompat.js";
 
 export interface ImageOptions {
   width?: number;
@@ -43,10 +53,27 @@ export interface MultimodalService {
 
 export class IntegratedMultimodalEngine implements MultimodalService {
   private services: Partial<Record<string, MultimodalService>> = {};
+  private mediaConfig?: Pick<KgmConfig, "media" | "llm">;
   private defaultOptions = {
     image: { width: 1024, height: 1024, steps: 4 },
     speech: { voice: 'default', language: 'zh-CN' }
   };
+
+  constructor(mediaConfig?: Pick<KgmConfig, "media" | "llm">) {
+    this.mediaConfig = mediaConfig;
+  }
+
+  private resolvedMediaConfig(): Pick<KgmConfig, "media" | "llm"> {
+    return this.mediaConfig ?? new ConfigStore().get();
+  }
+
+  private assertMedia(result: MediaProxyResult): asserts result is Extract<MediaProxyResult, { ok: true }> {
+    if (!result.ok) {
+      const err = result.body.error;
+      const code = err && typeof err === "object" && "code" in err ? String(err.code) : "media_provider_not_configured";
+      throw new Error(code);
+    }
+  }
 
   /**
    * 注册多模态服务
@@ -63,9 +90,22 @@ export class IntegratedMultimodalEngine implements MultimodalService {
     if (imageService) {
       return imageService.generateImage(prompt, options);
     }
-    
-    // 降级处理：返回占位图像
-    return this.generatePlaceholderImage(prompt);
+    const result = await proxyImagesGenerations(
+      {
+        prompt,
+        size: options?.width && options?.height ? `${options.width}x${options.height}` : undefined,
+        model: options?.model,
+      },
+      this.resolvedMediaConfig(),
+    );
+    this.assertMedia(result);
+    if (result.binary) return result.binary;
+    const rows = (result.json as { data?: Array<{ b64_json?: string }> } | undefined)?.data;
+    const b64 = rows?.find((row) => typeof row.b64_json === "string")?.b64_json;
+    if (!b64) {
+      throw new Error("image_generation_empty_upstream");
+    }
+    return Buffer.from(b64, "base64");
   }
 
   /**
@@ -76,9 +116,13 @@ export class IntegratedMultimodalEngine implements MultimodalService {
     if (imageService && typeof imageService.editImage === 'function') {
       return imageService.editImage(base64Image, prompt);
     }
-    
-    // 降级处理：返回原始图像
-    return Buffer.from(base64Image, 'base64');
+    const result = await proxyImagesEdits(
+      { prompt, image: base64Image },
+      this.resolvedMediaConfig(),
+    );
+    this.assertMedia(result);
+    if (result.binary) return result.binary;
+    throw new Error("image_edit_empty_upstream");
   }
 
   /**
@@ -89,9 +133,13 @@ export class IntegratedMultimodalEngine implements MultimodalService {
     if (ttsService) {
       return ttsService.textToSpeech(text, options);
     }
-    
-    // 降级处理：返回空音频
-    return Buffer.from([]);
+    const result = await proxyAudioSpeech(
+      { input: text, voice: options?.voice, model: undefined },
+      this.resolvedMediaConfig(),
+    );
+    this.assertMedia(result);
+    if (result.binary) return result.binary;
+    throw new Error("text_to_speech_empty_upstream");
   }
 
   /**
@@ -102,9 +150,16 @@ export class IntegratedMultimodalEngine implements MultimodalService {
     if (sttService) {
       return sttService.speechToText(audioBuffer);
     }
-    
-    // 降级处理：返回空字符串
-    return '';
+    const result = await proxyAudioTranscriptions(
+      { file_base64: audioBuffer.toString("base64"), filename: "audio.bin" },
+      this.resolvedMediaConfig(),
+    );
+    this.assertMedia(result);
+    const text = (result.json as { text?: string } | undefined)?.text;
+    if (typeof text !== "string") {
+      throw new Error("speech_to_text_empty_upstream");
+    }
+    return text;
   }
 
   /**
@@ -115,9 +170,7 @@ export class IntegratedMultimodalEngine implements MultimodalService {
     if (visionService && typeof visionService.visionEmbed === 'function') {
       return visionService.visionEmbed(imageBuffer);
     }
-    
-    // 降级处理：返回随机嵌入向量
-    return Array.from({ length: 512 }, () => Math.random() * 2 - 1);
+    throw new Error("vision_embed_provider_not_configured");
   }
 
   /**
@@ -161,15 +214,6 @@ export class IntegratedMultimodalEngine implements MultimodalService {
       default:
         throw new Error(`Unsupported request type: ${request.type}`);
     }
-  }
-
-  /**
-   * 生成占位图像（降级处理）
-   */
-  private generatePlaceholderImage(prompt: string): Promise<Buffer> {
-    // 生成简单的占位图像（实际实现中会调用真实的图像生成服务）
-    const placeholder = `Placeholder image for: ${prompt}`;
-    return Promise.resolve(Buffer.from(placeholder));
   }
 
   /**

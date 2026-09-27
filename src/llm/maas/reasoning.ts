@@ -42,6 +42,36 @@ export function extractOpenAiCompatChoiceText(choice: Record<string, unknown> | 
   return { text, reasoning: parts.reasoning };
 }
 
+/**
+ * 非流式 complete 的 raw 可能是上游 body，也可能被 AutoRouting 包成 `{ result: upstream }`。
+ * 只读真实 choices[].message 上的推理字段，不编造。
+ */
+export function extractReasoningFromCompletionRaw(raw: unknown): string {
+  const seen = new Set<unknown>();
+  const walk = (node: unknown, depth: number): string => {
+    if (!node || typeof node !== "object" || depth > 5 || seen.has(node)) {
+      return "";
+    }
+    seen.add(node);
+    const rec = node as Record<string, unknown>;
+    const choice = Array.isArray(rec.choices) ? rec.choices[0] : undefined;
+    if (choice && typeof choice === "object") {
+      const reasoning = extractOpenAiCompatChoiceText(choice as Record<string, unknown>).reasoning;
+      if (reasoning) {
+        return reasoning;
+      }
+    }
+    if ("result" in rec) {
+      const nested = walk(rec.result, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+    return "";
+  };
+  return walk(raw, 0);
+}
+
 /** 从 SSE delta 对象提取 content / reasoning 通道 */
 export function extractOpenAiCompatDeltaParts(delta: Record<string, unknown> | undefined): {
   content: string;

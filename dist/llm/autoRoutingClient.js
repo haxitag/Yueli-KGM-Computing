@@ -47,6 +47,7 @@ export class AutoRoutingLlmClient {
                     promptTokens: estimateTokens(prompt),
                     completionTokens: 0,
                     totalTokens: estimateTokens(prompt),
+                    usageEstimated: true,
                     actualCost: selection.selected.estimatedCost,
                     evaluationPromptTokens: 0,
                     evaluationCompletionTokens: 0,
@@ -87,6 +88,7 @@ export class AutoRoutingLlmClient {
                 promptTokens: estimateTokens(prompt),
                 completionTokens: 0,
                 totalTokens: estimateTokens(prompt),
+                usageEstimated: true,
                 actualCost: selection.selected.estimatedCost,
                 evaluationPromptTokens: 0,
                 evaluationCompletionTokens: 0,
@@ -162,6 +164,7 @@ export class AutoRoutingLlmClient {
                     promptTokens: estimateTokens(prompt),
                     completionTokens: estimateTokens(output),
                     totalTokens: estimateTokens(prompt) + estimateTokens(output),
+                    usageEstimated: true,
                     actualCost: selection.selected.estimatedCost,
                     evaluationPromptTokens: 0,
                     evaluationCompletionTokens: 0,
@@ -255,6 +258,7 @@ export class AutoRoutingLlmClient {
                 promptTokens: estimateTokens(prompt),
                 completionTokens: estimateTokens(output),
                 totalTokens: estimateTokens(prompt) + estimateTokens(output),
+                usageEstimated: true,
                 actualCost: selection.selected.estimatedCost,
                 evaluationPromptTokens: 0,
                 evaluationCompletionTokens: 0,
@@ -701,8 +705,11 @@ export class AutoRoutingLlmClient {
         });
     }
     async wrapResult(result, selection, prompt, options, elapsedMs) {
-        const promptTokens = estimateTokens(prompt);
-        const completionTokens = estimateTokens(result.text);
+        // 优先采用上游真实 usage；只有上游未返回时才退回启发式估算，并标记来源。
+        const usage = extractUsageMetrics(result.raw);
+        const promptTokens = usage.promptTokens ?? estimateTokens(prompt);
+        const completionTokens = usage.completionTokens ?? estimateTokens(result.text);
+        const usageEstimated = usage.promptTokens == null || usage.completionTokens == null;
         const actualCost = await this.resolveEstimatedCost(selection.selected, promptTokens, completionTokens);
         const evaluation = await this.evaluateResult(selection, prompt, result.text, options);
         const trace = {
@@ -727,6 +734,7 @@ export class AutoRoutingLlmClient {
             promptTokens,
             completionTokens,
             totalTokens: promptTokens + completionTokens,
+            usageEstimated,
             actualCost,
             evaluationPromptTokens: sumEvaluationTokens(evaluation.evaluation, "promptTokens"),
             evaluationCompletionTokens: sumEvaluationTokens(evaluation.evaluation, "completionTokens"),
@@ -1011,6 +1019,7 @@ export class AutoRoutingLlmClient {
             meta: {
                 routeKey: selection.selected.routeKey,
                 qualityScore: outcome.qualityScore,
+                usageEstimated: outcome.usageEstimated,
             },
         });
         if (!this.configStore.get().autoRouting.auditEnabled) {
@@ -1032,6 +1041,7 @@ export class AutoRoutingLlmClient {
             promptTokens: outcome.promptTokens,
             completionTokens: outcome.completionTokens,
             totalTokens: outcome.totalTokens,
+            usageEstimated: outcome.usageEstimated,
             evaluationPromptTokens: outcome.evaluationPromptTokens,
             evaluationCompletionTokens: outcome.evaluationCompletionTokens,
             evaluationTotalTokens: outcome.evaluationTotalTokens,

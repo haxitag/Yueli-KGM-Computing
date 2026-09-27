@@ -338,11 +338,9 @@ export type McpConnectorConfigEntry = {
   id: string;
   name: string;
   enabled: boolean;
-  /** HTTP 基址，需实现 MCP JSON-RPC（如远端网关） */
-  transport: "http" | "stdio";
+  /** 仅 HTTP JSON-RPC 已实现；不存在 stdio 客户端，因此不声明该传输。 */
+  transport: "http";
   url?: string;
-  command?: string;
-  args?: string[];
   headers?: Record<string, string>;
 };
 

@@ -37,6 +37,20 @@ npm run dev:enhanced
 
 ---
 
+## 0.3.9
+
+模型 ID 跟推理服务商绑定映射；流式工具环执行真实工具；推理文本从上游 `reasoning_content` 带回。
+
+- **模型 ID 映射**：一个规范 ID 对应多个别名或版本，只在同一服务商下解析。Playground「映射」与 `/admin/model-manager` 共用配置；chat / responses 选路前应用。
+- 带工具的流式请求按 token 与 `tool_calls` 增量输出，并在回合之间执行已注册工具。
+- 未配置的图像 / 语音上游返回配置错误，不再返回占位内容。
+
+```bash
+npm install @haxitag/yueli-kgm-computing@0.3.9
+```
+
+---
+
 ## 0.3.8
 
 声明式媒体 Provider、stream≠auto、统一宿主错误、Xiaomi MiMo、Playground 对齐：
@@ -161,7 +175,6 @@ export KGM_LLM_API_KEY="sk-..."
 export KGM_LLM_MODEL="gpt-4o-mini"
 export KGM_LLM_MODE="chat"
 export KGM_LLM_PATH="/chat/completions"
-export KGM_MOCK_MODE=0
 
 node ./node_modules/@haxitag/yueli-kgm-computing/dist/server/enhancedStart.js
 ```
@@ -730,7 +743,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.8
+npm install @haxitag/yueli-kgm-computing@0.3.9
 ```
 
 ### 开源仓库同步（维护者）
@@ -756,9 +769,9 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前：`0.3.8`）
+## 版本说明（当前：`0.3.9`）
 
-详见上方「0.3.8」。历史版本摘要见「历史版本摘要」一节。npm / 开源仓以本 README 为准。
+详见上方「0.3.9」。历史版本摘要见「历史版本摘要」一节。npm / 开源仓以本 README 为准。
 
 ### 本地 GPU 推理支持
 
