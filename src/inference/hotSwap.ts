@@ -327,6 +327,7 @@ export class HotModelSwap extends EventEmitter {
     this.unloadTimer = setInterval(() => {
       this.performAutoUnload();
     }, this.options.autoUnloadInterval);
+    this.unloadTimer.unref();
   }
 
   /**

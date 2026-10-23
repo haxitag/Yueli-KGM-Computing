@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { globalWorkerPool } from "../utils/workerPool.js";
+import { getGlobalWorkerPool } from "../utils/workerPool.js";
 
 interface PrefillTask {
   id: string;
@@ -187,7 +187,7 @@ export class StreamingPrefill extends EventEmitter {
     const condensedPrompt = [...systemPrompt, ...recentHistory].join("\n");
 
     // 使用 Worker Pool 异步处理
-    const tokens = await globalWorkerPool.tokenize(condensedPrompt, model);
+    const tokens = await getGlobalWorkerPool().tokenize(condensedPrompt, model);
 
     // 如果仍然太长，截断
     let finalPrompt = condensedPrompt;
@@ -229,7 +229,7 @@ export class StreamingPrefill extends EventEmitter {
     // 实际实现中会调用模型的 embedding 接口
     // 这里使用 Worker Pool 进行并行 tokenization
 
-    const tokenCount = await globalWorkerPool.tokenize(chunk, model);
+    const tokenCount = await getGlobalWorkerPool().tokenize(chunk, model);
 
     // 模拟 embedding 计算
     // 实际会调用模型的 embedding 层

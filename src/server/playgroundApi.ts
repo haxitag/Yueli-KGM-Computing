@@ -195,14 +195,7 @@ playgroundRouter.post('/trust-proxy-process', async (req: Request, res: Response
       const mediaContent = await processMediaInputs(mediaInputs);
       
       if (mediaContent.length > 0) {
-        // 构建丰富上下文 - 信任委托的基础
-        finalPrompt = '[Context Enrichment: Comprehensive]\n' +
-                     '[Media Inputs: ' + mediaContent.length + ' items]\n' +
-                     mediaContent.join('\n') + '\n\n' +
-                     '[User Request]: ' + prompt + '\n\n' +
-                     '[Trust Delegation: Active]\n' +
-                     '[Knowledge Graph: Enabled]\n' +
-                     '[Information Completeness: Enhanced]';
+        finalPrompt = mediaContent.join('\n') + '\n\n' + prompt;
       }
     }
 
@@ -220,18 +213,10 @@ playgroundRouter.post('/trust-proxy-process', async (req: Request, res: Response
         : undefined,
     });
     
-    console.log('[Trust Proxy] Completion result received, applying audit trail');
-
-    // 信任代理 - 生成可审计的响应
     const response = await processOutputBasedOnRequest(prompt, result);
-    
-    // 添加信任代理元数据
     response._trustMetadata = {
       timestamp: new Date().toISOString(),
-      contextEnrichmentLevel: 'comprehensive',
-      knowledgeGraphCompletion: true,
-      trustDelegationActive: true,
-      auditTrail: true,
+      mediaInputCount: Array.isArray(mediaInputs) ? mediaInputs.length : 0,
       providerRouting: extractProviderRouting(result.raw),
       autoRouting: extractAutoRoutingTrace(result.raw),
     };
@@ -257,7 +242,7 @@ async function processOutputBasedOnRequest(prompt: string, llmResult: any): Prom
   
   // 检测请求类型并生成相应输出
   const response: any = {
-    text: llmResult?.text || llmResult || '处理完成',
+    text: typeof llmResult?.text === "string" ? llmResult.text : "",
     images: [],
     video: null,
     audio: null,

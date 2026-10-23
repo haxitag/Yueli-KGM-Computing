@@ -300,6 +300,7 @@ ${this.config.providerRoutingRules.map(r => `- ${r.name}: ${r.condition} -> ${r.
               process.env.MIMO_API_KEY ||
               process.env.XIAOMI_API_KEY ||
               process.env.MIMO_TOKEN_PLAN_API_KEY ||
+              process.env.XIAOMI_MIMO_AI_API_KEY ||
               undefined;
           }
           if (!provider.baseUrl) {
@@ -309,6 +310,7 @@ ${this.config.providerRoutingRules.map(r => `- ${r.name}: ${r.condition} -> ${r.
             provider.baseUrl =
               process.env.MIMO_BASE_URL ||
               process.env.XIAOMI_BASE_URL ||
+              process.env.XIAOMI_MIMO_AI_BASE_URL ||
               (useTokenPlan
                 ? "https://token-plan-cn.xiaomimimo.com/v1"
                 : "https://api.xiaomimimo.com/v1");

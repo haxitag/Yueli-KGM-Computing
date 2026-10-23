@@ -37,6 +37,22 @@ npm run dev:enhanced
 
 ---
 
+## 0.3.10
+
+真实调用链、错误类 failover、不委托 JSON 薄路径；YCB / Xiaomi 对齐官方接口。失败如实返回，不补假成功。
+
+- **错误类 failover**：鉴权不换路；429 / 不可用先同 model；402 / 安全策略换 provider；上下文窗口换不同 model。
+- **不委托薄路径**：无图谱 / 检索 / 工具时非流式直接代理上游 JSON；失败回落 AutoRouting。头 `x-kgm-stream-source`。
+- **YCB**：解析 `resolve` / `consume` / `build`；`KGM_YCB_*` 可开；默认关闭、不可达 fail-open。
+- **Xiaomi**：读 `XIAOMI_MIMO_AI_*`；默认 `mimo-v2.6-flash`；上游 402 → 502 + `upstreamStatus`。
+- 空 URL 环境变量不再打死进程；有真实 usage 不再被估算覆盖；workflow execute → **501**。
+
+```bash
+npm install @haxitag/yueli-kgm-computing@0.3.10
+```
+
+---
+
 ## 0.3.9
 
 模型 ID 跟推理服务商绑定映射；流式工具环执行真实工具；推理文本从上游 `reasoning_content` 带回。
@@ -47,22 +63,6 @@ npm run dev:enhanced
 
 ```bash
 npm install @haxitag/yueli-kgm-computing@0.3.9
-```
-
----
-
-## 0.3.8
-
-声明式媒体 Provider、stream≠auto、统一宿主错误、Xiaomi MiMo、Playground 对齐：
-
-- **Media Provider**：`media.modelPresets` + `media.providers`（模板拼装 / JSONPath / 异步 poll → `kgm.media_job`）；未知显式 provider → **400**；旧 `KGM_*` 零回归
-- **Stream ≠ Auto**：`stream` 只做交付；trusted passthrough 仅 managed / 默认 `llm`（含别名）；`model=auto` 走评分选路后再流式；头 `x-kgm-stream-source`
-- **统一 `KgmError`**：厂商 HTTP 不透传，仅 `details.upstreamStatus`；LLM 上游失败 → **502** `LLM_UPSTREAM_ERROR`
-- **Xiaomi MiMo**：`xiaomi` → `https://api.xiaomimimo.com/v1`，`mimo-v2.5-pro`，`MIMO_API_KEY`，auth `api-key`/`bearer`/`both`
-- Playground 与 `/v1` 共用 AutoRouting；虚拟 Key / media job 租户隔离；critical e2e 上游 401→502、跨租户 job 404
-
-```bash
-npm install @haxitag/yueli-kgm-computing@0.3.8
 ```
 
 ---
@@ -82,6 +82,9 @@ npm install @haxitag/yueli-kgm-computing@0.3.8
 ---
 
 ## 历史版本摘要
+
+### 0.3.8：声明式媒体 Provider · stream≠auto · Xiaomi MiMo
+- `media.modelPresets` + `media.providers`；stream 只做交付；统一 `KgmError`（上游失败 **502** + `upstreamStatus`）；Xiaomi `mimo-v2.5-pro`（**0.3.10 默认改为 mimo-v2.6-flash**）
 
 ### 0.3.7：OpenAI 兼容媒体薄代理
 - 生图 / TTS / ASR / 视频异步 job / 可选 rerank；`GET /v1/models` 能力标注；未配置 → **501**
@@ -743,7 +746,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.9
+npm install @haxitag/yueli-kgm-computing@0.3.10
 ```
 
 ### 开源仓库同步（维护者）
@@ -769,9 +772,9 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前：`0.3.9`）
+## 版本说明（当前：`0.3.10`）
 
-详见上方「0.3.9」。历史版本摘要见「历史版本摘要」一节。npm / 开源仓以本 README 为准。
+详见上方「0.3.10」。历史版本摘要见「历史版本摘要」一节。npm / 开源仓以本 README 为准。
 
 ### 本地 GPU 推理支持
 

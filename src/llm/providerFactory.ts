@@ -12,7 +12,7 @@ import { ApiKeyRouter, globalApiKeyRouter } from "../utils/apiKeyRouter.js";
 export const MIMO_OPENAI_BASE_URL = "https://api.xiaomimimo.com/v1";
 export const MIMO_ANTHROPIC_BASE_URL = "https://api.xiaomimimo.com/anthropic";
 export const MIMO_TOKEN_PLAN_OPENAI_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
-export const MIMO_DEFAULT_CHAT_MODEL = "mimo-v2.5-pro";
+export const MIMO_DEFAULT_CHAT_MODEL = "mimo-v2.6-flash";
 
 /** OpenAI-compat gateway preferred for tools/stream (Phase H). */
 export function wantsOpenAiCompatProvider(
@@ -583,7 +583,8 @@ export class LlmProviderFactory {
         const xiaomiApiKey =
           process.env.MIMO_API_KEY ||
           process.env.XIAOMI_API_KEY ||
-          process.env.MIMO_TOKEN_PLAN_API_KEY;
+          process.env.MIMO_TOKEN_PLAN_API_KEY ||
+          process.env.XIAOMI_MIMO_AI_API_KEY;
         if (!xiaomiApiKey) return null;
         const useTokenPlan =
           process.env.MIMO_USE_TOKEN_PLAN === "1" ||
@@ -593,10 +594,12 @@ export class LlmProviderFactory {
           baseUrl:
             process.env.MIMO_BASE_URL ||
             process.env.XIAOMI_BASE_URL ||
+            process.env.XIAOMI_MIMO_AI_BASE_URL ||
             (useTokenPlan ? MIMO_TOKEN_PLAN_OPENAI_BASE_URL : MIMO_OPENAI_BASE_URL),
           model:
             process.env.MIMO_DEFAULT_MODEL ||
             process.env.XIAOMI_DEFAULT_MODEL ||
+            process.env.XIAOMI_MIMO_AI_DEFAULT_MODEL ||
             MIMO_DEFAULT_CHAT_MODEL,
           apiKey: xiaomiApiKey,
           extraParams: {

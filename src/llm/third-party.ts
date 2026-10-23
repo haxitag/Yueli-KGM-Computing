@@ -323,6 +323,87 @@ export class DeepSeekLlmClient implements LlmClient {
   }
 }
 
+function ollamaMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
+          return part.text;
+        }
+        return "";
+      })
+      .join("");
+  }
+  if (content == null) {
+    return "";
+  }
+  return JSON.stringify(content);
+}
+
+export function resolveOllamaThink(options?: CompletionOptions): boolean | undefined {
+  if (options?.think === false || options?.enableThinking === false) {
+    return false;
+  }
+  if (options?.think === true || options?.enableThinking === true || options?.thinking === true) {
+    return true;
+  }
+  if (options?.thinking && typeof options.thinking === "object") {
+    if (options.thinking.type === "disabled") {
+      return false;
+    }
+    if (options.thinking.type === "enabled") {
+      return true;
+    }
+  }
+  return undefined;
+}
+
+export function buildOllamaChatPayload(
+  prompt: string,
+  options: CompletionOptions | undefined,
+  defaultModel: string,
+  stream: boolean,
+): Record<string, unknown> {
+  const messages =
+    options?.messages && options.messages.length > 0
+      ? options.messages.map((message) => ({
+          role: message.role,
+          content: ollamaMessageContent(message.content),
+          ...(message.name ? { name: message.name } : {}),
+          ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+          ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+        }))
+      : [{ role: "user", content: prompt }];
+  const payload: Record<string, unknown> = {
+    model: options?.model ?? defaultModel,
+    messages,
+    stream,
+    options: {
+      temperature: options?.temperature ?? 0.8,
+      num_predict: options?.maxTokens ?? 1024,
+      stop: options?.stop,
+      top_k: options?.topK,
+      top_p: options?.topP,
+      repeat_penalty: options?.repetitionPenalty,
+      seed: options?.seed,
+    },
+  };
+  const think = resolveOllamaThink(options);
+  if (think !== undefined) {
+    payload.think = think;
+  }
+  if (Array.isArray(options?.tools) && options.tools.length > 0) {
+    payload.tools = options.tools;
+  }
+  return payload;
+}
+
 /**
  * Ollama推理引擎客户端
  */
@@ -342,23 +423,7 @@ export class OllamaLlmClient implements LlmClient {
   }
 
   async complete(prompt: string, options?: CompletionOptions): Promise<CompletionResult> {
-    const payload = {
-      model: options?.model ?? this.model,
-      messages: [
-        { role: "user", content: prompt },
-      ],
-      think: false,
-      stream: false,
-      options: {
-        temperature: options?.temperature ?? 0.8,
-        num_predict: options?.maxTokens ?? 1024,
-        stop: options?.stop,
-        top_k: options?.topK,
-        top_p: options?.topP,
-        repeat_penalty: options?.repetitionPenalty,
-        seed: options?.seed,
-      },
-    };
+    const payload = buildOllamaChatPayload(prompt, options, this.model, false);
 
     const data = (await postJson(
       joinUrl(this.baseUrl, "/chat"),
@@ -381,24 +446,7 @@ export class OllamaLlmClient implements LlmClient {
   }
 
   async *streamComplete(prompt: string, options?: CompletionOptions): AsyncIterable<CompletionStreamEvent> {
-    const think = options?.think === true;
-    const payload = {
-      model: options?.model ?? this.model,
-      messages: [
-        { role: "user", content: prompt },
-      ],
-      think,
-      stream: true,
-      options: {
-        temperature: options?.temperature ?? 0.8,
-        num_predict: options?.maxTokens ?? 1024,
-        stop: options?.stop,
-        top_k: options?.topK,
-        top_p: options?.topP,
-        repeat_penalty: options?.repetitionPenalty,
-        seed: options?.seed,
-      },
-    };
+    const payload = buildOllamaChatPayload(prompt, options, this.model, true);
 
     const controller = new AbortController();
     const timeoutId = this.timeoutMs ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
@@ -427,6 +475,8 @@ export class OllamaLlmClient implements LlmClient {
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
       let tokenIndex = 0;
+      let fullText = "";
+      let fullReasoning = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -453,6 +503,7 @@ export class OllamaLlmClient implements LlmClient {
 
             const msg = data.message;
             if (msg?.content) {
+              fullText += msg.content;
               yield {
                 type: "token",
                 text: msg.content,
@@ -465,6 +516,7 @@ export class OllamaLlmClient implements LlmClient {
               (typeof msg?.reasoning === "string" && msg.reasoning) ||
               "";
             if (reasoning) {
+              fullReasoning += reasoning;
               yield {
                 type: "token",
                 text: reasoning,
@@ -473,9 +525,17 @@ export class OllamaLlmClient implements LlmClient {
               };
             }
             if (data.done) {
+              const raw = {
+                ...data,
+                message: {
+                  ...(data.message ?? {}),
+                  content: fullText,
+                  ...(fullReasoning ? { thinking: fullReasoning } : {}),
+                },
+              };
               yield {
                 type: "finished",
-                result: { text: "", raw: data },
+                result: { text: fullText, raw },
               };
               return;
             }

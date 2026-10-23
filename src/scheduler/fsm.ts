@@ -7,6 +7,7 @@ import { resolveCompletionIntent, toOpenAiFunctionTools } from "../parse/nativeT
 import { validateAgainstSchema } from "../schema/validator.js";
 import type { LlmClient } from "../llm/client.js";
 import { extractAutoRoutingTrace, extractResolvedModel } from "../llm/autoRoutingClient.js";
+import { extractReasoningFromCompletionRaw } from "../llm/maas/reasoning.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { SchemaRecord } from "../schema/registry.js";
 import { SkillRuntime } from "../skills/runtime.js";
@@ -73,6 +74,8 @@ export class Scheduler {
     request.routing = routing;
 
     let latestRouting: Record<string, unknown> | undefined = metadata;
+    let lastModelText = "";
+    let lastReasoning = "";
     if (this.deps.sessionStore) {
       this.deps.sessionStore.append(sessionId, {
         timestamp: new Date().toISOString(),
@@ -190,6 +193,8 @@ export class Scheduler {
       }
       latestRouting.intent_source = resolved.source;
       const intent = resolved.intent;
+      lastModelText = completion.text;
+      lastReasoning = extractReasoningFromCompletionRaw(completion.raw);
       if (this.deps.schemaRecord) {
         const validation = validateAgainstSchema(this.deps.schemaRecord.schema, intent);
         if (!validation.ok) {
@@ -198,7 +203,7 @@ export class Scheduler {
       }
 
       if (intent.type === "final") {
-        return finalize(intent.content);
+        return finalize(intent.content || lastReasoning);
       }
 
       const toolResult = await this.executeIntent(intent, context);
@@ -210,7 +215,7 @@ export class Scheduler {
       context = await this.appendToolResult(context, toolResult, sessionId);
     }
 
-    return finalize("max_rounds_reached");
+    return finalize(lastModelText || lastReasoning);
   }
 
   private async executeIntent(intent: LlmIntent, context: ContextPack): Promise<ToolResult | null> {

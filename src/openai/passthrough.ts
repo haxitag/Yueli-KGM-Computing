@@ -23,6 +23,7 @@ import { buildAuthHeaders, inferLlmAuthStyle } from "../llm/client.js";
 import { createPricingService } from "../llm/pricingService.js";
 import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 import { modelsMatchByAlias, resolveCloudModelAlias } from "../models/cloudModelCatalog.js";
+import { logger } from "../observability/logger.js";
 
 /** 透传是"交付"优化，不改变选型；但仍需把用量落入账本。 */
 export type PassthroughStreamMeta = {
@@ -40,6 +41,13 @@ export type TrustedStreamUpstream = {
   source: "managed" | "default_llm";
 };
 
+export type JsonPassthroughResult = {
+  status: number;
+  body: Record<string, unknown>;
+  streamSource: string;
+  canonicalModel?: string;
+};
+
 export async function maybeProxyNativeOpenAiStream(params: {
   configStore: ConfigStore;
   modelManager?: ManagedModelManager;
@@ -50,7 +58,10 @@ export async function maybeProxyNativeOpenAiStream(params: {
     meta?: PassthroughStreamMeta,
   ) => Promise<void>;
 }): Promise<boolean> {
-  if (!canUseNativeOpenAiStreamPassthrough(params.payload)) {
+  if (params.configStore.get().ycb.enabled) {
+    return false;
+  }
+  if (!canUseNativeOpenAiPassthrough(params.payload, "stream")) {
     return false;
   }
 
@@ -101,7 +112,7 @@ export async function maybeProxyNativeOpenAiStream(params: {
         lastUsage = usage;
       },
     });
-    void recordPassthroughUsage({
+    await recordPassthroughUsage({
       configStore: params.configStore,
       protocol: params.protocol,
       model: trusted.canonicalModel ?? payloadModel(params.payload),
@@ -110,9 +121,92 @@ export async function maybeProxyNativeOpenAiStream(params: {
       latencyMs: Date.now() - startedAtMs,
     });
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // send() has begun writing the response. Falling back to orchestration here
+    // would execute the request twice and append a second stream to this socket.
+    logger.error({ error }, "Passthrough stream delivery failed");
+    return true;
   }
+}
+
+/**
+ * 不委托时非流式也走薄路径：不进 ContextBuilder / 工具环。
+ * 上游非 2xx 返回 null，让 AutoRouting 按错误类 failover。
+ */
+export async function maybeProxyNativeOpenAiJson(params: {
+  configStore: ConfigStore;
+  modelManager?: ManagedModelManager;
+  protocol: "chat" | "responses";
+  payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest;
+}): Promise<JsonPassthroughResult | null> {
+  if (params.configStore.get().ycb.enabled) {
+    return null;
+  }
+  if (!canUseNativeOpenAiPassthrough(params.payload, "json")) {
+    return null;
+  }
+  const trusted = resolveTrustedStreamUpstream(params);
+  if (!trusted) {
+    return null;
+  }
+  const outbound = sanitizePassthroughPayload(params.payload);
+  if (trusted.canonicalModel && typeof outbound.model === "string") {
+    outbound.model = trusted.canonicalModel;
+  }
+  const url = joinPath(trusted.baseUrl, trusted.path);
+  const startedAtMs = Date.now();
+  let response: Response;
+  try {
+    response = await protectedFetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...buildAuthHeaders(trusted.apiKey, inferLlmAuthStyle(trusted.baseUrl)),
+      },
+      body: JSON.stringify(outbound),
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) {
+    return null;
+  }
+  let body: Record<string, unknown>;
+  try {
+    const parsed = (await response.json()) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (params.protocol === "chat" && !Array.isArray(body.choices)) {
+    return null;
+  }
+  const usage = body.usage as
+    | { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+    | undefined;
+  await recordPassthroughUsage({
+    configStore: params.configStore,
+    protocol: params.protocol,
+    model: trusted.canonicalModel ?? payloadModel(params.payload),
+    requestId: requestIdOf(params.payload),
+    usage: usage
+      ? {
+          promptTokens: usage.prompt_tokens ?? 0,
+          completionTokens: usage.completion_tokens ?? 0,
+          totalTokens: usage.total_tokens,
+        }
+      : undefined,
+    latencyMs: Date.now() - startedAtMs,
+  });
+  return {
+    status: 200,
+    body,
+    streamSource: `passthrough:${trusted.source}`,
+    canonicalModel: trusted.canonicalModel,
+  };
 }
 
 function payloadModel(payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest): string {
@@ -137,16 +231,16 @@ async function recordPassthroughUsage(params: {
   const completionTokens = params.usage?.completionTokens ?? 0;
   const totalTokens =
     params.usage?.totalTokens ?? (promptTokens + completionTokens > 0 ? promptTokens + completionTokens : 0);
-  if (totalTokens <= 0) {
-    // 上游未上报 usage：宁可不记，也不用估算值冒充真实计费。
-    return;
+  const usageReported = totalTokens > 0;
+  let costUsd = 0;
+  if (usageReported) {
+    const pricing = params.configStore.get().autoRouting.pricing;
+    const service = createPricingService(pricing.default, pricing.overrides);
+    const rate = await service.getPricing(params.model);
+    costUsd = rate
+      ? (promptTokens / 1000) * rate.inputPer1kTokens + (completionTokens / 1000) * rate.outputPer1kTokens
+      : 0;
   }
-  const pricing = params.configStore.get().autoRouting.pricing;
-  const service = createPricingService(pricing.default, pricing.overrides);
-  const rate = await service.getPricing(params.model);
-  const costUsd = rate
-    ? (promptTokens / 1000) * rate.inputPer1kTokens + (completionTokens / 1000) * rate.outputPer1kTokens
-    : 0;
   await recordOpsUsage({
     requestId: params.requestId,
     model: params.model,
@@ -157,7 +251,7 @@ async function recordPassthroughUsage(params: {
     totalTokens,
     costUsd,
     source: "direct",
-    meta: { usageEstimated: false, delivery: `passthrough:${params.protocol}` },
+    meta: { usageEstimated: false, usageReported, delivery: `passthrough:${params.protocol}` },
   });
 }
 
@@ -199,16 +293,41 @@ function sanitizePassthroughPayload(
     delete (copy as { provider?: unknown }).provider;
   }
   const kgm = (payload as { kgm?: KgmExtensions }).kgm;
-  if (kgm?.ollama && typeof kgm.ollama === "object") {
-    const o = kgm.ollama as { think?: boolean };
-    if (o.think === false) {
-      copy.think = false;
-    }
-  }
-  if (copy.think === undefined && payload.stream) {
-    copy.think = false;
+  const think = resolvePassthroughThink(payload, kgm);
+  if (think !== undefined) {
+    copy.think = think;
   }
   return copy as Record<string, unknown>;
+}
+
+function resolvePassthroughThink(
+  payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest,
+  kgm?: KgmExtensions,
+): boolean | undefined {
+  if (kgm?.ollama && typeof kgm.ollama === "object" && typeof kgm.ollama.think === "boolean") {
+    return kgm.ollama.think;
+  }
+  const body = payload as {
+    think?: unknown;
+    thinking?: unknown;
+    enable_thinking?: unknown;
+  };
+  if (body.think === false || body.enable_thinking === false) {
+    return false;
+  }
+  if (body.think === true || body.enable_thinking === true || body.thinking === true) {
+    return true;
+  }
+  if (body.thinking && typeof body.thinking === "object") {
+    const type = (body.thinking as { type?: unknown }).type;
+    if (type === "enabled") {
+      return true;
+    }
+    if (type === "disabled") {
+      return false;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -260,34 +379,42 @@ export function resolveTrustedStreamUpstream(params: {
   return null;
 }
 
-function canUseNativeOpenAiStreamPassthrough(
+/** 委托编排（图谱 / 检索 / 内置工具 / 服务端执行 tools）时不得薄路径。 */
+export function needsKgmOrchestration(
   payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest,
 ): boolean {
   const kgm = payload.kgm;
-  if (!payload.stream) {
+  if (!kgm) {
     return false;
   }
-  // Selection stage (auto) must not be short-circuited by delivery stage (stream).
+  if (kgm.graph?.enabled || kgm.retrieval) {
+    return true;
+  }
+  if (kgm.capabilities?.includeBuiltinTools) {
+    return true;
+  }
+  if (kgm.capabilities?.executeToolCalls === true) {
+    return true;
+  }
+  return !isPassThroughSafeExtension(kgm);
+}
+
+function canUseNativeOpenAiPassthrough(
+  payload: OpenAiChatCompletionRequest | OpenAiResponsesRequest,
+  mode: "stream" | "json",
+): boolean {
+  if (mode === "stream" && !payload.stream) {
+    return false;
+  }
+  if (mode === "json" && payload.stream) {
+    return false;
+  }
   const model =
     "model" in payload && typeof payload.model === "string" ? payload.model.trim() : "";
   if (!model || model.toLowerCase() === "auto") {
     return false;
   }
-  if (!kgm) {
-    return true;
-  }
-
-  if (kgm.graph?.enabled || kgm.retrieval) {
-    return false;
-  }
-  if (kgm.capabilities?.includeBuiltinTools) {
-    return false;
-  }
-  if (kgm.capabilities?.executeToolCalls === true) {
-    return false;
-  }
-
-  return isPassThroughSafeExtension(kgm);
+  return !needsKgmOrchestration(payload);
 }
 
 function isPassThroughSafeExtension(kgm: KgmExtensions): boolean {

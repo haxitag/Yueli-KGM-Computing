@@ -4,6 +4,7 @@
 
 import { getOpsAuth } from "./opsAuthContext.js";
 import { getOpsStore } from "./opsStore.js";
+import { logger } from "../observability/logger.js";
 
 export async function recordOpsUsage(event: {
   model: string;
@@ -42,7 +43,8 @@ export async function recordOpsUsage(event: {
       source: event.source ?? "direct",
       meta: event.meta,
     });
-  } catch {
-    // never break inference path
+  } catch (error) {
+    // Billing/audit failure must be visible without breaking inference or logging request content.
+    logger.error({ requestId: event.requestId, errorName: error instanceof Error ? error.name : "unknown" }, "Ops usage record failed");
   }
 }

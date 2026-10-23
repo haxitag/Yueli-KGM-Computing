@@ -482,7 +482,7 @@ const defaultConfig: KgmConfig = {
   ycb: {
     enabled: false,
     baseUrl: "http://localhost:58692",
-    path: "/api/v1/context/for-kgm",
+    path: "/api/v1/context/resolve",
     apiKey: "",
     timeoutMs: 5000,
     failOpen: true,

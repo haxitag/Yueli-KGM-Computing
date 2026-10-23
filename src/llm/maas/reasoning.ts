@@ -54,6 +54,15 @@ export function extractReasoningFromCompletionRaw(raw: unknown): string {
     }
     seen.add(node);
     const rec = node as Record<string, unknown>;
+    const message = rec.message;
+    if (message && typeof message === "object") {
+      const reasoning = firstNonEmptyString(
+        ...REASONING_MESSAGE_KEYS.map((k) => (message as Record<string, unknown>)[k]),
+      );
+      if (reasoning) {
+        return reasoning;
+      }
+    }
     const choice = Array.isArray(rec.choices) ? rec.choices[0] : undefined;
     if (choice && typeof choice === "object") {
       const reasoning = extractOpenAiCompatChoiceText(choice as Record<string, unknown>).reasoning;

@@ -381,6 +381,35 @@ type ExecuteParams = CompatibilityParams & {
   parallel_tool_calls?: boolean;
 } & MaaSOpenAiChatExtras;
 
+function resolveCompletionThink(
+  params: ExecuteParams,
+  extras: ReturnType<typeof extractMaaSOpenAiExtras>,
+): boolean | undefined {
+  if (params.kgm?.ollama?.think === false) {
+    return false;
+  }
+  if (params.kgm?.ollama?.think === true) {
+    return true;
+  }
+  const thinking = params.thinking ?? extras.thinking;
+  const enableThinking = params.enable_thinking ?? extras.enable_thinking;
+  if (enableThinking === false) {
+    return false;
+  }
+  if (enableThinking === true || thinking === true) {
+    return true;
+  }
+  if (thinking && typeof thinking === "object") {
+    if (thinking.type === "disabled") {
+      return false;
+    }
+    if (thinking.type === "enabled") {
+      return true;
+    }
+  }
+  return undefined;
+}
+
 function buildMaaSCompletionOptions(
   params: ExecuteParams,
   base: Omit<CompletionOptions, keyof MaaSOpenAiChatExtras>,
@@ -398,6 +427,7 @@ function buildMaaSCompletionOptions(
     toolChoice: params.toolChoice,
     parallelToolCalls: params.parallel_tool_calls,
     responseFormat: params.responseFormat,
+    think: resolveCompletionThink(params, extras),
     thinking: params.thinking ?? extras.thinking,
     enableThinking: params.enable_thinking ?? extras.enable_thinking,
     reasoningEffort: params.reasoning_effort ?? extras.reasoning_effort,
@@ -458,6 +488,7 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
   let latestRoutingTrace = undefined as ReturnType<typeof extractAutoRoutingTrace> | undefined;
   let promptTokens = 0;
   let completionTokens = 0;
+  let usageEstimated = false;
   let finalText = "";
   let finishReason: "stop" | "tool_calls" = "stop";
   let usedNativeToolCalls = false;
@@ -563,6 +594,9 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     );
     promptTokens += roundUsage.prompt_tokens;
     completionTokens += roundUsage.completion_tokens;
+    if (roundUsage.estimated) {
+      usageEstimated = true;
+    }
     const resolved = resolveCompletionIntent(completion, {
       skillNames: params.skillRuntime?.listNames(),
     });
@@ -677,7 +711,7 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
   }
 
   if (!finalText && finishReason === "stop") {
-    finalText = "max_rounds_reached";
+    finalText = reasoningText.trim();
   }
 
   recordAgenticRound({
@@ -742,7 +776,7 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
     metadata: {
       ...agenticMetadata,
       session_id: sessionId,
-      session_continuity: true,
+      session_continuity: false,
       intent_source: usedNativeToolCalls ? "native_tool_calls" : "text_json",
     },
     kgm: {
@@ -758,6 +792,7 @@ async function executeCompatibilityRun(params: ExecuteParams): Promise<Compatibi
         previousResponseId: params.previousResponseId,
         finish_reason: finishReason,
         intent_source: usedNativeToolCalls ? "native_tool_calls" : "text_json",
+        usageEstimated,
         ...(latestRoutingTrace
           ? {
               autoRouting: latestRoutingTrace as unknown as Record<string, unknown>,
@@ -1173,6 +1208,10 @@ function finalizeDirectStream(
     metadata: setup.metadata,
     kgm: {
       ...setup.kgm,
+      compatibility: {
+        ...(setup.kgm.compatibility ?? {}),
+        usageEstimated: usageMerged.estimated,
+      },
       perf,
       ...(routingTrace
         ? {
@@ -1381,6 +1420,7 @@ async function *streamLiveToolRounds(params: ExecuteParams): AsyncIterable<strin
   let firstTokenAtMs: number | undefined;
   let promptTokens = 0;
   let completionTokens = 0;
+  let usageEstimated = false;
   let finalText = "";
   let reasoningText = "";
   let finishReason: "stop" | "tool_calls" = "stop";
@@ -1556,6 +1596,9 @@ async function *streamLiveToolRounds(params: ExecuteParams): AsyncIterable<strin
     );
     promptTokens += roundUsage.prompt_tokens;
     completionTokens += roundUsage.completion_tokens;
+    if (roundUsage.estimated) {
+      usageEstimated = true;
+    }
     const resolved = resolveCompletionIntent(completion, {
       skillNames: params.skillRuntime?.listNames(),
     });
@@ -1660,7 +1703,7 @@ async function *streamLiveToolRounds(params: ExecuteParams): AsyncIterable<strin
     break;
   }
 
-  if (!finalText && finishReason === "stop") finalText = "max_rounds_reached";
+  if (!finalText && finishReason === "stop") finalText = reasoningText.trim();
   recordAgenticRound({
     profile: typeof agenticMetadata.agentic_profile === "string" ? agenticMetadata.agentic_profile : "standard",
     taskType: agenticRouting.taskType,
@@ -1681,7 +1724,7 @@ async function *streamLiveToolRounds(params: ExecuteParams): AsyncIterable<strin
     created,
     responseId,
     completionId,
-    metadata: { ...agenticMetadata, session_id: sessionId, session_continuity: true },
+    metadata: { ...agenticMetadata, session_id: sessionId, session_continuity: false },
     kgm: {
       ...kgm,
       correlation: { requestId, traceId: kgm.ops?.traceId ?? requestId },
@@ -1690,6 +1733,7 @@ async function *streamLiveToolRounds(params: ExecuteParams): AsyncIterable<strin
         toolExecution: executeToolCalls ? "server" : "external",
         builtinToolsIncluded: Boolean(kgm.capabilities?.includeBuiltinTools),
         finish_reason: finishReason,
+        usageEstimated,
       },
       tool_trace: traces,
       ...(latestRoutingTrace

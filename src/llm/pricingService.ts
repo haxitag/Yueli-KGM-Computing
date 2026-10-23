@@ -110,30 +110,7 @@ export class DynamicPricingService implements PricingService {
   }
 
   private async fetchOpenAIPricing(model: string): Promise<ModelPricingConfig | undefined> {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error("OPENAI_API_KEY environment variable not set for dynamic pricing");
-    }
-
-    const url = "https://api.openai.com/v1/models";
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const modelData = data.data?.find((m: any) => m.id.toLowerCase() === model.toLowerCase());
-    
-    if (!modelData) {
-      return this.getOpenAIFallbackPricing(model);
-    }
-
+    // /v1/models does not return prices. Keep the local catalog; do not pretend a live fetch updated rates.
     return this.getOpenAIFallbackPricing(model);
   }
 
@@ -161,27 +138,6 @@ export class DynamicPricingService implements PricingService {
   }
 
   private async fetchAnthropicPricing(model: string): Promise<ModelPricingConfig | undefined> {
-    const url = "https://api.anthropic.com/v1/models";
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    
-    const response = await fetch(url, {
-      headers: {
-        "x-api-key": apiKey ?? "",
-        "anthropic-version": "2023-06-01",
-      },
-    });
-
-    if (!response.ok) {
-      return this.getAnthropicFallbackPricing(model);
-    }
-
-    const data = await response.json();
-    const modelData = data.data?.find((m: any) => m.name.toLowerCase() === model.toLowerCase());
-    
-    if (!modelData) {
-      return this.getAnthropicFallbackPricing(model);
-    }
-
     return this.getAnthropicFallbackPricing(model);
   }
 

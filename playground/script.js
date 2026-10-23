@@ -1951,7 +1951,9 @@ class KGMTrustProxyPlayground {
                     };
 
                     this.mediaRecorder.onstop = () => {
-                        const audioBlob = new Blob(this.audioChunks, { type: 'audio/wav' });
+                        const audioBlob = new Blob(this.audioChunks, {
+                            type: this.mediaRecorder.mimeType || this.audioChunks[0]?.type || 'audio/webm'
+                        });
                         this.mediaFiles.recordedAudio = audioBlob;
 
                         // 创建音频播放元素
@@ -1991,6 +1993,9 @@ class KGMTrustProxyPlayground {
 
         try {
             this.resetOutputs();
+            if (this.mediaFiles.images.length || this.mediaFiles.audio || this.mediaFiles.video || this.mediaFiles.recordedAudio) {
+                throw new Error('当前对话接口尚未传输上传的媒体文件；请先移除附件。');
+            }
             if (this.currentConfig.provider === 'yueli-cloud') {
                 await this.handleYueliCloudSubmit();
                 return;
@@ -2050,22 +2055,36 @@ class KGMTrustProxyPlayground {
             const body = await res.json().catch(() => ({}));
             if (!res.ok) {
                 const code = body?.error?.code || `http_${res.status}`;
-                if (String(code).endsWith('_not_configured') || res.status === 501) {
-                    return;
-                }
-                console.warn('media image failed', body?.error || body);
+                this.showToast(`图片生成失败: ${body?.error?.message || code}`, 'error');
                 return;
             }
             const url = body?.data?.[0]?.url || body?.data?.[0]?.b64_json;
             if (url && this.imageOutput) {
-                if (String(url).startsWith('http') || String(url).startsWith('data:')) {
-                    this.imageOutput.innerHTML = `<img alt="generated" src="${url}" style="max-width:100%" />`;
+                const image = document.createElement('img');
+                image.alt = 'generated';
+                image.style.maxWidth = '100%';
+                const mediaUrl = new URL(String(url), window.location.href);
+                const localMedia = mediaUrl.origin === window.location.origin &&
+                    mediaUrl.pathname.startsWith('/generated-images/');
+                if (localMedia) {
+                    const asset = await fetch(mediaUrl, { headers: this.buildPlaygroundAuthHeaders() });
+                    if (!asset.ok) throw new Error(`图片文件 HTTP ${asset.status}`);
+                    const objectUrl = URL.createObjectURL(await asset.blob());
+                    image.onload = () => URL.revokeObjectURL(objectUrl);
+                    image.onerror = () => URL.revokeObjectURL(objectUrl);
+                    image.src = objectUrl;
                 } else {
-                    this.imageOutput.innerHTML = `<img alt="generated" src="data:image/png;base64,${url}" style="max-width:100%" />`;
+                    image.src = String(url).startsWith('http') || String(url).startsWith('data:')
+                        ? String(url)
+                        : `data:image/png;base64,${url}`;
                 }
+                this.imageOutput.replaceChildren(image);
+            } else {
+                this.showToast('图片生成失败: 提供商未返回图片', 'error');
             }
         } catch (err) {
             console.warn('media image request error', err);
+            this.showToast(`图片生成失败: ${err instanceof Error ? err.message : String(err)}`, 'error');
         }
     }
 
@@ -2073,7 +2092,7 @@ class KGMTrustProxyPlayground {
         const prompt = this.promptText.value.trim();
         const requestData = {
             model: this.resolveModel() || 'deepseek/deepseek-v4-flash',
-            input: prompt + this.buildMediaSummary(),
+            input: prompt,
             stream: this.currentConfig.stream !== false,
         };
         const endpoint = requestData.stream ? '/yueliai/v1/completions/stream' : '/yueliai/v1/completions';
@@ -2312,7 +2331,12 @@ class KGMTrustProxyPlayground {
             return vars[k] ?? '';
         });
         if (tpl.kind === 'html') {
-            this.textOutput.innerHTML = out;
+            const frame = document.createElement('iframe');
+            frame.setAttribute('sandbox', '');
+            frame.title = 'HTML 输出预览';
+            frame.style.cssText = 'width:100%;min-height:180px;border:0;';
+            frame.srcdoc = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:">' + out;
+            this.textOutput.replaceChildren(frame);
         } else {
             this.textOutput.textContent = out;
         }
@@ -2541,7 +2565,6 @@ class KGMTrustProxyPlayground {
 
     buildProtocolRequest() {
         const prompt = this.promptText.value.trim();
-        const mediaSummary = this.buildMediaSummary();
         const graphTriples = this.buildGraphTriples(prompt);
         const providerPreference = this.resolveProvider();
         const routing = this.buildRoutingPreference(prompt);
@@ -2572,7 +2595,7 @@ class KGMTrustProxyPlayground {
         if (this.currentConfig.protocol === 'responses') {
             return {
                 model: this.resolveModel(),
-                input: prompt + mediaSummary,
+                input: prompt,
                 temperature: this.currentConfig.temperature,
                 max_output_tokens: this.currentConfig.maxTokens,
                 stream: this.currentConfig.stream !== false,
@@ -2586,7 +2609,7 @@ class KGMTrustProxyPlayground {
             model: this.resolveModel(),
             messages: [
                 { role: 'system', content: 'You are the KGM compatibility playground assistant.' },
-                { role: 'user', content: prompt + mediaSummary }
+                { role: 'user', content: prompt }
             ],
             temperature: this.currentConfig.temperature,
             max_completion_tokens: this.currentConfig.maxTokens,
@@ -2595,23 +2618,6 @@ class KGMTrustProxyPlayground {
             kgm,
             routing
         };
-    }
-
-    buildMediaSummary() {
-        const parts = [];
-        if (this.mediaFiles.images.length > 0) {
-            parts.push(`\n[images:${this.mediaFiles.images.map(file => file.name).join(', ')}]`);
-        }
-        if (this.mediaFiles.audio) {
-            parts.push(`\n[audio:${this.mediaFiles.audio.name}]`);
-        }
-        if (this.mediaFiles.video) {
-            parts.push(`\n[video:${this.mediaFiles.video.name}]`);
-        }
-        if (this.mediaFiles.recordedAudio) {
-            parts.push(`\n[recorded_audio]`);
-        }
-        return parts.join('');
     }
 
     resolveModel() {

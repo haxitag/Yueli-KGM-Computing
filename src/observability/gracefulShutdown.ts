@@ -57,10 +57,10 @@ class GracefulShutdown {
       await Promise.all(shutdownPromises);
 
       logger.info('Graceful shutdown completed');
-      process.exit(0);
+      process.exitCode = 0;
     } catch (error) {
       logger.error({ error }, 'Error during graceful shutdown');
-      process.exit(1);
+      process.exitCode = 1;
     }
   }
 

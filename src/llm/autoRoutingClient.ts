@@ -24,6 +24,7 @@ import { configuredLlmRouteSegment } from "../runtime/topologyResolver.js";
 import { streamCompletion } from "./client.js";
 import type { CompletionOptions, CompletionResult, CompletionStreamEvent, LlmClient } from "./client.js";
 import { createPricingService, type PricingService } from "./pricingService.js";
+import { unwrapProviderRaw } from "./completionNormalize.js";
 import { classifyIntent, classifyIntentSync, intentToRoutingTaskType } from "../frontstation/index.js";
 import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 import {
@@ -33,6 +34,7 @@ import {
 } from "../agentic/routingPreferences.js";
 import { providerSupportsTools } from "./providerFactory.js";
 import { modelsMatchByAlias, resolveCloudModelAlias } from "../models/cloudModelCatalog.js";
+import { orderFailoverCandidates } from "./routingFailure.js";
 
 type RoutingCandidate = {
   routeKey: string;
@@ -147,7 +149,7 @@ export class AutoRoutingLlmClient implements LlmClient {
       const result = await this.executeCandidate(selection.selected, prompt, options);
       return await this.wrapResult(result, selection, prompt, options, Date.now() - startedAt);
     } catch (error) {
-      const chain = this.pickFailoverCandidates(selection, selection.selected.routeKey);
+      const chain = this.pickFailoverCandidates(selection, selection.selected.routeKey, options?.model, error);
       if (chain.length === 0) {
         this.recordAudit(selection, prompt, options, Date.now() - startedAt, {
           success: false,
@@ -279,7 +281,7 @@ export class AutoRoutingLlmClient implements LlmClient {
         result: synthetic,
       };
     } catch (error) {
-      const chain = this.pickFailoverCandidates(selection, selection.selected.routeKey);
+      const chain = this.pickFailoverCandidates(selection, selection.selected.routeKey, options?.model, error);
       const canFailover = !emittedStarted && output.length === 0 && chain.length > 0;
 
       if (!canFailover) {
@@ -413,18 +415,25 @@ export class AutoRoutingLlmClient implements LlmClient {
     }
   }
 
-  /** Prefer up to 2 non-default scored candidates, then default. */
-  private pickFailoverCandidates(selection: RoutingSelection, failedRouteKey: string): RoutingCandidate[] {
-    const others = selection.candidates
-      .filter((item) => item.routeKey !== failedRouteKey)
-      .sort((a, b) => b.score - a.score);
-    const nonDefault = others.filter((item) => item.source !== "default").slice(0, 2);
-    const def = others.find((item) => item.source === "default");
-    const ordered = [...nonDefault];
-    if (def && !ordered.some((item) => item.routeKey === def.routeKey)) {
-      ordered.push(def);
-    }
-    return ordered;
+  /** Prefer up to 2 non-default scored candidates, then default. Error class may empty the chain. */
+  private pickFailoverCandidates(
+    selection: RoutingSelection,
+    failedRouteKey: string,
+    requestedModel?: string,
+    error?: unknown,
+  ): RoutingCandidate[] {
+    const failed =
+      selection.candidates.find((item) => item.routeKey === failedRouteKey) ?? selection.selected;
+    const ordered = orderFailoverCandidates({
+      candidates: selection.candidates,
+      failed,
+      requestedModel,
+      error,
+    });
+    const byKey = new Map(selection.candidates.map((item) => [item.routeKey, item]));
+    return ordered
+      .map((item) => byKey.get(item.routeKey))
+      .filter((item): item is RoutingCandidate => Boolean(item));
   }
 
   getAuditSummary(limit?: number) {
@@ -630,7 +639,7 @@ export class AutoRoutingLlmClient implements LlmClient {
             quality: stats?.avgQuality ?? defaultQualityForTask(route.taskType, 0.08),
             trust: stats?.avgConfidence ?? 0.78,
             verification: route.verifiable ? stats?.verificationPassRate ?? 0.82 : 0.6,
-            supportsTools: true,
+            supportsTools: runtime.runtime !== "native",
           },
           route.profile,
           autoRouting,
@@ -996,6 +1005,13 @@ export class AutoRoutingLlmClient implements LlmClient {
       text: result.text,
       raw: {
         autoRouting: trace,
+        ...(!usageEstimated ? {
+          usage: {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+          },
+        } : {}),
         result: result.raw,
       },
     };
@@ -1480,8 +1496,23 @@ export function extractResolvedModel(raw: unknown): string | undefined {
   }
   if (isRecord(raw)) {
     const managedRuntime = raw.managedRuntime;
-    if (isRecord(managedRuntime) && typeof managedRuntime.model === "string") {
-      return managedRuntime.model;
+    if (isRecord(managedRuntime)) {
+      if (typeof managedRuntime.model === "string") {
+        return managedRuntime.model;
+      }
+      if (typeof managedRuntime.modelName === "string") {
+        return managedRuntime.modelName;
+      }
+      if (typeof managedRuntime.upstreamModel === "string") {
+        return managedRuntime.upstreamModel;
+      }
+    }
+    const nested = isRecord(raw.result) ? raw.result : undefined;
+    if (nested) {
+      const fromNested = extractResolvedModel(nested);
+      if (fromNested) {
+        return fromNested;
+      }
     }
     const providerRouting = raw.providerRouting;
     if (isRecord(providerRouting) && typeof providerRouting.model === "string") {
@@ -1860,12 +1891,20 @@ function extractUsageMetrics(raw: unknown): {
   completionTokens?: number;
   totalTokens?: number;
 } {
-  if (!isRecord(raw)) {
+  const body = unwrapProviderRaw(raw);
+  if (!isRecord(body)) {
     return {};
   }
-  const usage = isRecord(raw.usage) ? raw.usage : undefined;
+  const usage = isRecord(body.usage) ? body.usage : undefined;
   if (!usage) {
-    return {};
+    const promptTokens = typeof body.prompt_eval_count === "number" ? body.prompt_eval_count : undefined;
+    const completionTokens = typeof body.eval_count === "number" ? body.eval_count : undefined;
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens !== undefined && completionTokens !== undefined
+        ? promptTokens + completionTokens : undefined,
+    };
   }
   const promptTokens =
     typeof usage.prompt_tokens === "number" ? usage.prompt_tokens

@@ -23,9 +23,6 @@ export function createPlaygroundServer(port: number = 3001) {
 
   // 静态文件服务
   app.use('/', express.static(path.join(__dirname, '../../playground')));
-  app.use('/generated-images', express.static(path.join(__dirname, '../../data/generated-images')));
-  app.use('/generated-videos', express.static(path.join(__dirname, '../../data/generated-videos')));
-  app.use('/generated-audio', express.static(path.join(__dirname, '../../data/generated-audio')));
 
   // API路由（轻量 AutoRouting，与 combined 语义对齐）
   app.use('/api/kgm', playgroundRouter);

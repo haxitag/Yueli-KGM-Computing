@@ -38,7 +38,7 @@ const access = new HttpRequestAccess(accessConfig, {
 
 /**
  * 与 `createKgmServer` 相同的 KGM HTTP 访问控制（鉴权/限流），用于 Express 组合服。
- * 对静态资源、根路径下非 API 资源不强制校验，仅对 `/v1` `/api` `/health` `/metrics` `/openapi.json` 等生效。
+ * Playground 静态页面公开；生成媒体与 API 使用同一访问控制。
  */
 export function createExpressKgmAccessMiddleware() {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -48,6 +48,9 @@ export function createExpressKgmAccessMiddleware() {
       const needsCheck =
         pathOnly.startsWith("/v1/") ||
         pathOnly.startsWith("/api/") ||
+        ["/generated-images", "/generated-videos", "/generated-audio"].some(
+          (prefix) => pathOnly === prefix || pathOnly.startsWith(`${prefix}/`),
+        ) ||
         pathOnly === "/health" ||
         pathOnly === "/metrics" ||
         pathOnly === "/openapi.json" ||

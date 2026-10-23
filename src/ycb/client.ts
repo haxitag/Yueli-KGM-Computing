@@ -2,8 +2,9 @@ import type { ConfigStore, YcbConfig } from "../core/configStore.js";
 import type { Evidence, KgmRequest } from "../core/types.js";
 import { joinUrl } from "../utils/url.js";
 import { generateId } from "../utils/id.js";
+import { logger } from "../observability/logger.js";
 
-/** 与 YCB 仓库约定的最小响应块（见 docs/kgm-haxitag-ycb-alignment.md） */
+/** 归一后的证据块。真实 YCB 响应形状不一，先归一再映射。 */
 export type YcbContextBlock = {
   source: string;
   text: string;
@@ -13,13 +14,89 @@ export type YcbContextBlock = {
   metadata?: Record<string, unknown>;
 };
 
-type YcbForKgmResponse = {
-  version?: string;
-  blocks?: YcbContextBlock[];
-};
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sourceLabel(source: unknown, fallback: string): string {
+  if (typeof source === "string" && source.trim()) {
+    return source.trim();
+  }
+  if (isRecord(source)) {
+    const type = typeof source.type === "string" ? source.type : "";
+    const id = typeof source.id === "string" ? source.id : "";
+    const title = typeof source.title === "string" ? source.title : "";
+    const joined = [type, id || title].filter(Boolean).join(":");
+    if (joined) {
+      return joined;
+    }
+  }
+  return fallback;
+}
+
+function asScore(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+function blockFromRecord(value: unknown, fallbackSource: string): YcbContextBlock | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const text =
+    (typeof value.text === "string" && value.text) ||
+    (typeof value.content === "string" && value.content) ||
+    "";
+  if (!text.trim()) {
+    return undefined;
+  }
+  return {
+    source: sourceLabel(value.source, fallbackSource),
+    text,
+    score: asScore(value.score) ?? asScore(value.relevance),
+    compressed: typeof value.compressed === "boolean" ? value.compressed : undefined,
+    metadata: isRecord(value.metadata) ? value.metadata : undefined,
+  };
+}
+
+/**
+ * 解析真实 YCB / ContextBuilder 响应：
+ * - KGM 文档：`{ blocks: [{ source, text }] }`
+ * - resolve pack：`{ blocks: [{ content, source, score }] }` 或 `{ pack: { blocks, compressedText } }`
+ * - consume：`{ contextBlock: { text, source } }` 或 `{ data: { contextBlock } }`
+ * - build：`{ result: { text, source } }`
+ */
+export function parseYcbResponse(data: unknown): YcbContextBlock[] {
+  if (!isRecord(data)) {
+    return [];
+  }
+  const nested = isRecord(data.data) ? data.data : data;
+  const pack = isRecord(nested.pack) ? nested.pack : nested;
+  const fromArray = (items: unknown, fallback: string): YcbContextBlock[] =>
+    Array.isArray(items)
+      ? items
+          .map((item, index) => blockFromRecord(item, `${fallback}_${index}`))
+          .filter((block): block is YcbContextBlock => Boolean(block))
+      : [];
+
+  const blocks = fromArray(pack.blocks, "block");
+  if (blocks.length > 0) {
+    return blocks;
+  }
+  const consume = blockFromRecord(nested.contextBlock, "consume");
+  if (consume) {
+    return [consume];
+  }
+  const built = blockFromRecord(nested.result, "build");
+  if (built) {
+    return [built];
+  }
+  if (typeof pack.compressedText === "string" && pack.compressedText.trim()) {
+    return [{ source: "compressed", text: pack.compressedText }];
+  }
+  return [];
 }
 
 function readMetaString(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -71,12 +148,16 @@ export class YcbClient {
       request.kgm?.ycb?.collectionId ??
       readMetaString(request.metadata as Record<string, unknown> | undefined, "ycb_collection_id");
 
+    const collectionIds = collectionId && /^\d+$/.test(collectionId) ? [Number(collectionId)] : undefined;
     const body = {
       query: request.input,
+      semanticQuery: { query: request.input, collectionIds },
       userId: request.userId,
       sessionId: request.sessionId,
       buildRef: buildRef ?? undefined,
+      buildId: buildRef ?? undefined,
       collectionId: collectionId ?? undefined,
+      collectionIds,
       traceId,
       metadata: request.metadata ?? {},
       ycb_context_version: readMetaString(request.metadata as Record<string, unknown> | undefined, "ycb_context_version"),
@@ -102,28 +183,22 @@ export class YcbClient {
         signal: controller?.signal,
       });
       if (!response.ok) {
-        if (c.failOpen) {
-          return [];
-        }
-        const text = await response.text();
-        throw new Error(`ycb http ${response.status}: ${text}`);
+        throw new Error(`ycb_http_${response.status}`);
       }
       const data = (await response.json()) as unknown;
-      if (!isRecord(data)) {
-        return [];
+      const blocks = parseYcbResponse(data);
+      if (blocks.length === 0) {
+        throw new Error("ycb_invalid_response");
       }
-      const blocks = (data as YcbForKgmResponse).blocks;
-      if (!Array.isArray(blocks)) {
-        return [];
-      }
-      return blocks
-        .filter((b): b is YcbContextBlock => isRecord(b) && typeof b.text === "string" && typeof b.source === "string")
-        .map((block, index) => mapBlockToEvidence(block, index));
-    } catch {
+      return blocks.map((block, index) => mapBlockToEvidence(block, index));
+    } catch (error) {
+      const reason = error instanceof Error && error.message.startsWith("ycb_")
+        ? error.message : "ycb_request_failed";
+      logger.warn({ traceId, reason }, "YCB context request failed");
       if (c.failOpen) {
         return [];
       }
-      throw new Error("ycb request failed");
+      throw new Error(reason);
     } finally {
       if (timeout) {
         clearTimeout(timeout);

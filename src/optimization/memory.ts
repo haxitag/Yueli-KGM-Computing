@@ -769,11 +769,6 @@ class HeapSnapshotter {
 }
 
 /**
- * 默认内存管理器实例
- */
-export const memoryManager = new MemoryManager();
-
-/**
  * 快速内存检查函数
  */
 export function quickMemoryCheck(): {

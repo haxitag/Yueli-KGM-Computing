@@ -46,7 +46,11 @@ import {
   type MediaProxyResult,
 } from "../openai/mediaCompat.js";
 import { getMediaJobStore } from "../openai/mediaJobs.js";
-import { maybeProxyNativeOpenAiStream, sendNormalizedUpstreamSse } from "../openai/passthrough.js";
+import {
+  maybeProxyNativeOpenAiJson,
+  maybeProxyNativeOpenAiStream,
+  sendNormalizedUpstreamSse,
+} from "../openai/passthrough.js";
 import { handleGetModelProviders, handlePutModelProviders, loadPublicModelProviders } from "./adminModelProviders.js";
 import { tryServePlayground } from "./playgroundStatic.js";
 import { ProviderConfigurationManager } from "../models/providerConfigManager.js";
@@ -75,6 +79,7 @@ import {
   HttpRequestAccess,
 } from "./httpAccess.js";
 import { getOpsStore } from "../admin/opsStore.js";
+import { recordOpsUsage } from "../admin/recordOpsUsage.js";
 import { runWithOpsAuthAsync } from "../admin/opsAuthContext.js";
 import { handleOpsAdminRoute } from "./routes/opsAdmin.js";
 import { handleObservabilityRoute } from "./routes/observability.js";
@@ -101,7 +106,7 @@ import { generateId } from "../utils/id.js";
 import { logger } from "../observability/logger.js";
 import { validateEnv } from "../config/envValidation.js";
 import { setupGracefulShutdown } from "../observability/gracefulShutdown.js";
-import { evaluateReadiness } from "./readiness.js";
+import { evaluateReadiness, probeHttpDependency, probeOllamaModel } from "./readiness.js";
 import { resolveRequestTraceIds, traceResponseHeaders } from "../observability/requestTrace.js";
 import { InferenceDiscoveryService } from "../runtime/discoveryService.js";
 import { handleRuntimeRoute } from "./routes/runtime.js";
@@ -453,7 +458,17 @@ export function createKgmRequestListener(
             input: cur.input,
             sessionId: cur.sessionId,
             model: ag.model,
-            metadata: { agentId: ag.id, tools: ag.tools, mode: ag.systemPrompt ? "reasoning" : "chat" },
+            metadata: {
+              agentId: ag.id,
+              tools: ag.tools,
+              mode: ag.systemPrompt ? "reasoning" : "chat",
+              system_prompt_addon: ag.systemPrompt,
+            },
+            toolPolicy:
+              ag.tools.length > 0 ? { allowed: ag.tools, maxRounds: 3 } : undefined,
+            kgm: ag.systemPrompt
+              ? { playground: { extraSystemPrompt: ag.systemPrompt } }
+              : undefined,
           };
           const response = await params.scheduler.run(kgmRequest);
           const fin = taskStore.get(q.id);
@@ -717,10 +732,20 @@ export function createKgmRequestListener(
       }
       const auth = access.getLastAuth();
       await runWithOpsAuthAsync(auth, async () => {
-      appendHttpAccessLog({
-        ts: new Date().toISOString(),
-        method: req.method ?? "?",
-        pathname: url.pathname,
+      const accessStartedAt = new Date().toISOString();
+      res.once("finish", () => {
+        const header = (name: string) => {
+          const value = res.getHeader(name) ?? req.headers[name];
+          return typeof value === "string" ? value : undefined;
+        };
+        appendHttpAccessLog({
+          ts: accessStartedAt,
+          method: req.method ?? "?",
+          pathname: url.pathname,
+          status: res.statusCode,
+          traceId: header("x-trace-id"),
+          requestId: header("x-kgm-request-id"),
+        });
       });
 
       if (await handleYueliaiRoute(req, res, url.pathname, { configStore: params.configStore })) {
@@ -802,24 +827,38 @@ export function createKgmRequestListener(
       /** 就绪探针：可否接流量；与 /health 存活探针分层（K8s readinessProbe 用此路径） */
       if (req.method === "GET" && url.pathname === "/ready") {
         const cfg = params.configStore.get();
-        const llmConfigured = Boolean(
-          (cfg.llm?.baseUrl && String(cfg.llm.baseUrl).trim()) ||
-            params.autoRoutingClient ||
-            params.llmClient,
+        const requireUpstream = ["1", "true", "yes", "on"].includes(
+          (process.env.KGM_READY_REQUIRE_UPSTREAM ?? "").trim().toLowerCase(),
         );
+        const llmConfigured = Boolean(cfg.llm.baseUrl?.trim());
+        const llmReady = requireUpstream && llmConfigured
+          ? cfg.llm.provider === "ollama"
+            ? await probeOllamaModel(cfg.llm.baseUrl, cfg.llm.model)
+            : cfg.llm.provider !== "openai" || cfg.llm.apiKey
+              ? await probeHttpDependency(cfg.llm.baseUrl, cfg.llm.apiKey)
+              : false
+          : llmConfigured;
+        const dependencies = cfg.vector.backend === "chroma"
+          ? [{
+              name: "vector_chroma",
+              ok: await probeHttpDependency(cfg.vector.baseUrl ?? ""),
+              detail: "configured vector service reachable",
+            }]
+          : [];
         const runtimes = modelManager.listRuntimes();
         let running = 0;
         let error = 0;
         let degraded = 0;
         for (const rt of runtimes) {
-          if (rt.status === "running") running += 1;
+          if (rt.status === "running" && rt.healthStatus === "healthy") running += 1;
           else if (rt.status === "error") error += 1;
           if (rt.healthStatus === "degraded") degraded += 1;
         }
         const report = evaluateReadiness({
           env: process.env,
           processStartedAtMs: startedAt,
-          llmConfigured,
+          llmConfigured: llmReady,
+          dependencies,
           workers: {
             running,
             error,
@@ -1638,13 +1677,10 @@ export function createKgmRequestListener(
         if (!workflow) {
           return sendJson(res, 404, { error: "workflow_not_found" });
         }
-        const payload = (await readJson(req)) as { input: any };
-        const execution = workflowExecutionStore.create({
-          workflowId,
-          input: payload.input,
-          status: "queued",
+        return sendJson(res, 501, {
+          error: "workflow_execute_not_implemented",
+          message: "Workflow execution is not implemented. This endpoint does not queue or run workflows.",
         });
-        return sendJson(res, 202, { execution });
       }
 
       if (req.method === "GET" && url.pathname === "/v1/workflow-executions") {
@@ -1794,13 +1830,15 @@ export function createKgmRequestListener(
       if (req.method === "GET" && url.pathname === "/v1/logs") {
         const limit = parseNumber(url.searchParams.get("limit")) ?? 100;
         const type = url.searchParams.get("type");
-        const logs = snapshotHttpAccessLog(limit);
+        const trace = url.searchParams.get("trace")?.trim() || undefined;
+        const logs = snapshotHttpAccessLog(limit, trace);
         return sendJson(res, 200, {
           logs,
           limit,
           type,
+          trace,
           total: logs.length,
-          note: "Recent HTTP paths after auth (ring buffer); not full application audit logs.",
+          note: "Recent completed HTTP requests after auth (ring buffer); not full application audit logs.",
         });
       }
 
@@ -1885,6 +1923,20 @@ export function createKgmRequestListener(
           });
           return await sendSse(res, events, { streamSource: "bridge:auto-routing" });
         }
+        const jsonProxied = await maybeProxyNativeOpenAiJson({
+          configStore: params.configStore,
+          modelManager,
+          protocol: "chat",
+          payload,
+        });
+        if (jsonProxied) {
+          return sendJson(res, jsonProxied.status, jsonProxied.body, {
+            "x-kgm-stream-source": jsonProxied.streamSource,
+            ...(jsonProxied.canonicalModel
+              ? { "x-kgm-stream-model": jsonProxied.canonicalModel }
+              : {}),
+          });
+        }
         const response = await createOpenAiChatCompletion({
           request: payload,
           contextBuilder: params.contextBuilder,
@@ -1951,6 +2003,20 @@ export function createKgmRequestListener(
           });
           return await sendSse(res, events, { streamSource: "bridge:auto-routing" });
         }
+        const jsonProxied = await maybeProxyNativeOpenAiJson({
+          configStore: params.configStore,
+          modelManager,
+          protocol: "responses",
+          payload,
+        });
+        if (jsonProxied) {
+          return sendJson(res, jsonProxied.status, jsonProxied.body, {
+            "x-kgm-stream-source": jsonProxied.streamSource,
+            ...(jsonProxied.canonicalModel
+              ? { "x-kgm-stream-model": jsonProxied.canonicalModel }
+              : {}),
+          });
+        }
         const response = await createOpenAiResponse({
           request: payload,
           contextBuilder: params.contextBuilder,
@@ -1979,6 +2045,22 @@ export function createKgmRequestListener(
       if (req.method === "POST" && url.pathname === "/v1/messages") {
         void readAnthropicApiKey(req);
         const payload = (await readJson(req)) as AnthropicMessagesRequest;
+        const requestedModel = typeof payload.model === "string" ? payload.model : undefined;
+        const providerHint = providerFromInferencePayload(payload);
+        const resolved = await resolveModelAlias(requestedModel, providerHint);
+        if (resolved?.mapping || resolved?.alias) {
+          payload.model = resolved.model;
+        }
+        if (auth.kind === "virtual" && auth.virtualKey?.allowedModels?.length) {
+          const allow = assertVirtualKeyModelAllowed(auth, [
+            requestedModel,
+            typeof payload.model === "string" ? payload.model : undefined,
+            resolved?.alias?.alias,
+          ]);
+          if (!allow.ok) {
+            return sendJson(res, allow.status, allow.body);
+          }
+        }
         const requestHeaders = normalizeIncomingHttpHeaders(
           req.headers as Record<string, string | string[] | undefined>,
         );
@@ -2003,12 +2085,30 @@ export function createKgmRequestListener(
             });
             return await sendSse(res, events, { appendDone: false });
           }
+          const nativeStartedAt = Date.now();
           const response = await postAnthropicMessages({
             baseUrl,
             apiKey,
             body: nativeBody,
             requestHeaders,
             timeoutMs: params.configStore.get().llm.timeoutMs,
+          });
+          const usage = extractAnthropicNativeUsage(response);
+          await recordOpsUsage({
+            requestId: requestIdOfPayload(payload),
+            model: payload.model,
+            success: true,
+            latencyMs: Date.now() - nativeStartedAt,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.promptTokens + usage.completionTokens,
+            costUsd: 0,
+            source: "direct",
+            meta: {
+              usageEstimated: !usage.reported,
+              usageReported: usage.reported,
+              delivery: "anthropic-native",
+            },
           });
           return sendJson(res, 200, response);
         }
@@ -3032,6 +3132,32 @@ function validateKceComputePayload(payload: unknown): KceComputeRequest {
     }
   }
   return payload as KceComputeRequest;
+}
+
+function extractAnthropicNativeUsage(response: unknown): {
+  promptTokens: number;
+  completionTokens: number;
+  reported: boolean;
+} {
+  if (!response || typeof response !== "object") {
+    return { promptTokens: 0, completionTokens: 0, reported: false };
+  }
+  const usage = (response as { usage?: { input_tokens?: unknown; output_tokens?: unknown } }).usage;
+  const promptTokens = typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined;
+  const completionTokens = typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined;
+  if (promptTokens == null && completionTokens == null) {
+    return { promptTokens: 0, completionTokens: 0, reported: false };
+  }
+  return {
+    promptTokens: promptTokens ?? 0,
+    completionTokens: completionTokens ?? 0,
+    reported: true,
+  };
+}
+
+function requestIdOfPayload(payload: { metadata?: Record<string, unknown> }): string | undefined {
+  const value = payload.metadata?.request_id ?? payload.metadata?.requestId;
+  return typeof value === "string" ? value : undefined;
 }
 
 function validateIntegerRange(value: unknown, field: string, min: number, max: number): void {

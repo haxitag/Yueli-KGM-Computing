@@ -24,7 +24,39 @@ export type ReadinessInput = {
   llmConfigured?: boolean;
   /** managed runtime：running / error 数量 */
   workers?: { running: number; error: number; degraded: number; total: number };
+  dependencies?: ReadinessCheck[];
 };
+
+/** A response below 500 proves the configured HTTP service is reachable. */
+export async function probeHttpDependency(baseUrl: string, apiKey?: string): Promise<boolean> {
+  try {
+    const response = await fetch(baseUrl, {
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+      redirect: "manual",
+      signal: AbortSignal.timeout(2000),
+    });
+    await response.body?.cancel();
+    return response.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+/** Ollama is ready only when the configured model is installed. */
+export async function probeOllamaModel(baseUrl: string, model: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/tags`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return false;
+    const data = (await response.json()) as { models?: Array<{ name?: string }> };
+    return Array.isArray(data.models) && data.models.some(
+      (item) => item.name === model || item.name === `${model}:latest`,
+    );
+  } catch {
+    return false;
+  }
+}
 
 function envFlag(env: NodeJS.ProcessEnv, key: string): boolean {
   return ["1", "true", "yes", "on"].includes((env[key] ?? "").trim().toLowerCase());
@@ -68,6 +100,8 @@ export function evaluateReadiness(input: ReadinessInput = {}): ReadinessReport {
       detail: `running=${workers.running} degraded=${workers.degraded} error=${workers.error} total=${workers.total}`,
     });
   }
+
+  checks.push(...(input.dependencies ?? []));
 
   const status = checks.every((c) => c.ok) ? "ready" : "not_ready";
   return {

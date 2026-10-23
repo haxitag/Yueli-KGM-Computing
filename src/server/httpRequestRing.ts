@@ -5,6 +5,9 @@ export type HttpAccessLogEntry = {
   /** 推理通道：yueliai / openai / kgm 等 */
   channel?: string;
   subpath?: string;
+  status?: number;
+  traceId?: string;
+  requestId?: string;
 };
 
 const MAX = 500;
@@ -17,7 +20,8 @@ export function appendHttpAccessLog(entry: HttpAccessLogEntry): void {
   }
 }
 
-export function snapshotHttpAccessLog(limit: number): HttpAccessLogEntry[] {
+export function snapshotHttpAccessLog(limit: number, traceId?: string): HttpAccessLogEntry[] {
   const n = Math.max(1, Math.min(limit, MAX));
-  return ring.slice(-n);
+  const entries = traceId ? ring.filter((entry) => entry.traceId === traceId) : ring;
+  return entries.slice(-n);
 }

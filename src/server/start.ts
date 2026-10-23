@@ -95,12 +95,23 @@ function loadConfigFromEnv(): KgmConfigPatch {
     contextQualityPath: process.env.KGM_ADAPTER_CONTEXT_QUALITY_PATH,
   });
 
+  const ycb = pickDefined({
+    enabled: parseBool(process.env.KGM_YCB_ENABLED),
+    baseUrl: process.env.KGM_YCB_BASE_URL,
+    path: process.env.KGM_YCB_PATH,
+    apiKey: process.env.KGM_YCB_API_KEY,
+    timeoutMs: parseNumber(process.env.KGM_YCB_TIMEOUT_MS),
+    failOpen: parseBool(process.env.KGM_YCB_FAIL_OPEN),
+    requireBuildRef: parseBool(process.env.KGM_YCB_REQUIRE_BUILD_REF),
+  });
+
   return {
     embedding: Object.keys(embedding).length ? embedding : undefined,
     llm: Object.keys(llm).length ? llm : undefined,
     database: Object.keys(database).length ? database : undefined,
     vector: Object.keys(vector).length ? vector : undefined,
     adapter: Object.keys(adapter).length ? adapter : undefined,
+    ycb: Object.keys(ycb).length ? ycb : undefined,
   };
 }
 

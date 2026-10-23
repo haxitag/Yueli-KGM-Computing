@@ -6,6 +6,7 @@
 import { Worker } from "node:worker_threads";
 import { cpus } from "node:os";
 import { EventEmitter } from "node:events";
+import { registerShutdownHandler } from "../observability/gracefulShutdown.js";
 
 interface Task<T = unknown> {
   id: string;
@@ -20,6 +21,7 @@ interface Task<T = unknown> {
 interface WorkerInfo {
   worker: Worker;
   busy: boolean;
+  currentTaskId?: string;
   taskCount: number;
   lastUsed: number;
 }
@@ -39,6 +41,7 @@ export class WorkerPool extends EventEmitter {
   private workerIdCounter = 0;
   private options: Required<WorkerPoolOptions>;
   private idleCheckTimer?: NodeJS.Timeout;
+  private shuttingDown = false;
   private stats = {
     totalTasks: 0,
     completedTasks: 0,
@@ -50,8 +53,8 @@ export class WorkerPool extends EventEmitter {
   constructor(options: WorkerPoolOptions = {}) {
     super();
     this.options = {
-      minWorkers: options.minWorkers ?? Math.max(2, cpus().length),
-      maxWorkers: options.maxWorkers ?? Math.max(4, cpus().length * 2),
+      minWorkers: options.minWorkers ?? Math.min(2, Math.max(1, cpus().length)),
+      maxWorkers: options.maxWorkers ?? Math.min(4, Math.max(2, cpus().length)),
       taskTimeout: options.taskTimeout ?? 30000,
       idleTimeout: options.idleTimeout ?? 60000,
       queueSize: options.queueSize ?? 1000,
@@ -144,7 +147,7 @@ export class WorkerPool extends EventEmitter {
         }
         return response;
       }
-    `, { eval: true });
+    `, { eval: true, execArgv: [] });
 
     const workerInfo: WorkerInfo = {
       worker,
@@ -163,7 +166,7 @@ export class WorkerPool extends EventEmitter {
     });
 
     worker.on('exit', (code) => {
-      if (code !== 0) {
+      if (code !== 0 && !this.shuttingDown) {
         this.recycleWorker(workerId);
       }
     });
@@ -177,13 +180,19 @@ export class WorkerPool extends EventEmitter {
   private recycleWorker(workerId: number): void {
     const workerInfo = this.workers.get(workerId);
     if (workerInfo) {
+      const activeTask = workerInfo.currentTaskId ? this.taskMap.get(workerInfo.currentTaskId) : undefined;
+      if (activeTask) {
+        this.taskMap.delete(activeTask.id);
+        activeTask.reject(new Error('Worker exited before completing task'));
+      }
       workerInfo.worker.terminate().catch(() => {});
       this.workers.delete(workerId);
       
       // 如果低于最小 worker 数，创建新的
-      if (this.workers.size < this.options.minWorkers) {
+      if (!this.shuttingDown && this.workers.size < this.options.minWorkers) {
         this.createWorker();
       }
+      if (!this.shuttingDown) this.processQueue();
     }
   }
 
@@ -191,6 +200,7 @@ export class WorkerPool extends EventEmitter {
     const workerInfo = this.workers.get(workerId);
     if (workerInfo) {
       workerInfo.busy = false;
+      workerInfo.currentTaskId = undefined;
       workerInfo.taskCount++;
       workerInfo.lastUsed = Date.now();
     }
@@ -224,7 +234,7 @@ export class WorkerPool extends EventEmitter {
   }
 
   private processQueue(): void {
-    if (this.taskQueue.length === 0) return;
+    if (this.shuttingDown || this.taskQueue.length === 0) return;
 
     // 找到空闲的 worker
     const availableWorker = Array.from(this.workers.entries())
@@ -236,6 +246,7 @@ export class WorkerPool extends EventEmitter {
       
       if (task) {
         workerInfo.busy = true;
+        workerInfo.currentTaskId = task.id;
         workerInfo.lastUsed = Date.now();
         
         const timeout = setTimeout(() => {
@@ -274,6 +285,7 @@ export class WorkerPool extends EventEmitter {
    * 提交任务到 Worker Pool
    */
   async execute<T, R>(type: string, payload: T, priority = 5): Promise<R> {
+    if (this.shuttingDown) throw new Error('Worker pool is shutting down');
     if (this.taskQueue.length >= this.options.queueSize) {
       throw new Error('Task queue full');
     }
@@ -393,14 +405,14 @@ export class WorkerPool extends EventEmitter {
    * 关闭 Worker Pool
    */
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     if (this.idleCheckTimer) {
       clearInterval(this.idleCheckTimer);
     }
 
-    // 等待队列处理完成
-    while (this.taskQueue.length > 0) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    this.taskQueue = [];
+    for (const task of this.taskMap.values()) task.reject(new Error('Worker pool shut down'));
+    this.taskMap.clear();
 
     // 终止所有 worker
     const terminatePromises = Array.from(this.workers.values()).map(info => 
@@ -413,5 +425,16 @@ export class WorkerPool extends EventEmitter {
   }
 }
 
-// 全局单例
-export const globalWorkerPool = new WorkerPool();
+let globalWorkerPool: WorkerPool | undefined;
+
+export function getGlobalWorkerPool(): WorkerPool {
+  if (!globalWorkerPool) {
+    const pool = new WorkerPool();
+    globalWorkerPool = pool;
+    registerShutdownHandler(async () => {
+      await pool.shutdown();
+      if (globalWorkerPool === pool) globalWorkerPool = undefined;
+    });
+  }
+  return globalWorkerPool;
+}

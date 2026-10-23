@@ -72,6 +72,7 @@ export * from "./sandbox/manager.js";
 export * from "./protocol/haxiTagAssembly.js";
 export * from "./ycb/client.js";
 export * from "./llm/completionNormalize.js";
+export * from "./llm/routingFailure.js";
 export * from "./llm/managedRuntimeClient.js";
 export * from "./optimization/responseCache.js";
 export * from "./utils/streamOptimizer.js";

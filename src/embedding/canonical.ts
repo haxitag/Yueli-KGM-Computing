@@ -3,6 +3,7 @@ import type { ConfigStore } from "../core/configStore.js";
 import { postJson } from "../utils/http.js";
 import { joinUrl } from "../utils/url.js";
 import { KgmStructuredError } from "../errors/structuredError.js";
+import { classifyRoutingFailure } from "../llm/routingFailure.js";
 
 export type Embedder = {
   embed(text: string): Promise<number[]>;
@@ -112,21 +113,32 @@ export class ConfigurableEmbedder implements Embedder {
         affectedFeatures: ["memory_search", "rag", "context_builder"],
       });
     }
-    const client =
-      config.provider === "ollama"
-        ? new OllamaEmbedder({
-            baseUrl: config.baseUrl,
-            modelName: config.model,
-            timeoutMs: config.timeoutMs,
-          })
-        : new HttpEmbedder({
-            baseUrl: config.baseUrl,
-            modelName: config.model,
-            path: config.path,
-            apiKey: config.apiKey,
-            timeoutMs: config.timeoutMs,
-          });
-    return client.embed(text);
+    const client = this.createClient(config);
+    try {
+      return await client.embed(text);
+    } catch (error) {
+      if (!classifyRoutingFailure(error).retryable) {
+        throw error;
+      }
+      return this.createClient(config).embed(text);
+    }
+  }
+
+  private createClient(config: ReturnType<ConfigStore["get"]>["embedding"]): Embedder {
+    if (config.provider === "ollama") {
+      return new OllamaEmbedder({
+        baseUrl: config.baseUrl,
+        modelName: config.model,
+        timeoutMs: config.timeoutMs,
+      });
+    }
+    return new HttpEmbedder({
+      baseUrl: config.baseUrl,
+      modelName: config.model,
+      path: config.path,
+      apiKey: config.apiKey,
+      timeoutMs: config.timeoutMs,
+    });
   }
 }
 

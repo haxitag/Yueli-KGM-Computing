@@ -277,6 +277,7 @@ export class HttpLlmClient implements LlmClient {
       let tokenIndex = 0;
       let buffer = "";
       let fullText = "";
+      let fullReasoning = "";
       let lastUsage: Record<string, unknown> | undefined;
       let lastRaw: Record<string, unknown> | undefined;
       const toolCalls = new Map<number, { id?: string; name: string; arguments: string }>();
@@ -359,6 +360,7 @@ export class HttpLlmClient implements LlmClient {
                     };
                   }
                   if (reasoning) {
+                    fullReasoning += reasoning;
                     yield {
                       type: "token",
                       text: reasoning,
@@ -427,6 +429,7 @@ export class HttpLlmClient implements LlmClient {
                 message: {
                   role: "assistant",
                   content: fullText,
+                  ...(fullReasoning ? { reasoning_content: fullReasoning } : {}),
                   ...(assembledToolCalls.length > 0 ? { tool_calls: assembledToolCalls } : {}),
                 },
                 finish_reason: assembledToolCalls.length > 0 ? "tool_calls" : "stop",
@@ -548,7 +551,7 @@ export function inferLlmAuthStyle(baseUrl?: string, explicit?: unknown): LlmAuth
     return env;
   }
   const url = (baseUrl || "").toLowerCase();
-  if (url.includes("xiaomimimo.com") || url.includes("api.xiaomi.ai")) {
+  if (url.includes("xiaomimimo.com") || url.includes("api.xiaomi.ai") || url.includes("api.mimo.ai")) {
     return "both";
   }
   return "bearer";

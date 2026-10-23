@@ -9,6 +9,7 @@ import { createRuntimeWithStorage } from "../runtime.js";
 import { createOpenAiChatCompletion } from "../openai/compat.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
 import { DEFAULT_SCHEMA_IDS } from "../core/config.js";
+import { ConfigStore } from "../core/configStore.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -67,7 +68,30 @@ async function handleChat(args: string[]): Promise<void> {
   if (!message) {
     throw new Error("message_required: kgm chat --message <text> [--model <id>]");
   }
-  const runtime = await createRuntimeWithStorage({});
+  const configStore = new ConfigStore({
+    persistPath: process.env.KGM_CONFIG_PATH ?? "data/kgm.config.json",
+    loadFromDisk: true,
+  });
+  const llm = Object.fromEntries([
+    ["provider", process.env.KGM_LLM_PROVIDER],
+    ["baseUrl", process.env.KGM_LLM_BASE_URL],
+    ["apiKey", process.env.KGM_LLM_API_KEY],
+    ["model", process.env.KGM_LLM_MODEL],
+    ["path", process.env.KGM_LLM_PATH],
+  ].filter(([, value]) => value !== undefined && value !== ""));
+  const embedding = Object.fromEntries([
+    ["provider", process.env.KGM_EMBEDDING_PROVIDER],
+    ["baseUrl", process.env.KGM_EMBEDDING_BASE_URL],
+    ["apiKey", process.env.KGM_EMBEDDING_API_KEY],
+    ["model", process.env.KGM_EMBEDDING_MODEL],
+    ["path", process.env.KGM_EMBEDDING_PATH],
+  ].filter(([, value]) => value !== undefined && value !== ""));
+  configStore.update({
+    ...(Object.keys(llm).length ? { llm } : {}),
+    ...(Object.keys(embedding).length ? { embedding } : {}),
+    ...(process.env.KGM_VECTOR_BACKEND ? { vector: { backend: process.env.KGM_VECTOR_BACKEND } } : {}),
+  } as Parameters<ConfigStore["update"]>[0], { persist: false });
+  const runtime = await createRuntimeWithStorage({ configStore });
   try {
     const outputSchema = runtime.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {};
     const result = await createOpenAiChatCompletion({

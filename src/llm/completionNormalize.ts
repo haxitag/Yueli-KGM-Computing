@@ -25,14 +25,38 @@ function num(value: unknown): number | undefined {
 }
 
 /**
+ * Managed / failover 包装会把上游 body 放进 `result`。用量必须读到真正的上游对象。
+ */
+export function unwrapProviderRaw(raw: unknown): unknown {
+  let current = raw;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (!isRecord(current) || seen.has(current)) {
+      return current;
+    }
+    seen.add(current);
+    if (isRecord(current.usage) || typeof current.prompt_eval_count === "number" || typeof current.eval_count === "number") {
+      return current;
+    }
+    if ("result" in current) {
+      current = current.result;
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+/**
  * 从 provider 返回体抽取 usage；无法识别时返回 undefined（由调用方回退到估算）。
  */
 export function extractStructuredCompletion(raw: unknown, _providerHint?: string): StructuredCompletionFields {
-  if (!isRecord(raw)) {
+  const body = unwrapProviderRaw(raw);
+  if (!isRecord(body)) {
     return {};
   }
 
-  const usageBlock = raw.usage;
+  const usageBlock = body.usage;
   let prompt = 0;
   let completion = 0;
   let total = 0;
@@ -64,8 +88,8 @@ export function extractStructuredCompletion(raw: unknown, _providerHint?: string
 
   // Ollama /api/chat 常见字段（仅当未从标准 usage 解析到 token 时使用）
   if (!found) {
-    const promptEval = num(raw.prompt_eval_count);
-    const evalCount = num(raw.eval_count);
+    const promptEval = num(body.prompt_eval_count);
+    const evalCount = num(body.eval_count);
     if (promptEval !== undefined) {
       prompt = promptEval;
       found = true;
@@ -76,12 +100,12 @@ export function extractStructuredCompletion(raw: unknown, _providerHint?: string
     }
   }
 
-  const model = typeof raw.model === "string" ? raw.model : undefined;
+  const model = typeof body.model === "string" ? body.model : undefined;
   const firstChoice =
-    Array.isArray(raw.choices) && raw.choices.length > 0 && isRecord(raw.choices[0]) ? raw.choices[0] : undefined;
+    Array.isArray(body.choices) && body.choices.length > 0 && isRecord(body.choices[0]) ? body.choices[0] : undefined;
   const finishReason =
-    typeof raw.finish_reason === "string"
-      ? raw.finish_reason
+    typeof body.finish_reason === "string"
+      ? body.finish_reason
       : typeof firstChoice?.finish_reason === "string"
         ? firstChoice.finish_reason
         : undefined;
@@ -109,28 +133,28 @@ export function extractStructuredCompletion(raw: unknown, _providerHint?: string
 }
 
 /**
- * 将结构化 usage 与启发式估算合并：优先采用 raw 中解析出的非零字段。
+ * 有上游 usage 时原样采用（含合法的 0）；没有 usage 时才用估算，并标 estimated。
  */
 export function mergeUsageWithEstimates(
   structured: StructuredCompletionFields,
   estimatedPrompt: number,
   estimatedCompletion: number,
-): NormalizedTokenUsage {
+): NormalizedTokenUsage & { estimated: boolean } {
   const u = structured.usage;
   if (!u) {
     return {
       prompt_tokens: estimatedPrompt,
       completion_tokens: estimatedCompletion,
       total_tokens: estimatedPrompt + estimatedCompletion,
+      estimated: true,
     };
   }
+  const total =
+    u.total_tokens > 0 ? u.total_tokens : u.prompt_tokens + u.completion_tokens;
   return {
-    prompt_tokens: u.prompt_tokens > 0 ? u.prompt_tokens : estimatedPrompt,
-    completion_tokens: u.completion_tokens > 0 ? u.completion_tokens : estimatedCompletion,
-    total_tokens:
-      u.total_tokens > 0
-        ? u.total_tokens
-        : (u.prompt_tokens > 0 ? u.prompt_tokens : estimatedPrompt) +
-          (u.completion_tokens > 0 ? u.completion_tokens : estimatedCompletion),
+    prompt_tokens: u.prompt_tokens,
+    completion_tokens: u.completion_tokens,
+    total_tokens: total,
+    estimated: false,
   };
 }

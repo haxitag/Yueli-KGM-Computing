@@ -1,12 +1,19 @@
 import { z } from 'zod';
 
+/** `.env` 里 `KGM_LLM_BASE_URL=` 是占位空串，不能当非法 URL 把进程打死。 */
+function emptyToUndefined(value: unknown): unknown {
+  return typeof value === "string" && value.trim() === "" ? undefined : value;
+}
+
+const optionalUrl = z.preprocess(emptyToUndefined, z.string().url().optional());
+
 const envSchema = z.object({
   // Basic
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().default('58691'),
   
   // LLM Configuration
-  KGM_LLM_BASE_URL: z.string().url().optional(),
+  KGM_LLM_BASE_URL: optionalUrl,
   KGM_LLM_API_KEY: z.string().optional(),
   KGM_LLM_MODEL: z.string().optional(),
   KGM_LLM_MODE: z.enum(['chat', 'completions']).optional(),
@@ -38,7 +45,7 @@ const envSchema = z.object({
   KGM_MODEL_HEALTHCHECK_INTERVAL_MS: z.string().transform(Number).default('15000'),
   
   // Multimodal
-  KGM_MULTIMODAL_BASE_URL: z.string().url().optional(),
+  KGM_MULTIMODAL_BASE_URL: optionalUrl,
   KGM_MULTIMODAL_PATH: z.string().default('/v1/embeddings'),
   KGM_MULTIMODAL_MODEL: z.string().default('clip'),
   KGM_MULTIMODAL_KEY: z.string().optional(),
@@ -49,10 +56,18 @@ const envSchema = z.object({
   KGM_SANDBOX_ADAPTERS_PATH: z.string().optional(),
   KGM_SANDBOX_ADAPTERS_JSON: z.string().optional(),
 
+  KGM_YCB_ENABLED: z.string().optional(),
+  KGM_YCB_BASE_URL: z.string().optional(),
+  KGM_YCB_PATH: z.string().optional(),
+  KGM_YCB_API_KEY: z.string().optional(),
+  KGM_YCB_TIMEOUT_MS: z.string().optional(),
+  KGM_YCB_FAIL_OPEN: z.string().optional(),
+  KGM_YCB_REQUIRE_BUILD_REF: z.string().optional(),
+
   // File/API/executor tools
   KGM_FILE_TOOL_ROOTS: z.string().optional(),
   KGM_HTTP_TOOL_ALLOWED_ORIGINS: z.string().optional(),
-  KGM_EXECUTOR_URL: z.string().url().optional(),
+  KGM_EXECUTOR_URL: optionalUrl,
   KGM_EXECUTOR_PATH: z.string().default('/execute'),
   KGM_EXECUTOR_API_KEY: z.string().optional(),
   
@@ -77,6 +92,10 @@ const envSchema = z.object({
 export type Env = z.infer<typeof envSchema>;
 
 let validatedEnv: Env | null = null;
+
+export function resetValidatedEnv(): void {
+  validatedEnv = null;
+}
 
 export function validateEnv(): Env {
   if (validatedEnv) {
