@@ -378,10 +378,10 @@ export ANDROID_AVD_NAME="Pixel_8_API_35"</pre>
                 </div>
             </div>
             <div id="int-panel-mcp" class="integration-panel" role="tabpanel" hidden>
-                <p class="integration-desc">MCP 连接器 = 本机或外网的 <strong>HTTP JSON-RPC 完整 URL</strong>（如 <code>http://127.0.0.1:3100/mcp</code>）。当前运行时<strong>仅支持 HTTP POST</strong>，不支持原生 SSE / stdio 传输。</p>
+                <p class="integration-desc">MCP 连接器支持 <strong>HTTP JSON-RPC</strong>（<code>transport: "http"</code> + <code>url</code>）或 <strong>stdio 一次性 RPC</strong>（<code>transport: "stdio"</code> + <code>command</code> / <code>args</code>）。stdio 是 spawn 一次、写一行、读一行，不是长连接宿主，也不支持原生 SSE。</p>
                 <ol class="integration-howto">
-                    <li>在 JSON 的 <code>mcpConnectors</code> 增加一项：<code>id</code>、<code>name</code>、<code>enabled: true</code>、<code>transport: "http"</code>、<code>url</code>（必填完整端点）。</li>
-                    <li>把该 <code>id</code> 写入 <code>activeMcpIds</code>，再点「保存到服务端」（保存按钮在「技能」子页也可）。</li>
+                    <li>在 JSON 的 <code>mcpConnectors</code> 增加一项：<code>id</code>、<code>name</code>、<code>enabled: true</code>，以及 <code>transport: "http"</code> + <code>url</code>，或 <code>transport: "stdio"</code> + <code>command</code>。</li>
+                    <li>把该 <code>id</code> 写入 <code>activeMcpIds</code>，再点「保存到服务端」。也可用 <code>POST /v1/kgm/mcp/initialize</code> 探活。</li>
                     <li>对话开启「内建能力」后，模型通过工具 <code>mcp_call</code>（参数 <code>connectorId</code> / <code>toolName</code> / <code>arguments</code>）调用远端工具。</li>
                     <li>若上游只有 SSE MCP，需先用网关转成可 POST 的 HTTP JSON-RPC；纯 SSE URL 填入会失败。</li>
                 </ol>

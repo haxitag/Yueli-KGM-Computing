@@ -1,5 +1,5 @@
 import type { PlaygroundConfig } from "../core/configStore.js";
-import { mcpJsonRpc } from "../mcp/httpMcpClient.js";
+import { callMcpConnector } from "../mcp/session.js";
 import type { ToolRegistry } from "./registry.js";
 
 export function registerMcpPlaygroundTool(
@@ -11,7 +11,7 @@ export function registerMcpPlaygroundTool(
       name: "mcp_call",
       kind: "tool",
       description:
-        "调用 Playground 中已配置的 MCP HTTP 连接器（JSON-RPC）。参数：connectorId、toolName、arguments（对象）。",
+        "调用 Playground 中已配置的 MCP 连接器（HTTP JSON-RPC 或 stdio 一次性 initialize + tools/call）。参数：connectorId、toolName、arguments（对象）。",
       inputSchema: {
         type: "object",
         required: ["connectorId", "toolName"],
@@ -39,18 +39,7 @@ export function registerMcpPlaygroundTool(
       if (!conn || !conn.enabled) {
         return { ok: false, error: "connector_not_found_or_disabled" };
       }
-      if (conn.transport !== "http") {
-        return { ok: false, error: "unsupported_transport", transport: conn.transport };
-      }
-      if (!conn.url?.trim()) {
-        return { ok: false, error: "missing_url" };
-      }
-      const result = await mcpJsonRpc(
-        conn.url.trim(),
-        "tools/call",
-        { name: toolName, arguments: toolArgs },
-        conn.headers,
-      );
+      const result = await callMcpConnector(conn, toolName, toolArgs);
       return { ok: true, result };
     },
   );

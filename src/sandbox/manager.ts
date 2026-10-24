@@ -1,6 +1,6 @@
 import type { SandboxInstance, SandboxKind, SandboxPreview } from "../core/types.js";
-import { createDefaultSandboxAdapters } from "./adapters.js";
-import type { SandboxAdapter } from "./adapters.js";
+import { createDefaultSandboxAdapters, SandboxExecNotConfiguredError } from "./adapters.js";
+import type { SandboxAdapter, SandboxExecRequest, SandboxExecResult } from "./adapters.js";
 import type { SandboxAdaptersConfig } from "../core/configStore.js";
 import { generateId } from "../utils/id.js";
 
@@ -106,6 +106,15 @@ export class SandboxManager {
     return this.withPreview(updated);
   }
 
+  async exec(id: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
+    const sandbox = this.require(id);
+    const adapter = this.adapters[sandbox.kind];
+    if (!adapter.canExec()) {
+      throw new SandboxExecNotConfiguredError(sandbox.kind, adapter.adapterHint());
+    }
+    return adapter.exec(sandbox, request);
+  }
+
   stop(id: string): SandboxInstance {
     const sandbox = this.require(id);
     this.adapters[sandbox.kind].stop(sandbox);
@@ -165,6 +174,8 @@ export class SandboxManager {
   }
 }
 
+export { SandboxExecNotConfiguredError } from "./adapters.js";
+
 export class SandboxConfigurationError extends Error {
   readonly code = "sandbox_adapter_required";
   readonly status = 503;
@@ -179,6 +190,7 @@ function toAdapterConfig(kindCfg: {
   startCommand?: string;
   stopCommand?: string;
   statusCommand?: string;
+  execCommand?: string;
   endpoint?: string;
   hint?: string;
 }) {
@@ -190,6 +202,7 @@ function toAdapterConfig(kindCfg: {
     startCommand: kindCfg.startCommand,
     stopCommand: kindCfg.stopCommand,
     statusCommand: kindCfg.statusCommand,
+    execCommand: kindCfg.execCommand,
     endpoint: kindCfg.endpoint,
     hint: kindCfg.hint,
   };

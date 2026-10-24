@@ -1,6 +1,6 @@
 {
   "name": "@haxitag/yueli-kgm-computing",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "private": false,
   "workspaces": [
     "packages/*"

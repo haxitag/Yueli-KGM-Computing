@@ -208,6 +208,7 @@ export type SandboxKindAdapterConfig = {
   startCommand?: string;
   stopCommand?: string;
   statusCommand?: string;
+  execCommand?: string;
   endpoint?: string;
   hint?: string;
 };
@@ -224,6 +225,7 @@ export type SandboxKindAdapterConfigPatch = {
   startCommand?: string;
   stopCommand?: string;
   statusCommand?: string;
+  execCommand?: string;
   endpoint?: string;
   hint?: string;
 };
@@ -338,9 +340,10 @@ export type McpConnectorConfigEntry = {
   id: string;
   name: string;
   enabled: boolean;
-  /** 仅 HTTP JSON-RPC 已实现；不存在 stdio 客户端，因此不声明该传输。 */
-  transport: "http";
+  transport: "http" | "stdio";
   url?: string;
+  command?: string;
+  args?: string[];
   headers?: Record<string, string>;
 };
 
@@ -922,6 +925,7 @@ function mergeSandboxKindConfig(
   if (patch.startCommand !== undefined) next.startCommand = patch.startCommand;
   if (patch.stopCommand !== undefined) next.stopCommand = patch.stopCommand;
   if (patch.statusCommand !== undefined) next.statusCommand = patch.statusCommand;
+  if (patch.execCommand !== undefined) next.execCommand = patch.execCommand;
   if (patch.endpoint !== undefined) next.endpoint = patch.endpoint;
   if (patch.hint !== undefined) next.hint = patch.hint;
   if (Object.prototype.hasOwnProperty.call(patch, "useEmbedded")) {

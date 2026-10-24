@@ -87,6 +87,7 @@ export type UsageSummary = {
   byModel: Array<{ model: string; requests: number; tokens: number; costUsd: number }>;
   byKey: Array<{ keyId: string; keyName?: string; requests: number; tokens: number; costUsd: number }>;
   byDay: Array<{ day: string; requests: number; tokens: number; costUsd: number }>;
+  byProvider: Array<{ provider: string; requests: number; tokens: number; costUsd: number }>;
 };
 
 export type BudgetStatus = {
@@ -526,6 +527,7 @@ export class KgmOpsStore {
     const byModelMap = new Map<string, { requests: number; tokens: number; costUsd: number }>();
     const byKeyMap = new Map<string, { keyName?: string; requests: number; tokens: number; costUsd: number }>();
     const byDayMap = new Map<string, { requests: number; tokens: number; costUsd: number }>();
+    const byProviderMap = new Map<string, { requests: number; tokens: number; costUsd: number }>();
     for (const r of rows) {
       const m = byModelMap.get(r.model) ?? { requests: 0, tokens: 0, costUsd: 0 };
       m.requests += 1;
@@ -546,6 +548,13 @@ export class KgmOpsStore {
       d.tokens += r.totalTokens;
       d.costUsd += r.costUsd;
       byDayMap.set(day, d);
+
+      const provider = r.provider?.trim() || "unknown";
+      const p = byProviderMap.get(provider) ?? { requests: 0, tokens: 0, costUsd: 0 };
+      p.requests += 1;
+      p.tokens += r.totalTokens;
+      p.costUsd += r.costUsd;
+      byProviderMap.set(provider, p);
     }
 
     return {
@@ -557,6 +566,7 @@ export class KgmOpsStore {
       byModel: [...byModelMap.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => b.costUsd - a.costUsd),
       byKey: [...byKeyMap.entries()].map(([keyId, v]) => ({ keyId, ...v })).sort((a, b) => b.costUsd - a.costUsd),
       byDay: [...byDayMap.entries()].map(([day, v]) => ({ day, ...v })).sort((a, b) => a.day.localeCompare(b.day)),
+      byProvider: [...byProviderMap.entries()].map(([provider, v]) => ({ provider, ...v })).sort((a, b) => b.costUsd - a.costUsd),
     };
   }
 

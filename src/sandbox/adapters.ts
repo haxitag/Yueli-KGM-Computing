@@ -5,16 +5,30 @@ import { fileURLToPath } from "node:url";
 
 import type { SandboxInstance, SandboxKind, SandboxPreview } from "../core/types.js";
 
+export type SandboxExecRequest = {
+  command: string;
+  args?: string[];
+  timeoutMs?: number;
+};
+
+export type SandboxExecResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+};
+
 export type SandboxAdapter = {
   kind: SandboxKind;
   label: string;
   isConfigured(): boolean;
+  canExec(): boolean;
   adapterHint(): string;
   notes(): string[];
   start(instance: SandboxInstance): void;
   stop(instance: SandboxInstance): void;
   isRunning(instance: SandboxInstance): boolean;
   preview(instance: SandboxInstance): Partial<SandboxPreview>;
+  exec(instance: SandboxInstance, request: SandboxExecRequest): Promise<SandboxExecResult>;
   /** Optional: preserve detached child PIDs across config reload. */
   exportProcessMap?(): Map<string, number>;
   importProcessMap?(processes: Map<string, number>): void;
@@ -25,6 +39,7 @@ type SandboxAdapterConfig = {
   startCommand?: string;
   stopCommand?: string;
   statusCommand?: string;
+  execCommand?: string;
   endpoint?: string;
   hint?: string;
   note?: string;
@@ -51,6 +66,7 @@ export function createDefaultSandboxAdapters(
       startEnv: "KGM_SANDBOX_COMPUTER_START_CMD",
       stopEnv: "KGM_SANDBOX_COMPUTER_STOP_CMD",
       statusEnv: "KGM_SANDBOX_COMPUTER_STATUS_CMD",
+      execEnv: "KGM_SANDBOX_COMPUTER_EXEC_CMD",
       endpointEnv: "KGM_SANDBOX_COMPUTER_ENDPOINT",
       embeddedFlagEnv: "KGM_SANDBOX_COMPUTER_USE_EMBEDDED",
       embeddedRunner: "bash",
@@ -65,6 +81,7 @@ export function createDefaultSandboxAdapters(
       startEnv: "KGM_SANDBOX_BROWSER_START_CMD",
       stopEnv: "KGM_SANDBOX_BROWSER_STOP_CMD",
       statusEnv: "KGM_SANDBOX_BROWSER_STATUS_CMD",
+      execEnv: "KGM_SANDBOX_BROWSER_EXEC_CMD",
       endpointEnv: "KGM_SANDBOX_BROWSER_WS_ENDPOINT",
       embeddedFlagEnv: "KGM_SANDBOX_BROWSER_USE_EMBEDDED",
       embeddedRunner: "node",
@@ -79,6 +96,7 @@ export function createDefaultSandboxAdapters(
       startEnv: "KGM_SANDBOX_MOBILE_START_CMD",
       stopEnv: "KGM_SANDBOX_MOBILE_STOP_CMD",
       statusEnv: "KGM_SANDBOX_MOBILE_STATUS_CMD",
+      execEnv: "KGM_SANDBOX_MOBILE_EXEC_CMD",
       endpointEnv: "KGM_SANDBOX_MOBILE_ENDPOINT",
       embeddedFlagEnv: "KGM_SANDBOX_MOBILE_USE_EMBEDDED",
       embeddedRunner: "bash",
@@ -96,6 +114,7 @@ class CommandSandboxAdapter implements SandboxAdapter {
   private startEnv: string;
   private stopEnv: string;
   private statusEnv: string;
+  private execEnv: string;
   private endpointEnv: string;
   private embeddedFlagEnv: string;
   private embeddedRunner: "node" | "bash";
@@ -111,6 +130,7 @@ class CommandSandboxAdapter implements SandboxAdapter {
     startEnv: string;
     stopEnv: string;
     statusEnv: string;
+    execEnv: string;
     endpointEnv: string;
     embeddedFlagEnv: string;
     embeddedRunner: "node" | "bash";
@@ -124,6 +144,7 @@ class CommandSandboxAdapter implements SandboxAdapter {
     this.startEnv = params.startEnv;
     this.stopEnv = params.stopEnv;
     this.statusEnv = params.statusEnv;
+    this.execEnv = params.execEnv;
     this.endpointEnv = params.endpointEnv;
     this.embeddedFlagEnv = params.embeddedFlagEnv;
     this.embeddedRunner = params.embeddedRunner;
@@ -135,6 +156,10 @@ class CommandSandboxAdapter implements SandboxAdapter {
 
   isConfigured(): boolean {
     return Boolean(this.resolveCommand("start") || this.resolveEndpoint());
+  }
+
+  canExec(): boolean {
+    return Boolean(this.resolveExecCommand() || this.resolveEndpoint());
   }
 
   adapterHint(): string {
@@ -230,6 +255,47 @@ class CommandSandboxAdapter implements SandboxAdapter {
     } catch {
       return false;
     }
+  }
+
+  async exec(instance: SandboxInstance, request: SandboxExecRequest): Promise<SandboxExecResult> {
+    const endpoint = this.resolveEndpoint();
+    if (endpoint) {
+      const res = await fetch(`${endpoint.replace(/\/$/, "")}/exec`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sandboxId: instance.id,
+          command: request.command,
+          args: request.args ?? [],
+          timeoutMs: request.timeoutMs ?? 15_000,
+        }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(`sandbox_exec_upstream_${res.status}:${text.slice(0, 400)}`);
+      }
+      const json = JSON.parse(text) as Partial<SandboxExecResult>;
+      return {
+        stdout: String(json.stdout ?? ""),
+        stderr: String(json.stderr ?? ""),
+        exitCode: typeof json.exitCode === "number" ? json.exitCode : 1,
+      };
+    }
+    const template = this.resolveExecCommand();
+    if (!template) {
+      throw new SandboxExecNotConfiguredError(this.kind, this.hint);
+    }
+    const command = template
+      .replaceAll("{{command}}", request.command)
+      .replaceAll("{{args}}", (request.args ?? []).join(" "));
+    return runCaptured(command, {
+      timeoutMs: request.timeoutMs ?? 15_000,
+      env: {
+        KGM_SANDBOX_ID: instance.id,
+        KGM_SANDBOX_EXEC_COMMAND: request.command,
+        KGM_SANDBOX_EXEC_ARGS: JSON.stringify(request.args ?? []),
+      },
+    });
   }
 
   preview(instance: SandboxInstance): Partial<SandboxPreview> {
@@ -334,6 +400,51 @@ class CommandSandboxAdapter implements SandboxAdapter {
   private resolveEndpoint(): string | undefined {
     return this.config?.endpoint?.trim() || process.env[this.endpointEnv];
   }
+
+  private resolveExecCommand(): string | undefined {
+    return this.config?.execCommand?.trim() || process.env[this.execEnv]?.trim() || undefined;
+  }
+}
+
+export class SandboxExecNotConfiguredError extends Error {
+  readonly code = "sandbox_exec_not_configured";
+  readonly status = 501;
+
+  constructor(kind: SandboxKind, hint: string) {
+    super(`No exec adapter for ${kind}. Set KGM_SANDBOX_${kind.toUpperCase()}_EXEC_CMD or an endpoint /exec. ${hint}`);
+  }
+}
+
+function runCaptured(
+  command: string,
+  options: { timeoutMs: number; env: Record<string, string> },
+): Promise<SandboxExecResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+      env: { ...process.env, ...options.env },
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("sandbox_exec_timeout"));
+    }, options.timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr, exitCode: code ?? 1 });
+    });
+  });
 }
 
 const SANDBOX_SCRIPT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/sandbox");

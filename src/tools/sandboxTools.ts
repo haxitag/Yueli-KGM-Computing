@@ -77,8 +77,48 @@ const stopSandboxDefinition: ToolDefinition = {
   },
 };
 
+const execSandboxDefinition: ToolDefinition = {
+  name: "exec_sandbox",
+  kind: "tool",
+  description:
+    "在已配置 exec 适配器的沙箱里执行命令。未配置 KGM_SANDBOX_*_EXEC_CMD 或 endpoint /exec 时会失败，不假装成功。",
+  inputSchema: {
+    type: "object",
+    required: ["id", "command"],
+    properties: {
+      id: { type: "string" },
+      command: { type: "string" },
+      args: { type: "array", items: { type: "string" } },
+      timeoutMs: { type: "number" },
+    },
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      stdout: { type: "string" },
+      stderr: { type: "string" },
+      exitCode: { type: "number" },
+    },
+  },
+  metadata: {
+    latency: "slow",
+    sideEffect: true,
+    costLevel: "medium",
+    permission: "sandbox:exec",
+    integration: "builtin",
+    tags: ["sandbox", "exec"],
+  },
+};
+
 export function registerSandboxTools(registry: ToolRegistry, sandboxManager: SandboxManager): void {
   registry.register(listSandboxesDefinition, async () => ({ sandboxes: sandboxManager.list() }));
   registry.register(startSandboxDefinition, async (args) => ({ sandbox: sandboxManager.start(String(args.id ?? "")) }));
   registry.register(stopSandboxDefinition, async (args) => ({ sandbox: sandboxManager.stop(String(args.id ?? "")) }));
+  registry.register(execSandboxDefinition, async (args) =>
+    sandboxManager.exec(String(args.id ?? ""), {
+      command: String(args.command ?? ""),
+      args: Array.isArray(args.args) ? args.args.map(String) : undefined,
+      timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+    }),
+  );
 }

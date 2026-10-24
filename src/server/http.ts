@@ -56,7 +56,9 @@ import { tryServePlayground } from "./playgroundStatic.js";
 import { ProviderConfigurationManager } from "../models/providerConfigManager.js";
 import { normalizeIncomingHttpHeaders } from "../output/gfmNormalize.js";
 import { OpenAiResponseStore } from "../openai/responseStore.js";
-import { SandboxConfigurationError, SandboxManager } from "../sandbox/manager.js";
+import { SandboxConfigurationError, SandboxExecNotConfiguredError, SandboxManager } from "../sandbox/manager.js";
+import { executeWorkflowGraph, WorkflowNodeError } from "../workflow/execute.js";
+import { initializeMcpConnector, listMcpTools } from "../mcp/session.js";
 import { SchemaRegistry } from "../schema/registry.js";
 import { parseExecutableSkill, type SkillRuntime } from "../skills/runtime.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -596,6 +598,67 @@ export function createKgmRequestListener(
       }
       return false;
     },
+  };
+
+  const runStoredWorkflow = async (
+    response: http.ServerResponse,
+    workflow: Workflow,
+    input: unknown,
+  ): Promise<void> => {
+    const execution = workflowExecutionStore.create({
+      workflowId: workflow.id,
+      input,
+      status: "running",
+    });
+    try {
+      const result = await executeWorkflowGraph(
+        { id: workflow.id, name: workflow.name, nodes: workflow.nodes, edges: workflow.edges },
+        input,
+        {
+          toolRegistry: params.toolRegistry,
+          skillRuntime: params.skillRuntime,
+          sandboxManager: params.sandboxManager,
+          getMcpConnector: (id) => {
+            const conn = params.configStore.get().playground.mcpConnectors.find((item) => item.id === id);
+            return conn?.enabled ? conn : undefined;
+          },
+          chat: async ({ prompt, model }) => {
+            const outputSchema = params.schemaRegistry.get(DEFAULT_SCHEMA_IDS.llmIntent)?.schema ?? {};
+            return createOpenAiChatCompletion({
+              contextBuilder: params.contextBuilder,
+              llmClient: params.llmClient,
+              toolRegistry: params.toolRegistry,
+              configStore: params.configStore,
+              outputSchema,
+              responseStore: new OpenAiResponseStore(),
+              skillRuntime: params.skillRuntime,
+              request: {
+                model,
+                messages: [{ role: "user", content: prompt }],
+                stream: false,
+                kgm: { capabilities: { includeBuiltinTools: true, executeToolCalls: true } },
+              },
+            });
+          },
+        },
+      );
+      workflowExecutionStore.update(execution.id, {
+        status: result.status,
+        history: result.history,
+        output: result.output,
+        error: result.error,
+        currentNodeId: result.currentNodeId,
+      });
+      const rec = workflowExecutionStore.get(execution.id);
+      sendJson(response, result.status === "completed" ? 200 : 422, { execution: rec });
+    } catch (error) {
+      if (error instanceof WorkflowNodeError) {
+        workflowExecutionStore.update(execution.id, { status: "failed", error: `${error.code}:${error.message}` });
+        sendJson(response, error.status, { error: error.code, message: error.message, execution_id: execution.id });
+        return;
+      }
+      throw error;
+    }
   };
 
   const evaluationStore: {
@@ -1677,10 +1740,41 @@ export function createKgmRequestListener(
         if (!workflow) {
           return sendJson(res, 404, { error: "workflow_not_found" });
         }
-        return sendJson(res, 501, {
-          error: "workflow_execute_not_implemented",
-          message: "Workflow execution is not implemented. This endpoint does not queue or run workflows.",
-        });
+        const payload = (await readJson(req)) as { input?: unknown };
+        return runStoredWorkflow(res, workflow, payload.input);
+      }
+
+      if (req.method === "POST" && url.pathname === "/v1/kgm/workflow/execute") {
+        const payload = (await readJson(req)) as {
+          workflow_id?: string;
+          input?: unknown;
+          nodes?: Array<{ id: string; type: string; agentId?: string; tool?: string; config?: any }>;
+          edges?: Array<{ source: string; target: string; condition?: string }>;
+          name?: string;
+        };
+        if (payload.workflow_id) {
+          const workflow = workflowStore.get(payload.workflow_id);
+          if (!workflow) {
+            return sendJson(res, 404, { error: "workflow_not_found" });
+          }
+          return runStoredWorkflow(res, workflow, payload.input);
+        }
+        if (!Array.isArray(payload.nodes) || payload.nodes.length === 0) {
+          return sendJson(res, 400, { error: "workflow_empty", message: "Provide workflow_id or nodes." });
+        }
+        return runStoredWorkflow(
+          res,
+          {
+            id: "inline",
+            name: payload.name ?? "inline",
+            nodes: payload.nodes,
+            edges: payload.edges ?? [],
+            state: "active",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          payload.input,
+        );
       }
 
       if (req.method === "GET" && url.pathname === "/v1/workflow-executions") {
@@ -1808,6 +1902,24 @@ export function createKgmRequestListener(
         }
         params.skillRuntime.getSkillRegistry().register(parsed.skill);
         return sendJson(res, 201, { skill: parsed.skill });
+      }
+
+      if (req.method === "POST" && url.pathname.match(/^\/v1\/skills\/[^/]+\/run$/)) {
+        if (!params.skillRuntime) {
+          return sendJson(res, 501, { error: "skill_runtime_unavailable" });
+        }
+        const name = decodeURIComponent(url.pathname.replace(/^\/v1\/skills\//, "").replace(/\/run$/, ""));
+        const payload = (await readJson(req)) as { input?: Record<string, unknown> };
+        try {
+          const result = await params.skillRuntime.run(name, payload.input ?? {});
+          return sendJson(res, 200, { skill: name, result });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.startsWith("skill not found:")) {
+            return sendJson(res, 404, { error: "skill_not_found", message });
+          }
+          throw error;
+        }
       }
 
       if (req.method === "GET" && url.pathname.match(/^\/v1\/models\/[^/]+$/)) {
@@ -2687,7 +2799,7 @@ export function createKgmRequestListener(
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
-        const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/(start|stop)$/, "");
+        const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/(start|stop|exec)$/, "");
         const sandbox = params.sandboxManager.get(id);
         if (!sandbox) {
           return sendJson(res, 404, { error: "sandbox_not_found" });
@@ -2703,6 +2815,41 @@ export function createKgmRequestListener(
       if (req.method === "POST" && url.pathname.endsWith("/stop") && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
         const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/stop$/, "");
         return sendJson(res, 200, { sandbox: params.sandboxManager.stop(id) });
+      }
+
+      if (req.method === "POST" && url.pathname.endsWith("/exec") && url.pathname.startsWith("/v1/kgm/sandboxes/")) {
+        const id = url.pathname.replace("/v1/kgm/sandboxes/", "").replace(/\/exec$/, "");
+        const payload = (await readJson(req)) as { command?: string; args?: string[]; timeoutMs?: number };
+        if (!payload.command?.trim()) {
+          return sendJson(res, 400, { error: "sandbox_exec_args", message: "command is required." });
+        }
+        const result = await params.sandboxManager.exec(id, {
+          command: payload.command,
+          args: payload.args,
+          timeoutMs: payload.timeoutMs,
+        });
+        return sendJson(res, 200, { sandboxId: id, ...result });
+      }
+
+      if (req.method === "POST" && url.pathname === "/v1/kgm/mcp/initialize") {
+        const payload = (await readJson(req)) as { connector_id?: string; id?: string };
+        const connectorId = payload.connector_id ?? payload.id ?? "";
+        const connector = params.configStore.get().playground.mcpConnectors.find((item) => item.id === connectorId);
+        if (!connector || !connector.enabled) {
+          return sendJson(res, 404, { error: "mcp_connector_not_found" });
+        }
+        const result = await initializeMcpConnector(connector);
+        return sendJson(res, 200, { connector_id: connector.id, ...result });
+      }
+
+      if (req.method === "GET" && url.pathname === "/v1/kgm/mcp/tools") {
+        const connectorId = url.searchParams.get("connector_id") ?? "";
+        const connector = params.configStore.get().playground.mcpConnectors.find((item) => item.id === connectorId);
+        if (!connector || !connector.enabled) {
+          return sendJson(res, 404, { error: "mcp_connector_not_found" });
+        }
+        const tools = await listMcpTools(connector);
+        return sendJson(res, 200, { connector_id: connector.id, tools });
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/v1/kgm/artifacts/")) {
@@ -2902,7 +3049,10 @@ export function createKgmRequestListener(
       if (error instanceof KgmRequestValidationError) {
         return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
       }
-      if (error instanceof SandboxConfigurationError) {
+      if (error instanceof SandboxConfigurationError || error instanceof SandboxExecNotConfiguredError) {
+        return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
+      }
+      if (error instanceof WorkflowNodeError) {
         return sendJson(res, error.status, kgmErrorBody(error.code, error.message, error.status));
       }
       if (!res.headersSent) {

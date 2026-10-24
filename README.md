@@ -37,6 +37,22 @@ npm run dev:enhanced
 
 ---
 
+## 0.3.11
+
+编排后半段按真实适配器交付：workflow DAG、sandbox exec、MCP initialize/stdio、CLI 任务生命周期、用量 `byProvider`。未配置仍 501，不补假成功。
+
+- **Workflow**：`POST /v1/workflows/:id/execute` 与 `/v1/kgm/workflow/execute`；支持 `noop|tool|skill|http|sandbox_exec|mcp|chat|agent`。
+- **Sandbox exec**：`POST /v1/kgm/sandboxes/:id/exec`；未配 exec 适配器 → 501。
+- **MCP**：`POST /v1/kgm/mcp/initialize`；`transport` 可为 `http` 或一次性 `stdio`。
+- **CLI**：`kgm task|workflow|usage|mcp|sandbox`（需已启动网关）。
+- **用量**：`/v1/kgm/usage/summary` 增加 `byProvider`。
+
+```bash
+npm install @haxitag/yueli-kgm-computing@0.3.11
+```
+
+---
+
 ## 0.3.10
 
 真实调用链、错误类 failover、不委托 JSON 薄路径；YCB / Xiaomi 对齐官方接口。失败如实返回，不补假成功。
@@ -746,7 +762,7 @@ npm install @haxitag/yueli-kgm-computing@latest
 npm list @haxitag/yueli-kgm-computing
 
 # 升级到指定版本
-npm install @haxitag/yueli-kgm-computing@0.3.10
+npm install @haxitag/yueli-kgm-computing@0.3.11
 ```
 
 ### 开源仓库同步（维护者）
@@ -755,8 +771,8 @@ npm install @haxitag/yueli-kgm-computing@0.3.10
 git checkout main
 git pull origin main
 
-# 必须用同步脚本（过滤 docs/.cursor/data/tests 等后再 force 推公开仓）
-# 禁止：git push public main
+# 必须用同步脚本（过滤 docs/.cursor/data/tests 等后追加到公开历史）
+# 禁止：git push public main；禁止对公开仓 --force
 bash scripts/sync-to-public.sh
 ```
 ---
@@ -772,9 +788,9 @@ npm run dev:enhanced
 
 ---
 
-## 版本说明（当前：`0.3.10`）
+## 版本说明（当前：`0.3.11`）
 
-详见上方「0.3.10」。历史版本摘要见「历史版本摘要」一节。npm / 开源仓以本 README 为准。
+详见上方「0.3.11」。历史版本摘要见「历史版本摘要」一节。npm / 开源仓以本 README 为准。
 
 ### 本地 GPU 推理支持
 
